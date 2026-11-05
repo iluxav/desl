@@ -1,0 +1,13 @@
+[package]
+name = "desl-ir"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "desl: the provider-neutral event IR, the Thread and Binding types, and the adapter contract."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

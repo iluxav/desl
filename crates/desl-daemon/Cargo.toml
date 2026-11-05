@@ -1,0 +1,22 @@
+[package]
+name = "desl-daemon"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "desl: the daemon. Thread engine, store, projector, approval broker, git service, event bus."
+
+[dependencies]
+desl-ir = { workspace = true }
+desl-proto = { workspace = true }
+adapter-claude = { workspace = true }
+adapter-codex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+sha2 = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+[
+  {
+    "type": "session",
+    "session_id": "01a1a8bb-8fb8-7be2-bcbc-3fac8c106895",
+    "model": "gpt-test"
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "Hello from desl.",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "usage",
+      "input_tokens": 14337,
+      "output_tokens": 8
+    }
+  },
+  {
+    "type": "turn_end",
+    "error": null
+  }
+]

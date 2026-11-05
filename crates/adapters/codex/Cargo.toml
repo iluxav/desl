@@ -1,0 +1,13 @@
+[package]
+name = "adapter-codex"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "desl: the Codex adapter. The only code that knows Codex's native format."
+
+[dependencies]
+desl-ir = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

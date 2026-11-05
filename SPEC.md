@@ -276,17 +276,18 @@ Binding {
 | user\_message | text, attachments\[\] | What the user sent |
 | assistant\_message | text, agent, model | Final prose for a turn; streamed deltas are not stored separately |
 | tool\_call | id, name, args, agent | `read`, `edit`, `bash`, `search`, or the agent's own name |
-| tool\_result | call\_id, output, exit\_code, truncated | Output stored in full on disk, truncated in memory |
-| file\_change | path, diff, kind (create/modify/delete) | Derived from tool results or git, so handoffs know what changed |
-| approval\_request | call\_id, summary, risk | Surfaced in the UI as `waiting` |
-| approval\_response | call\_id, decision (allow/deny/always) |  |
+| tool\_result | call\_id, output, exit\_code, is\_error, truncated, blob | Output stored in full on disk, truncated in memory; `blob` names the full text |
+| file\_change | path, diff, kind (create/modify/delete), call\_id | Derived from tool results or git, so handoffs know what changed; `call_id` ties it to the edit that made it |
+| approval\_request | call\_id, tool, summary, risk | Surfaced in the UI as `waiting`; `tool` is the key of the thread's "always" list |
+| approval\_response | call\_id, decision (allow/deny/always), by (user/policy) |  |
 | agent\_switch | from, to, brief\_event\_id | Rendered as a divider |
 | fork | parent\_id, fork\_point | First event of a forked thread |
-| brief | text, token\_estimate, covers\_range | The handoff text that was actually sent |
+| brief | text, token\_estimate, covers\_range, delta | The handoff text that was actually sent |
 | usage | agent, input\_tokens, output\_tokens, cost\_estimate | Per turn |
 | error | message, recoverable | Process crashes, adapter failures |
+| interrupt |  | The user stopped the turn |
 
-Every event carries `index`, `thread_id`, `timestamp` and `agent`. Indices are dense and never reused, so a fork point or a high-water mark is always an exact reference.
+Every event carries `index`, `thread_id`, `timestamp` and `agent`. Indices start at 1, are dense and are never reused, so a fork point or a high-water mark is always an exact reference; a mark of 0 means the agent has seen nothing. Tool calls use neutral names (`read`, `edit`, `bash`, `search`, `fetch`, `agent`, `todo`) and neutral argument keys (`path`, `command`, `pattern`, `query`, `url`, `description`), so a client can show any agent's work without knowing the agent.
 
 **Project.** A registered git repository: id, path, default agent, default branch, list of worktrees. Projects are discovered from `cwd` on first run and can be added with `desl project add`.
 
@@ -456,7 +457,7 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 
 **Rendering.** Token deltas are batched per animation frame; the transcript is a virtual list that renders only the visible window plus a margin; markdown is parsed incrementally and cached per message; diffs are rendered lazily on expand. Resize is debounced at 50 ms. No full-screen redraw on a single event.
 
-**Crash safety.** The store is written in WAL mode with one transaction per turn; a daemon crash mid-turn loses at most the in-flight assistant delta, which the adapter replays from the native session on restart. Agent process crashes are detected within one second, marked `failed` with the exit reason, and offered a one-key restart that resumes the native session. Client crashes lose nothing. `desl doctor` checks store integrity and can rebuild indexes.
+**Crash safety.** The store is written in WAL mode with one transaction per event, so nothing that reached the screen as an event is lost; a daemon crash mid-turn loses at most the in-flight assistant delta, and the thread says so and resumes its native session on the next prompt. Agent process crashes are detected within one second, marked `failed` with the exit reason, and offered a one-key restart that resumes the native session. Client crashes lose nothing. `desl doctor` checks store integrity and can rebuild indexes.
 
 **Process hygiene.** Every agent process is in its own process group; `desl daemon stop` and daemon restart send SIGTERM, wait 5 s, then SIGKILL, and never leave orphans. Idle agent processes are reaped after a configurable timeout (default 30 min) and transparently resumed on the next prompt. PTY scrollback is capped (default 10k lines) and persisted.
 
@@ -470,7 +471,7 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 
 desl ships as one static binary per platform with no runtime dependencies, installed by a one-line script, and configured by files that are optional on day one.
 
-**Language and stack.** Rust, for the production build from phase 1 on. The product is judged on rendering (streaming without stutter, nothing moving under the reader's eyes, sub-16 ms frames with many threads live), and that is won with cell-level control of the terminal and no runtime pauses. Ratatui's immediate-mode model draws exactly the cells wanted each frame and emits the minimal diff, which is what "only the new tokens change" needs; the tools in this space whose feel is worth copying (Herdr, tutti, Codex CLI) are all Rust. Chosen crates: `ratatui` and `crossterm` (TUI), `tokio` (agent streams, socket server), `portable-pty` (raw panes), `rusqlite` with bundled SQLite (store), `clap` (CLI), `serde` and `serde_json` (protocol and adapters), `git2` for read-only git queries with the `git` binary for mutations, `tracing` (logs), `cargo-dist` (signed releases, installer, Homebrew tap), `cargo-zigbuild` or `cross` (targets). Phase 0 prototypes are throwaway and may be written in whatever is fastest to tune by hand (Ink, Textual, Bubble Tea); nothing from them is kept except the measurements and the spec changes they produce. Go was considered for its iteration speed while adapter protocols are unstable; that argument is removed by settling the adapter contract in phase 0 before the Rust build starts.
+**Language and stack.** Rust, for the production build from phase 1 on. The product is judged on rendering (streaming without stutter, nothing moving under the reader's eyes, sub-16 ms frames with many threads live), and that is won with cell-level control of the terminal and no runtime pauses. Ratatui's immediate-mode model draws exactly the cells wanted each frame and emits the minimal diff, which is what "only the new tokens change" needs; the tools in this space whose feel is worth copying (Herdr, tutti, Codex CLI) are all Rust. Chosen crates: `ratatui` and `crossterm` (TUI), `rusqlite` with bundled SQLite (store), `clap` (CLI), `serde` and `serde_json` (protocol and adapters), `tracing` with `tracing-subscriber` (logs), `pulldown-cmark` (markdown in the transcript), `sha2` (content addresses for blobs), `chrono` (local clock time), `unicode-width` (column widths), `anyhow` (errors at the edges), `portable-pty` (raw panes, from phase 2), `cargo-dist` (signed releases, installer, Homebrew tap), `cargo-zigbuild` or `cross` (targets). The daemon runs on plain threads and channels: one engine thread owns all state, and each agent stream and each client has its own reader. `tokio` was the first choice and is not used; it comes back only if remote clients in phase 3 need it. Git is read through the `git` binary; `git2` is not used. Phase 0 prototypes are throwaway and may be written in whatever is fastest to tune by hand (Ink, Textual, Bubble Tea); nothing from them is kept except the measurements and the spec changes they produce. Go was considered for its iteration speed while adapter protocols are unstable; that argument is removed by settling the adapter contract in phase 0 before the Rust build starts.
 
 **Targets.** macOS arm64 and amd64, Linux amd64 and arm64 (glibc and musl), Windows amd64 (phase 3, with named pipes and ConPTY). FreeBSD on a best-effort basis.
 
@@ -582,10 +583,10 @@ desl is done when a demanding terminal user cannot tell which parts were written
 Decisions the building agent should raise before phase 0 ends, with the current lean for each.
 
 - [ ] **Name collision check.** Confirm `desl` is free on npm, crates.io, Homebrew, GitHub and as a `.dev` domain; the first pass on 2026-11-04 found it clean. Fallback: segue, not `muster`.
-- [ ] **Exact headless flags.** Pin Claude Code and Codex versions for phase 0 and record the real flag names for stream-json input, permission control, resume and fork; this spec's flag names are from memory and must be verified against `--help`.
-- [ ] **Approval transport for Claude Code.** Confirm whether approvals arrive through the stream-json protocol, a hook, or the `--permission-prompt-tool` mechanism in the pinned version, and whether all three can be driven from a Rust subprocess without a Node sidecar.
-- [ ] **Codex approval policy.** Confirm which `codex exec` flags give per-call approval events versus blanket policies; if only blanket policies exist, the `ask` mode for Codex degrades to `edits` and the UI must say so.
-- [ ] **Token estimation.** Pick a tokenizer approximation for the brief budget (a byte-ratio heuristic is likely enough; a vendored tiktoken table is the alternative).
+- [x] **Exact headless flags.** Pinned to Claude Code 2.1.312 and Codex CLI 0.165.0; the real flags are recorded in `docs/adapters.md`.
+- [x] **Approval transport for Claude Code.** Approvals arrive in the stream as `control_request` lines with `--permission-prompts host --permission-prompt-tool stdio`, and are answered on stdin. A plain subprocess drives it; no Node sidecar.
+- [x] **Codex approval policy.** `codex exec` has no per-call approvals; its sandbox decides. `ask` degrades to `edits` for Codex (the UI does not say so yet). `codex app-server` is the route to per-call approvals and to streamed replies.
+- [x] **Token estimation.** Bytes divided by four, always shown with `~`.
 - [ ] **Store sync.** Append-only event log makes later sync possible; decide whether phase 3 ships one-shot `export`/`import` only or a live sync over the remote protocol.
 - [ ] **Agent preamble wording.** The short system-prompt addition that tells an agent it is inside desl (thread name, worktree, what will prompt for approval); draft and test with both agents for unintended behaviour changes.
 - [ ] **Raw PTY import.** How far to go in importing a raw pane's native session file into a thread after the fact; proposal is best-effort, clearly labelled, never blocking.

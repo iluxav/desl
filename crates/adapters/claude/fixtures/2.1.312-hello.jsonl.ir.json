@@ -1,0 +1,32 @@
+[
+  {
+    "model": "claude-fable-5-1",
+    "session_id": "70376338-2905-4dae-80e0-36fa750237a6",
+    "type": "session"
+  },
+  {
+    "text": "Hello from desl, the terminal workspace for coding agents.",
+    "type": "streamed_text"
+  },
+  {
+    "event": {
+      "kind": "assistant_message",
+      "model": "claude-fable-5-1",
+      "text": "Hello from desl, the terminal workspace for coding agents."
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "cost_estimate": 0.01762225,
+      "input_tokens": 23611,
+      "kind": "usage",
+      "output_tokens": 234
+    },
+    "type": "event"
+  },
+  {
+    "error": null,
+    "type": "turn_end"
+  }
+]

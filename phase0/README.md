@@ -6,7 +6,6 @@ match. Prototype B (the agents' own interfaces in panes), the blind launcher and
 were removed when A was chosen; they are in the repository's first commit.
 
 - `proto-a/` the crate: host, client, the Claude and Codex adapters, the brief projector.
-- `fixtures/{claude,codex}/` real captured headless output per agent version and scenario.
 - `recordings/` terminal recordings of Prototype A (`.cast` plays in asciinema; `.out` + `.timing` replay with `scriptreplay -t`).
 - `tools/` the tmux-driven key tests (`e2e*.sh`), the demo recorders (`record*.sh`) and the `script` to asciicast converter.
 

@@ -1,0 +1,41 @@
+[
+  {
+    "type": "session",
+    "session_id": "01a1a8bb-d7d8-7311-818f-65a0abc39b5e",
+    "model": "gpt-test"
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "I’ll run the shell command to create `probe.txt`.\n",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "Failed to create `probe.txt` because the filesystem is read-only.",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "usage",
+      "input_tokens": 28831,
+      "output_tokens": 72
+    }
+  },
+  {
+    "type": "turn_end",
+    "error": null
+  }
+]

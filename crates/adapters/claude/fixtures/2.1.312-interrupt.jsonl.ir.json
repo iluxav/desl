@@ -1,0 +1,11 @@
+[
+  {
+    "model": "claude-fable-5-1",
+    "session_id": "86e42615-2dac-493e-a8c7-095185a1925b",
+    "type": "session"
+  },
+  {
+    "error": null,
+    "type": "turn_end"
+  }
+]

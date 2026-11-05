@@ -1,0 +1,41 @@
+[
+  {
+    "type": "session",
+    "session_id": "01a1a8c0-d040-77d0-bff2-ef5a13596400",
+    "model": "gpt-test"
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "I’ll run the shell command to create the file.\n",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "The command failed because `/home/iluxa/desl-codex-probe` is on a read-only filesystem.",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "usage",
+      "input_tokens": 32165,
+      "output_tokens": 89
+    }
+  },
+  {
+    "type": "turn_end",
+    "error": null
+  }
+]

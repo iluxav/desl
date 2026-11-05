@@ -1,0 +1,83 @@
+[
+  {
+    "model": "claude-fable-5-1",
+    "session_id": "a1550d95-0c9f-487f-ad9f-f51a2eee1c12",
+    "type": "session"
+  },
+  {
+    "text": "Running the touch command now.",
+    "type": "streamed_text"
+  },
+  {
+    "event": {
+      "kind": "assistant_message",
+      "model": "claude-fable-5-1",
+      "text": "Running the touch command now."
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "args": {
+        "command": "touch /tmp/desl-approval-probe-2"
+      },
+      "id": "toolu_01LZXbDZggDQT5LifeUukCRc",
+      "kind": "tool_call",
+      "name": "bash"
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "call_id": "toolu_01LZXbDZggDQT5LifeUukCRc",
+      "kind": "approval_request",
+      "risk": "command",
+      "summary": "touch /tmp/desl-approval-probe-2",
+      "tool": "bash"
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "call_id": "toolu_01LZXbDZggDQT5LifeUukCRc",
+      "is_error": true,
+      "kind": "tool_result",
+      "output": "Tool permission request failed: AbortError: Tool permission stream closed before response received",
+      "truncated": false
+    },
+    "type": "event"
+  },
+  {
+    "text": "The first attempt failed before the command ran, because the permission stream closed. Retrying once.",
+    "type": "streamed_text"
+  },
+  {
+    "event": {
+      "kind": "assistant_message",
+      "model": "claude-fable-5-1",
+      "text": "The first attempt failed before the command ran, because the permission stream closed. Retrying once."
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "args": {
+        "command": "touch /tmp/desl-approval-probe-2"
+      },
+      "id": "toolu_01G6PJrqiW8Cq7Tni9Lwk5rP",
+      "kind": "tool_call",
+      "name": "bash"
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "call_id": "toolu_01G6PJrqiW8Cq7Tni9Lwk5rP",
+      "is_error": true,
+      "kind": "tool_result",
+      "output": "Tool permission request failed: AbortError: Stream closed",
+      "truncated": false
+    },
+    "type": "event"
+  }
+]

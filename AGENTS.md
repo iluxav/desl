@@ -22,11 +22,11 @@ The experience is the product. Every tool in this space already has the technolo
 
 ## Phases
 
-- **Phase 0 (now): the experience prototype.** Two throwaway prototypes of the same experience, in whatever stack is fastest to tune by hand. Judged by ten real users on the feel bar. Nothing from them is kept except measurements and spec changes. Do not build the daemon, store or adapter contract in this phase.
-- **Phase 1: the real thing**, in Rust (ratatui, crossterm, tokio, portable-pty, rusqlite, clap, serde, tracing, cargo-dist), rebuilt to match the phase 0 winner pixel for pixel.
+- **Phase 0 (done 2026-11-04): the experience prototype.** Two throwaway prototypes of the same experience. Prototype A (desl renders the conversation from headless agents) won, decided by the author's own testing; it stays in `phase0/` as the reference for the client and nothing else from it is kept.
+- **Phase 1 (now): the real thing**, in Rust (ratatui, crossterm, rusqlite, clap, serde, tracing; the stack paragraph of `SPEC.md` has the full list), built to match Prototype A pixel for pixel. The author is the only tester.
 - **Phase 2: panes and worktrees. Phase 3: reach.** See the roadmap in `SPEC.md`.
 
-## Layout (from phase 1)
+## Layout
 
 ```
 crates/
@@ -39,7 +39,8 @@ crates/
     codex/         fixtures/, replay tests, the Codex adapter
     pty/           the raw PTY adapter (phase 2)
 docs/
-  protocol.md  adapters.md  keys.md (generated)  CHANGELOG.md
+  protocol.md  adapters.md  keys.md (generated)  CHANGELOG.md  phase0-decisions.md
+phase0/            Prototype A, the interface reference; its own workspace, not part of the build
 SPEC.md  AGENTS.md  CLAUDE.md  README.md
 ```
 
@@ -47,7 +48,8 @@ SPEC.md  AGENTS.md  CLAUDE.md  README.md
 
 - Start each task by stating which spec section it serves and which feel-bar moment it protects.
 - Keep changes small and reviewable. One behaviour per change.
-- Run `cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test` and the performance suite before declaring anything done.
+- Run `make check` (`cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test`) before declaring anything done; the performance suite joins it when it exists.
+- Expected outputs are files: adapter IR (`fixtures/*.ir.json`), briefs (`goldens/`), screens (`snapshots/`), `docs/keys.md`. `DESL_BLESS=1 cargo test` rewrites them after a deliberate change, and the diff is reviewed like code.
 - When a decision in "Open questions" comes up, resolve it in `SPEC.md` first, then implement.
 - Never add a dependency without noting it in `docs/adapters.md` or the stack paragraph of `SPEC.md`.
 - Never mention "Drover" anywhere; it was a working label that collided with existing tools.

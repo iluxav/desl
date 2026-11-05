@@ -1,8 +1,98 @@
-# Adapter notes
+# Adapters
 
-Phase 0 findings about the agents' headless modes. Everything here was verified by running the
-installed binaries on 2026-11-04. The flag names in `SPEC.md` were from memory; these are real.
-Captured output lives in `phase0/fixtures/<agent>/<version>-<scenario>.jsonl`.
+The adapter contract, a worked example, and what was learned about each agent's headless mode.
+Everything about the agents was verified by running the installed binaries on 2026-11-04; the
+flag names in `SPEC.md` were from memory, these are real. Captured output lives in
+`crates/adapters/<agent>/fixtures/<version>-<scenario>.jsonl`, each with the IR it must produce
+beside it as `<fixture>.ir.json`.
+
+## The contract
+
+An adapter is the only code that knows an agent's native format. It lives in
+`crates/adapters/<id>/` and implements two traits from `desl-ir` (`crates/desl-ir/src/adapter.rs`).
+
+| `Adapter` | |
+| --- | --- |
+| `id()` | The word the user types after `/switch`: `claude`, `codex`. |
+| `detect()` | Installed, version, logged in, binary path, and the sentences to show when it is missing or logged out. |
+| `capabilities()` | `resume`, `fork`, `model_switch`, `compact`, `interrupt`, `approvals`, `streaming`. |
+| `start(opts, sink)` | Prepares a native session for a thread: working directory, permission mode, the session id to resume. Nothing reaches the agent until the first `send`. |
+
+| `Session` | |
+| --- | --- |
+| `send(turn)` | One user turn. A brief after a switch is part of the same turn. |
+| `interrupt()` | Stops the turn. Returns true when the turn is over at once. |
+| `answer(call_id, decision)` | Answers an approval request. |
+| `close()` | Ends the process: SIGTERM to its process group, SIGKILL five seconds later. The native session stays resumable. |
+
+A session reports through the `sink` it was started with, from its own threads:
+
+| `AdapterEvent` | Meaning |
+| --- | --- |
+| `Session {session_id, model}` | The native session exists. The daemon keeps the id in the thread's binding and never shows it unasked. |
+| `TextStart`, `TextDelta {text}` | A block of prose begins and grows. Streamed to viewers, never stored. |
+| `Event {event}` | An IR event for the thread's log (`docs/protocol.md` lists the kinds). |
+| `TurnEnd {error}` | The turn is over. `error` is a sentence when it ended badly. |
+| `Exit {code, detail}` | The process is gone. Mid-turn this fails the thread; between turns it is silent. |
+
+Rules every adapter keeps:
+
+- Tool names and arguments are neutral: `read`, `edit`, `bash`, `search`, `fetch`, `agent`,
+  `todo` with the keys `path`, `command`, `pattern`, `query`, `url`, `description`. Paths inside
+  the thread's directory are relative to it.
+- An edit is a `tool_call`, a `tool_result` and a `file_change` with the unified diff when the
+  adapter can tell what changed.
+- Tool call ids are unique within a thread, across turns and across daemon restarts.
+- Agent processes run in their own process group, without the variables in SPEC.md "Secrets".
+- Every sentence a user may read says what happened and what to do next.
+
+### A worked example
+
+Claude Code prints this line when it wants to run a command it may not run unasked:
+
+```json
+{"type":"control_request","request_id":"9f1c","request":{"subtype":"can_use_tool","tool_name":"Bash",
+ "input":{"command":"touch /tmp/x","description":"Create a file"},"tool_use_id":"toolu_01"}}
+```
+
+The Claude adapter's parser (`crates/adapters/claude/src/parse.rs`) turns it into one IR event and
+remembers the native request under the call id:
+
+```json
+{"type":"event","event":{"kind":"approval_request","call_id":"toolu_01","tool":"bash",
+ "summary":"touch /tmp/x","risk":"command"}}
+```
+
+The daemon's approval broker answers it from the thread's "always" list or sets the thread
+`waiting`. When the user presses `y`, the daemon calls `answer("toolu_01", allow)` and the adapter
+writes Claude Code's own reply to the process:
+
+```json
+{"type":"control_response","response":{"subtype":"success","request_id":"9f1c",
+ "response":{"behavior":"allow","updatedInput":{"command":"touch /tmp/x","description":"Create a file"}}}}
+```
+
+Nothing outside the adapter saw `control_request`, `can_use_tool` or `toolu_`-style ids as
+anything but opaque strings.
+
+### Fixtures and replay tests
+
+`cargo test -p adapter-claude -p adapter-codex` replays every fixture through the parser and
+compares the result with the `.ir.json` beside it, byte for byte. A new agent version adds
+fixtures; old ones are never edited. After a deliberate change to the mapping,
+`DESL_BLESS=1 cargo test -p adapter-<id>` rewrites the expected files, and the diff is reviewed
+like code.
+
+### Detection
+
+| Agent | Version | Logged in |
+| --- | --- | --- |
+| Claude Code | `claude --version` prints `2.1.312 (Claude Code)` | `claude auth status --json` prints an object with `loggedIn` (verified; it also holds the account's email, which desl does not read) |
+| Codex | `codex --version` prints `codex-cli 0.165.0` | `codex login status` prints `Logged in using ChatGPT` and exits 0 (verified; the logged-out output was not observed) |
+
+Model flags, verified to exist and not yet used: `claude --model <model>`, `codex exec -m <MODEL>`.
+
+## Agent notes
 
 | Agent | Version | Installed via |
 | --- | --- | --- |
@@ -114,7 +204,7 @@ If the host never answers, Claude eventually fails the call with
 
 ## Codex CLI 0.165.0
 
-Verified by running `codex exec --json`; fixtures in `phase0/fixtures/codex/0.165.0-*.jsonl`.
+Verified by running `codex exec --json`; fixtures in `crates/adapters/codex/fixtures/0.165.0-*.jsonl`.
 Login state: `codex login status` printed "Logged in using ChatGPT". The user's `~/.codex/config.toml`
 sets the model and reasoning effort; probes passed `-c model_reasoning_effort="low"` for speed.
 
@@ -215,8 +305,8 @@ Path: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl`. The 
 
 ## Prototype dependencies
 
-Noted here as `AGENTS.md` requires. The phase 0 crate is throwaway; this list is not the phase 1
-stack, which stays in the stack paragraph of `SPEC.md`.
+The crates the phase 0 prototype in `phase0/` uses. The crates of desl itself are named in the
+stack paragraph of `SPEC.md`.
 
 | Crate | Version | Why |
 | --- | --- | --- |

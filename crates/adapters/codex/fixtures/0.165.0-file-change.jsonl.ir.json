@@ -1,0 +1,115 @@
+[
+  {
+    "type": "session",
+    "session_id": "01a1a8c0-ecc7-73c0-b58b-27c3a4cd0631",
+    "model": "gpt-test"
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "I’ll add the comment to `src/auth/tokens.ts`.\n",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_call",
+      "id": "t:item_1",
+      "name": "bash",
+      "args": {
+        "command": "pwd; rg --files -g AGENTS.md -g tokens.ts -g '\"'!node_modules'\"'"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_result",
+      "call_id": "t:item_1",
+      "output": "/tmp/claude-1000/-home-iluxa-Projects-desl/45b03a3f-e369-4390-a009-4cec7ea5e2a4/scratchpad/api\nsrc/auth/tokens.ts\n",
+      "exit_code": 0,
+      "is_error": false,
+      "truncated": false
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_call",
+      "id": "t:item_2",
+      "name": "bash",
+      "args": {
+        "command": "head -n 12 src/auth/tokens.ts"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_result",
+      "call_id": "t:item_2",
+      "output": "import jwt from \"jsonwebtoken\";\n\nconst SECRET = process.env.JWT_SECRET ?? \"dev-secret\";\nconst ACCESS_TTL = \"15m\";\n\nexport class AuthError extends Error {}\n\nexport function signAccessToken(sub: string): string {\n  return jwt.sign({ sub }, SECRET, { expiresIn: ACCESS_TTL });\n}\n\nexport function verifyAccessToken(token: string): { sub: string } {\n",
+      "exit_code": 0,
+      "is_error": false,
+      "truncated": false
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_call",
+      "id": "t:item_3:0",
+      "name": "edit",
+      "args": {
+        "path": "src/auth/tokens.ts"
+      }
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "tool_result",
+      "call_id": "t:item_3:0",
+      "output": "update",
+      "is_error": false,
+      "truncated": false
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "file_change",
+      "path": "src/auth/tokens.ts",
+      "change": "modify",
+      "call_id": "t:item_3:0"
+    }
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "All done.",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "usage",
+      "input_tokens": 44997,
+      "output_tokens": 201
+    }
+  },
+  {
+    "type": "turn_end",
+    "error": null
+  }
+]

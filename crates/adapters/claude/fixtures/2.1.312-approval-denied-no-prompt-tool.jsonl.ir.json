@@ -1,0 +1,65 @@
+[
+  {
+    "model": "claude-fable-5-1",
+    "session_id": "d7e14e5e-224e-4e2e-96ee-ea0721109d88",
+    "type": "session"
+  },
+  {
+    "text": "Running the probe command.",
+    "type": "streamed_text"
+  },
+  {
+    "event": {
+      "kind": "assistant_message",
+      "model": "claude-fable-5-1",
+      "text": "Running the probe command."
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "args": {
+        "command": "touch /tmp/desl-approval-probe-1"
+      },
+      "id": "toolu_01CUNERr2mJpqiigytJ9qhBD",
+      "kind": "tool_call",
+      "name": "bash"
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "call_id": "toolu_01CUNERr2mJpqiigytJ9qhBD",
+      "is_error": true,
+      "kind": "tool_result",
+      "output": "touch in '/tmp/desl-approval-probe-1' needs approval. The path is outside the working directories for this session ('/home/iluxa/Projects/desl'). Allowing runs the command as written.",
+      "truncated": false
+    },
+    "type": "event"
+  },
+  {
+    "text": "The command did not run. It was blocked because the target path is outside this session's working directory and needs approval.\n\n```\ntouch in '/tmp/desl-approval-probe-1' needs approval. The path is outside the working directories for this session ('/home/iluxa/Projects/desl'). Allowing runs the command as written.\n```\n\nNothing was written to /tmp. Since you asked for exactly that command, I did not substitute a different path or retry it. If you approve the call or run it in an interactive session, it will create the empty probe file as written.",
+    "type": "streamed_text"
+  },
+  {
+    "event": {
+      "kind": "assistant_message",
+      "model": "claude-fable-5-1",
+      "text": "The command did not run. It was blocked because the target path is outside this session's working directory and needs approval.\n\n```\ntouch in '/tmp/desl-approval-probe-1' needs approval. The path is outside the working directories for this session ('/home/iluxa/Projects/desl'). Allowing runs the command as written.\n```\n\nNothing was written to /tmp. Since you asked for exactly that command, I did not substitute a different path or retry it. If you approve the call or run it in an interactive session, it will create the empty probe file as written."
+    },
+    "type": "event"
+  },
+  {
+    "event": {
+      "cost_estimate": 0.248744,
+      "input_tokens": 49497,
+      "kind": "usage",
+      "output_tokens": 452
+    },
+    "type": "event"
+  },
+  {
+    "error": null,
+    "type": "turn_end"
+  }
+]

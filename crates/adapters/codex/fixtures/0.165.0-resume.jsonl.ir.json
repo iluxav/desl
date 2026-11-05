@@ -1,0 +1,30 @@
+[
+  {
+    "type": "session",
+    "session_id": "01a1a8bb-8fb8-7be2-bcbc-3fac8c106895",
+    "model": "gpt-test"
+  },
+  {
+    "type": "text_start"
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "assistant_message",
+      "text": "You asked me to reply with exactly one short sentence saying hello from desl.",
+      "model": "gpt-test"
+    }
+  },
+  {
+    "type": "event",
+    "event": {
+      "kind": "usage",
+      "input_tokens": 28705,
+      "output_tokens": 27
+    }
+  },
+  {
+    "type": "turn_end",
+    "error": null
+  }
+]

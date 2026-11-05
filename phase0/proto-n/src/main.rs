@@ -6,6 +6,7 @@
 //! synchronized frame. Throwaway; see `docs/adapters.md` for the session-file findings.
 
 mod convert;
+mod keys;
 mod term;
 
 use anyhow::{Context, Result};
@@ -180,62 +181,12 @@ fn session_file(p: &mut Pane, cwd: &Path) -> Option<PathBuf> {
     }
 }
 
-const PREFIX: u8 = 0x02;
-const PREFIX_KITTY: &[u8] = b"\x1b[98;5u";
-
-enum Key {
-    Switch,
-    Quit,
-    Literal(Vec<u8>),
-}
-
-/// The key after the prefix, in either legacy or kitty encoding.
-fn after_prefix(b: &[u8]) -> (Key, usize) {
-    let kitty = |code: &str| {
-        let s = format!("\x1b[{code}u");
-        b.starts_with(s.as_bytes()).then_some(s.len())
-    };
-    if b.first() == Some(&b's') {
-        return (Key::Switch, 1);
+/// Appends what the terminal sent, escaped, to `$PROTO_N_KEYLOG` when it is set.
+fn keylog(b: &[u8]) {
+    let Some(path) = std::env::var_os("PROTO_N_KEYLOG") else { return };
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{}", b.escape_ascii());
     }
-    if let Some(n) = kitty("115") {
-        return (Key::Switch, n);
-    }
-    if b.first() == Some(&b'q') {
-        return (Key::Quit, 1);
-    }
-    if let Some(n) = kitty("113") {
-        return (Key::Quit, n);
-    }
-    if b.first() == Some(&PREFIX) {
-        return (Key::Literal(vec![PREFIX]), 1);
-    }
-    if b.starts_with(PREFIX_KITTY) {
-        return (Key::Literal(PREFIX_KITTY.to_vec()), PREFIX_KITTY.len());
-    }
-    (Key::Literal(vec![PREFIX]), 0)
-}
-
-fn find_prefix(b: &[u8]) -> Option<(usize, usize)> {
-    let legacy = b.iter().position(|c| *c == PREFIX).map(|i| (i, 1));
-    let kitty = b.windows(PREFIX_KITTY.len()).position(|w| w == PREFIX_KITTY).map(|i| (i, PREFIX_KITTY.len()));
-    match (legacy, kitty) {
-        (Some(a), Some(k)) => Some(if a.0 < k.0 { a } else { k }),
-        (a, k) => a.or(k),
-    }
-}
-
-/// Kitty key-release reports (`…:3u`) right after the prefix carry no key.
-fn skip_releases(mut b: &[u8]) -> &[u8] {
-    while b.starts_with(b"\x1b[") {
-        let Some(end) = b.iter().position(|c| *c == b'u') else { break };
-        if b[..end].ends_with(b":3") {
-            b = &b[end + 1..];
-        } else {
-            break;
-        }
-    }
-    b
 }
 
 struct App {
@@ -246,7 +197,10 @@ struct App {
     visible: Pane,
     pending: Option<Pane>,
     held_input: Vec<u8>,
-    prefix_armed: bool,
+    /// The prefix key as it arrived, while waiting for the key after it.
+    armed: Option<Vec<u8>>,
+    /// Swallow release reports right after a desl key, so the agent never sees half a key.
+    swallow: bool,
     history: Vec<Item>,
     next_id: u64,
     size: (u16, u16),
@@ -298,42 +252,51 @@ impl App {
         }
     }
 
-    fn on_stdin(&mut self, mut b: &[u8]) {
+    fn on_stdin(&mut self, b: &[u8]) {
+        keylog(b);
         let mut to_agent: Vec<u8> = Vec::new();
-        loop {
-            if self.prefix_armed {
-                b = skip_releases(b);
-                if b.is_empty() {
-                    break;
+        let mut at = 0;
+        while at < b.len() {
+            let Some((k, n)) = keys::next(&b[at..]) else {
+                to_agent.extend_from_slice(&b[at..]);
+                break;
+            };
+            let raw = &b[at..at + n];
+            at += n;
+            if let Some(prefix) = self.armed.take() {
+                if k.noise {
+                    self.armed = Some(prefix);
+                    continue;
                 }
-                self.prefix_armed = false;
-                let (key, n) = after_prefix(b);
-                b = &b[n..];
-                match key {
-                    Key::Switch => {
+                self.swallow = true;
+                match k.code {
+                    _ if keys::is_prefix(&k) => to_agent.extend_from_slice(raw),
+                    Some(115) => {
                         if let Err(e) = self.begin_switch() {
                             self.notice = Some(format!("The switch did not start: {e:#}. Press ctrl+b s to try again."));
                         }
                     }
-                    Key::Quit => {
+                    Some(113) => {
                         self.quit = true;
                         return;
                     }
-                    Key::Literal(k) => to_agent.extend_from_slice(&k),
+                    _ => {
+                        self.swallow = false;
+                        to_agent.extend_from_slice(&prefix);
+                        to_agent.extend_from_slice(raw);
+                    }
                 }
                 continue;
             }
-            match find_prefix(b) {
-                Some((at, n)) => {
-                    to_agent.extend_from_slice(&b[..at]);
-                    self.prefix_armed = true;
-                    b = &b[at + n..];
-                }
-                None => {
-                    to_agent.extend_from_slice(b);
-                    break;
-                }
+            if k.noise && self.swallow {
+                continue;
             }
+            self.swallow = false;
+            if keys::is_prefix(&k) {
+                self.armed = Some(raw.to_vec());
+                continue;
+            }
+            to_agent.extend_from_slice(raw);
         }
         if to_agent.is_empty() {
             return;
@@ -462,7 +425,8 @@ fn main() -> Result<()> {
         visible,
         pending: None,
         held_input: Vec::new(),
-        prefix_armed: false,
+        armed: None,
+        swallow: false,
         history: Vec::new(),
         next_id: 0,
         size,

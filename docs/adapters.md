@@ -382,7 +382,26 @@ What it takes:
   active writer`, and a new `codex resume` forks the thread. desl must write a Codex file before the
   daemon has the thread open, or go through the app-server itself.
 
-Not tested: long threads (context size), switching back and forth repeatedly, Codex's own
+Later the same day, for `phase0/proto-n`:
+
+- **A session written from nothing resumes in both agents**, so no throwaway turn is needed: a
+  Claude file of chained lines with `parentUuid: null` on the first, and a Codex rollout whose
+  only header is `session_meta` (`id`, `cwd`, `cli_version`, `source`, `model_provider`).
+- **Codex shows such a session on screen only with `"history_mode": "paginated"` in
+  `session_meta`.** Without it the model has the conversation and the screen shows a bare
+  `Worked for <1s`. With it, one turn per user message and a `CommandExecution` item per command
+  (`command`, `aggregated_output`, `exit_code`), the screen shows prompts, replies and commands
+  with their output.
+- **`codex --no-daemon`** runs the TUI without the shared app-server daemon, so quitting it frees
+  the thread.
+- Starting an agent in a hidden PTY needs answers to its terminal queries (cursor position, DA1,
+  OSC 10/11/12 colours, kitty keyboard `CSI ? u`); desl asks the real terminal once at startup
+  and answers with that. Replaying the hidden agent's output onto the real terminal inside
+  synchronized output (`CSI ? 2026 h/l`) gives a switch with no blank frame: captured every
+  200 ms in tmux, the screen went from one agent's history straight to the other's, 1.4 to 2.2 s
+  after the key.
+
+Not tested: long threads (context size), Codex's own
 `apply_patch` and MCP calls copied into Claude, and how either format moves in the next release.
 
 ## Prototype dependencies
@@ -399,5 +418,5 @@ stack paragraph of `SPEC.md`.
 | `unicode-width` | 0.2 | Column widths for wrapping. |
 | `anyhow` | 1 | Error context in the binaries. |
 
-`portable-pty` 0.9 and `vt100` 0.18 served Prototype B's panes and left with it.
+`portable-pty` 0.9 and `vt100` 0.18 served Prototype B's panes and left with it; `proto-n` uses them again (with `crossterm` 0.29 for raw mode and `chrono` for timestamps).
 

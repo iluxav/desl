@@ -1,0 +1,16 @@
+[package]
+name = "proto-n"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+# Throwaway: the agents' own interfaces in a pass-through terminal, with a switch
+# that copies the conversation into the other agent's session file.
+
+[dependencies]
+anyhow.workspace = true
+serde_json.workspace = true
+portable-pty = "0.9"
+vt100 = "0.18"
+crossterm = "0.29"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }

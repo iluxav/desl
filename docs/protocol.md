@@ -66,6 +66,9 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `files` | `thread_id` | `files {files}` | The project's files, for the `@` picker. |
 | `blob` | `hash` | `blob {text}` | The full text of a truncated tool output. |
 | `save_view` | `view` | `done` | What the client wants back on its next attach. Opaque to the daemon. |
+| `attach` | `thread_id`, `rows`, `cols`, `answers` | `attached {thread_id, agent, replay}` | Shows the thread's agent in this client's terminal (the native route). The agent's own interface starts at this size if it is not running, resuming its session when the thread has one. `replay` is everything it drew so far, base64; the client puts it on screen in one frame, and `pty` frames follow. `answers` is what the client's terminal replied to the questions agents ask (`fg`, `bg`, `cursor_color`, `da1`, `kitty`, each the reply verbatim); the daemon gives the same replies while no client shows the agent. |
+| `input` | `thread_id`, `data` | none | Keys for the shown agent, base64, exactly as the terminal sent them. Never replied to. |
+| `resize` | `thread_id`, `rows`, `cols` | none | The client's terminal changed size. Never replied to. |
 | `doctor` | | `doctor {checks}` | Store, agents and daemon checks. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
 
@@ -126,6 +129,17 @@ agent. `tool_result.output` is cut at 16 KB; when `truncated`, the `blob` comman
 `start` opens a new block of prose; `text` adds to it. The block ends when its
 `assistant_message` event arrives with the final text, which replaces what was streamed.
 Codex in exec mode sends no deltas: its messages arrive whole.
+
+## PTY frames
+
+```json
+{"type": "pty", "thread_id": "t-7f3a", "data": "G1szMm3il48bWzBtIFJvdGF0aW9u"}
+{"type": "pty_ended", "thread_id": "t-7f3a", "code": 0}
+```
+
+On the native route a client that attached to a thread gets every byte its agent draws, base64,
+in order, after the `attached` reply. `pty_ended` says the agent's interface quit; the next
+`attach` starts it again on the same session.
 
 ## A first exchange
 

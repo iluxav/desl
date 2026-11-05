@@ -5,8 +5,8 @@
 mod parse;
 
 use desl_ir::adapter::{
-    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Session, Sink, StartOpts, Turn, last_words, scrub_env, terminate_group,
-    which,
+    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, Sink, StartOpts, Turn, last_words,
+    scrub_env, terminate_group, which,
 };
 use desl_ir::{Decision, ModelInfo, PermissionMode};
 pub use parse::Parser;
@@ -31,6 +31,17 @@ fn sandbox_flag(mode: PermissionMode) -> &'static str {
         PermissionMode::Ask => "read-only",
         PermissionMode::Edits | PermissionMode::Worktree => "workspace-write",
         PermissionMode::Yolo => "danger-full-access",
+    }
+}
+
+/// In its own interface Codex asks before calls; the sandbox and the approval policy together
+/// hold each mode.
+fn interactive_flags(mode: PermissionMode) -> Vec<String> {
+    let pair = |s: &str, a: &str| vec!["-s".to_string(), s.to_string(), "-a".to_string(), a.to_string()];
+    match mode {
+        PermissionMode::Ask => pair("workspace-write", "untrusted"),
+        PermissionMode::Edits | PermissionMode::Worktree => pair("workspace-write", "on-request"),
+        PermissionMode::Yolo => vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
     }
 }
 
@@ -111,6 +122,27 @@ impl Adapter for Codex {
         let catalog: Value = serde_json::from_slice(&out.stdout).map_err(|_| failed("its answer was not JSON".into()))?;
         let models = parse::models(&catalog, configured_model().as_deref(), configured("model_reasoning_effort").as_deref());
         if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) }
+    }
+
+    fn launch(&self, opts: &LaunchOpts) -> Launch {
+        // The shared app-server daemon would keep the thread open after the interface quits.
+        let mut args: Vec<String> = vec!["--no-daemon".into()];
+        args.extend(interactive_flags(opts.permission_mode));
+        if let Some(model) = &opts.model {
+            args.extend(["-m".into(), model.clone()]);
+        }
+        if let Some(effort) = &opts.effort {
+            args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
+        }
+        // Codex names a new session itself; the adapter finds it in its session files.
+        let session_id = match &opts.open {
+            Open::Resume { session_id } => {
+                args.extend(["resume".into(), session_id.clone()]);
+                Some(session_id.clone())
+            }
+            Open::New { .. } => None,
+        };
+        Launch { program: "codex".into(), args, env_remove: Vec::new(), keep: Vec::new(), session_id }
     }
 
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {

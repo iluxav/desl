@@ -7,14 +7,15 @@
 //! Agents run in their own processes and report through a channel. The approval broker and the
 //! event bus live here too: every store write is published to the subscribed clients.
 
+use crate::pty::Pty;
 use crate::store::Store;
 use crate::{git, projector};
-use desl_ir::adapter::{Adapter, AdapterEvent, Session, Sink, StartOpts, Turn};
+use desl_ir::adapter::{Adapter, AdapterEvent, LaunchOpts, Open, Session, Sink, StartOpts, Turn};
 use desl_ir::{
     Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, Status, Thread, derive_name,
 };
 use desl_proto::{
-    AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace,
+    AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, term,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -52,6 +53,17 @@ pub enum Msg {
         agent: String,
         result: Result<Vec<ModelInfo>, String>,
     },
+    /// An agent's interface drew something. `generation` tells a restarted agent from the old one.
+    PtyOutput {
+        thread_id: String,
+        generation: u64,
+        data: Vec<u8>,
+    },
+    /// An agent's interface closed its terminal.
+    PtyExit {
+        thread_id: String,
+        generation: u64,
+    },
     /// Once a second.
     Tick,
 }
@@ -61,6 +73,8 @@ struct Client {
     subscribed: bool,
     /// The thread whose token stream this client receives.
     viewing: Option<String>,
+    /// The thread whose agent's interface this client shows (the native route).
+    shows: Option<String>,
 }
 
 /// The turn in flight on a thread.
@@ -106,8 +120,28 @@ pub struct Engine {
     models: HashMap<String, Vec<ModelInfo>>,
     tx: Sender<Msg>,
     generation: u64,
+    /// Each thread's running agent interface, with the generation its output is tagged with.
+    ptys: HashMap<String, (u64, Pty)>,
+    /// What the user's terminal answers to the questions agents ask, from the last attach.
+    answers: term::Answers,
     ticks: u64,
     pub stopping: bool,
+}
+
+/// A random v4 UUID, for a native session id desl hands to an agent.
+fn new_uuid() -> String {
+    if let Ok(s) = std::fs::read_to_string("/proc/sys/kernel/random/uuid") {
+        return s.trim().to_string();
+    }
+    let mut b = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut b);
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
 pub fn now() -> i64 {
@@ -148,6 +182,8 @@ impl Engine {
             models: HashMap::new(),
             tx,
             generation: 0,
+            ptys: HashMap::new(),
+            answers: term::Answers::default(),
             ticks: 0,
             stopping: false,
         };
@@ -692,7 +728,7 @@ impl Engine {
     pub fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Connected { client, out } => {
-                self.clients.insert(client, Client { out, subscribed: false, viewing: None });
+                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: None });
             }
             Msg::Disconnected { client } => {
                 self.clients.remove(&client);
@@ -712,7 +748,120 @@ impl Engine {
                 });
                 self.reply(client, id, outcome);
             }
+            Msg::PtyOutput { thread_id, generation, data } => self.pty_output(&thread_id, generation, &data),
+            Msg::PtyExit { thread_id, generation } => self.pty_exit(&thread_id, generation),
             Msg::Tick => self.tick(),
+        }
+    }
+
+    // ---- agents' own interfaces (the native route) --------------------------------------------
+
+    /// Starts the thread's active agent in a PTY: resuming its session when it has one.
+    fn start_pty(&mut self, i: usize, rows: u16, cols: u16) -> Result<(), String> {
+        let t = &self.threads[i];
+        let (thread_id, agent) = (t.id.clone(), t.active_agent.clone());
+        self.usable(&agent)?;
+        let adapter = self.adapter(&agent).ok_or_else(|| format!("desl has no adapter for {agent}."))?;
+        let binding = t.bindings.get(&agent);
+        let open = match binding.and_then(|b| b.session_id.clone()) {
+            Some(session_id) => Open::Resume { session_id },
+            None => Open::New { session_id: Some(new_uuid()) },
+        };
+        let launch = adapter.launch(&LaunchOpts {
+            cwd: t.cwd.clone().into(),
+            open,
+            model: binding.and_then(|b| b.model_choice.clone()),
+            effort: binding.and_then(|b| b.effort_choice.clone()),
+            permission_mode: t.permission_mode,
+        });
+        self.generation += 1;
+        let generation = self.generation;
+        let (out_tx, exit_tx) = (self.tx.clone(), self.tx.clone());
+        let (out_id, exit_id) = (thread_id.clone(), thread_id.clone());
+        let pty = Pty::spawn(
+            &agent,
+            &launch,
+            Path::new(&t.cwd),
+            rows,
+            cols,
+            move |data| {
+                let _ = out_tx.send(Msg::PtyOutput { thread_id: out_id.clone(), generation, data });
+            },
+            move || {
+                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id, generation });
+            },
+        )?;
+        tracing::info!(thread = %thread_id, agent = %agent, args = ?launch.args, "started the agent's interface");
+        self.ptys.insert(thread_id.clone(), (generation, pty));
+        if let Some(session_id) = launch.session_id {
+            let ts = now();
+            let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding {
+                agent: agent.clone(),
+                session_id: None,
+                seen_up_to: 0,
+                model: None,
+                model_choice: None,
+                effort_choice: None,
+                last_used_at: ts,
+            });
+            b.session_id = Some(session_id);
+            b.last_used_at = ts;
+            self.persist(&thread_id);
+        }
+        Ok(())
+    }
+
+    fn attach(&mut self, client: ClientId, thread_id: &str, rows: u16, cols: u16, answers: term::Answers) -> Outcome {
+        let i = self.idx(thread_id)?;
+        if answers != term::Answers::default() {
+            self.answers = answers;
+        }
+        match self.ptys.get_mut(thread_id) {
+            Some((_, pty)) => pty.resize(rows, cols),
+            None => self.start_pty(i, rows, cols)?,
+        }
+        if let Some(c) = self.clients.get_mut(&client) {
+            c.shows = Some(thread_id.to_string());
+        }
+        let (_, pty) = &self.ptys[thread_id];
+        Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()) })
+    }
+
+    fn pty_output(&mut self, thread_id: &str, generation: u64, data: &[u8]) {
+        let Some((g, pty)) = self.ptys.get_mut(thread_id) else { return };
+        if *g != generation {
+            return;
+        }
+        pty.took(data);
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
+        if shown.is_empty() {
+            // Nobody's terminal is there to answer what the agent asks it: answer as it would.
+            let replies = term::replies(data, &self.answers, pty.cursor());
+            if !replies.is_empty() {
+                pty.write(&replies);
+            }
+            return;
+        }
+        let frame = ServerFrame::Pty { thread_id: thread_id.to_string(), data: b64::encode(data) };
+        for client in shown {
+            self.send(client, &frame);
+        }
+    }
+
+    fn pty_exit(&mut self, thread_id: &str, generation: u64) {
+        if self.ptys.get(thread_id).is_none_or(|(g, _)| *g != generation) {
+            return;
+        }
+        let code = self.ptys.get_mut(thread_id).and_then(|(_, p)| p.exit_code());
+        self.ptys.remove(thread_id);
+        tracing::info!(thread = %thread_id, ?code, "the agent's interface ended");
+        let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
+        for client in shown {
+            self.send(client, &frame);
+            if let Some(c) = self.clients.get_mut(&client) {
+                c.shows = None;
+            }
         }
     }
 
@@ -816,6 +965,7 @@ impl Engine {
             Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
                 // Dropping the sessions ends their processes.
                 self.live.remove(&thread_id);
+                self.ptys.remove(&thread_id);
                 if let Err(e) = self.store.delete_thread(&thread_id) {
                     tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
                 }
@@ -906,6 +1056,19 @@ impl Engine {
                     tracing::error!("could not save the view: {e:#}");
                 }
                 Ok(Reply::Done)
+            }
+            Command::Attach { thread_id, rows, cols, answers } => self.attach(client, &thread_id, rows, cols, answers),
+            Command::Input { thread_id, data } => {
+                if let (Some((_, pty)), Some(bytes)) = (self.ptys.get_mut(&thread_id), b64::decode(&data)) {
+                    pty.write(&bytes);
+                }
+                return None;
+            }
+            Command::Resize { thread_id, rows, cols } => {
+                if let Some((_, pty)) = self.ptys.get_mut(&thread_id) {
+                    pty.resize(rows, cols);
+                }
+                return None;
             }
             Command::Doctor => Ok(Reply::Doctor { checks: self.doctor() }),
             Command::Shutdown => {
@@ -1272,6 +1435,7 @@ impl Engine {
         }
         // Dropping a session closes it: SIGTERM to its process group, SIGKILL after five seconds.
         self.live.clear();
+        self.ptys.clear();
         self.broadcast(Change::Bye);
     }
 }

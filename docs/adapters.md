@@ -108,6 +108,24 @@ answers on the new model. Codex then emits an `error` item, "This session was re
 The model fixtures (`2.1.312-initialize-models.json`, `0.165.0-debug-models.json`,
 `0.165.0-debug-models-levels.json`) are real output cut down to the fields desl reads.
 
+### Launching the interface (the native route)
+
+`launch(opts)` gives the command line of the agent's own interface, run by the daemon's PTY host.
+Verified 2026-11-05 against Claude Code 2.1.318 and Codex CLI 0.166.0, each started, given a
+turn, detached from and reattached to under the daemon; Claude Code also quit and reopened on
+the same session. Codex names a new session itself, and until the adapter finds it in Codex's
+session files a Codex thread that quits reopens on a new session. Codex asks whether to trust a
+folder it has not seen, in its own interface, before anything else.
+
+| Agent | New thread | Existing session | Mode flags |
+| --- | --- | --- | --- |
+| Claude Code | `claude --session-id <uuid>` (desl picks the id, so the session file is known) | `claude --resume <id>` | `--permission-mode manual` (ask), `acceptEdits` (edits, worktree), `bypassPermissions` (yolo); `--model`, `--effort` when picked |
+| Codex | `codex --no-daemon` (Codex names the session) | `codex --no-daemon … resume <id>` | `-s workspace-write -a untrusted` (ask), `-s workspace-write -a on-request` (edits, worktree), `--dangerously-bypass-approvals-and-sandbox` (yolo); `-m`, `-c model_reasoning_effort="…"` when picked; all before `resume` |
+
+Claude Code's interface sends a kitty graphics query (`ESC _ G … a=q … ESC \`) at start; tmux
+takes any APC as a pane title, so the client puts desl's title back after one. On `/exit` Claude
+Code prints its own `claude --resume <id>` line.
+
 ### Permission modes
 
 `StartOpts.permission_mode` is the thread's mode. Each adapter maps it to its agent's flags.

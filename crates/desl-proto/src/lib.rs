@@ -3,9 +3,12 @@
 //!
 //! Three families. A `command` goes from client to daemon with a request id and gets exactly one
 //! typed reply. An `event` goes from daemon to client as it happens: every IR event and every
-//! workspace change. A `stream` carries token deltas for the thread a client is viewing.
+//! workspace change. A `stream` carries token deltas for the thread a client is viewing, and a
+//! `pty` frame the raw terminal output of the thread a client shows (the native route).
 
+pub mod b64;
 pub mod paths;
+pub mod term;
 
 use desl_ir::adapter::{Capabilities, Detection};
 use desl_ir::{Decision, Event, ModelInfo, PermissionMode, Project, Status, Thread};
@@ -180,6 +183,29 @@ pub enum Command {
     },
     /// Store and process checks for `desl doctor`.
     Doctor,
+    /// Shows a thread in this client's terminal: its agent's interface starts if it is not
+    /// running, at this size. The reply carries what the agent has drawn so far; `pty` frames
+    /// follow with everything it draws after. `answers` is what the client's terminal said to
+    /// the questions agents ask it, for the daemon to give while no client shows the agent.
+    Attach {
+        thread_id: String,
+        rows: u16,
+        cols: u16,
+        #[serde(default)]
+        answers: term::Answers,
+    },
+    /// Keys for the agent of the thread this client shows, as the terminal sent them (base64).
+    /// Never replied to.
+    Input {
+        thread_id: String,
+        data: String,
+    },
+    /// The client's terminal changed size. Never replied to.
+    Resize {
+        thread_id: String,
+        rows: u16,
+        cols: u16,
+    },
     /// Stops every agent and the daemon.
     Shutdown,
 }
@@ -200,6 +226,16 @@ pub enum ServerFrame {
     Stream {
         thread_id: String,
         delta: StreamDelta,
+    },
+    /// What the shown thread's agent drew, as raw terminal bytes (base64).
+    Pty {
+        thread_id: String,
+        data: String,
+    },
+    /// The shown thread's agent quit. `code` is its exit status when it had one.
+    PtyEnded {
+        thread_id: String,
+        code: Option<u32>,
     },
 }
 
@@ -227,6 +263,13 @@ pub enum Reply {
         partial: Option<String>,
     },
     Done,
+    /// The answer to `attach`: everything the agent has drawn so far (base64), to put on the
+    /// screen before the `pty` frames that follow; `agent` is who is drawing it.
+    Attached {
+        thread_id: String,
+        agent: String,
+        replay: String,
+    },
     /// `queued` when the agent was busy and the prompt waits its turn.
     Sent {
         queued: bool,

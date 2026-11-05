@@ -327,6 +327,8 @@ impl App {
                     }
                 }
             }
+            // The transcript client never attaches to an agent's own interface.
+            ServerFrame::Pty { .. } | ServerFrame::PtyEnded { .. } => {}
         }
     }
 

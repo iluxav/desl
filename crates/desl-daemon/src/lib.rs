@@ -4,5 +4,6 @@
 pub mod engine;
 pub mod git;
 pub mod projector;
+pub mod pty;
 pub mod server;
 pub mod store;

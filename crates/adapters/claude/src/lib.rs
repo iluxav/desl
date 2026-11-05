@@ -5,8 +5,8 @@
 mod parse;
 
 use desl_ir::adapter::{
-    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Session, Sink, StartOpts, Turn, last_words, scrub_env, terminate_group,
-    which,
+    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, Sink, StartOpts, Turn, last_words,
+    scrub_env, terminate_group, which,
 };
 use desl_ir::{Decision, ModelInfo, PermissionMode};
 pub use parse::{DEFAULT_MODEL, NativeRequest, Parser};
@@ -49,6 +49,16 @@ fn permission_flag(mode: PermissionMode) -> &'static str {
         PermissionMode::Ask => "manual",
         // Worktree isolation is the broker's job too; the agent itself runs as in `edits`.
         PermissionMode::Edits | PermissionMode::Worktree | PermissionMode::Yolo => "acceptEdits",
+    }
+}
+
+/// In its own interface Claude Code asks in its own dialogs, so every mode is its own: `yolo`
+/// is `bypassPermissions`.
+fn interactive_permission_flag(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Ask => "manual",
+        PermissionMode::Edits | PermissionMode::Worktree => "acceptEdits",
+        PermissionMode::Yolo => "bypassPermissions",
     }
 }
 
@@ -123,6 +133,33 @@ impl Adapter for Claude {
         drop(stdin);
         terminate_group(&mut child, Duration::from_secs(2));
         answer.and_then(|models| if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) })
+    }
+
+    fn launch(&self, opts: &LaunchOpts) -> Launch {
+        let mut args: Vec<String> = Vec::new();
+        match &opts.open {
+            Open::New { session_id: Some(id) } => args.extend(["--session-id".into(), id.clone()]),
+            Open::New { session_id: None } => {}
+            Open::Resume { session_id } => args.extend(["--resume".into(), session_id.clone()]),
+        }
+        args.extend(["--permission-mode".into(), interactive_permission_flag(opts.permission_mode).into()]);
+        if let Some(model) = opts.model.as_deref().filter(|m| *m != DEFAULT_MODEL) {
+            args.extend(["--model".into(), model.into()]);
+        }
+        if let Some(effort) = &opts.effort {
+            args.extend(["--effort".into(), effort.clone()]);
+        }
+        let session_id = match &opts.open {
+            Open::New { session_id } => session_id.clone(),
+            Open::Resume { session_id } => Some(session_id.clone()),
+        };
+        Launch {
+            program: "claude".into(),
+            session_id,
+            args,
+            env_remove: PARENT_SESSION_VARS.iter().map(|v| (*v).to_string()).collect(),
+            keep: LOGIN_VARS.iter().map(|v| (*v).to_string()).collect(),
+        }
     }
 
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {

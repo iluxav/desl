@@ -49,6 +49,38 @@ pub struct StartOpts {
     pub permission_mode: PermissionMode,
 }
 
+/// How the agent's own interface opens a native session (the native route, SPEC.md "Agent
+/// adapters").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Open {
+    /// A new session. `session_id` is the id to give it, for an agent that takes one.
+    New { session_id: Option<String> },
+    /// An existing or desl-written session.
+    Resume { session_id: String },
+}
+
+pub struct LaunchOpts {
+    pub cwd: PathBuf,
+    pub open: Open,
+    /// As in [`StartOpts`].
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub permission_mode: PermissionMode,
+}
+
+/// The command that starts the agent's interface in a PTY.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Launch {
+    pub program: String,
+    pub args: Vec<String>,
+    /// Variables to leave out of the agent's environment, besides the secrets denylist.
+    pub env_remove: Vec<String>,
+    /// Secret-looking variables the agent logs in through, kept despite the denylist.
+    pub keep: Vec<String>,
+    /// The id the session will have, when the agent takes one from desl.
+    pub session_id: Option<String>,
+}
+
 pub struct Turn {
     pub text: String,
     pub attachments: Vec<String>,
@@ -117,6 +149,16 @@ pub trait Adapter: Send + Sync {
     fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError>;
     /// Prepares a native session. Nothing is sent to the agent until the first `send`.
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError>;
+    /// The command line of the agent's own interface for `opts` (the native route).
+    fn launch(&self, opts: &LaunchOpts) -> Launch {
+        let _ = opts;
+        Launch { program: self.id().to_string(), args: Vec::new(), env_remove: Vec::new(), keep: Vec::new(), session_id: None }
+    }
+}
+
+/// Whether a variable is kept out of every agent's environment (SPEC.md "Secrets").
+pub fn is_secret(name: &str) -> bool {
+    name == "AWS_SECRET_ACCESS_KEY" || name.ends_with("_TOKEN") || name.ends_with("_SECRET")
 }
 
 pub trait Session: Send {
@@ -168,8 +210,7 @@ pub fn terminate_group(child: &mut std::process::Child, grace: std::time::Durati
 pub fn scrub_env(cmd: &mut std::process::Command, keep: &[&str]) {
     for (key, _) in std::env::vars_os() {
         let name = key.to_string_lossy();
-        let secret = name == "AWS_SECRET_ACCESS_KEY" || name.ends_with("_TOKEN") || name.ends_with("_SECRET");
-        if secret && !keep.contains(&name.as_ref()) {
+        if is_secret(&name) && !keep.contains(&name.as_ref()) {
             cmd.env_remove(&key);
         }
     }

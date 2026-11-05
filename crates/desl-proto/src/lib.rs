@@ -8,7 +8,7 @@
 pub mod paths;
 
 use desl_ir::adapter::{Capabilities, Detection};
-use desl_ir::{Decision, Event, ModelInfo, Project, Status, Thread};
+use desl_ir::{Decision, Event, ModelInfo, PermissionMode, Project, Status, Thread};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -144,6 +144,12 @@ pub enum Command {
         thread_id: String,
         effort: Option<String>,
     },
+    /// What the thread's agents may do without asking. The broker follows it at once; an
+    /// agent's own flags follow with its next turn.
+    SetMode {
+        thread_id: String,
+        mode: PermissionMode,
+    },
     /// Replies when the thread is waiting, idle or failed.
     Wait {
         thread_id: String,
@@ -247,6 +253,11 @@ pub enum Reply {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
     },
+    /// The thread's permission mode, and in words what it means with the thread's active agent.
+    ModeSet {
+        mode: PermissionMode,
+        meaning: String,
+    },
     Waited {
         status: Status,
     },
@@ -284,9 +295,23 @@ pub struct AgentInfo {
     pub id: String,
     pub detection: Detection,
     pub capabilities: Capabilities,
+    /// Permission modes this agent cannot hold as written, each with what it does instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mode_notes: Vec<ModeNote>,
+}
+
+/// What an agent does in a permission mode it cannot enforce as written.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct ModeNote {
+    pub mode: PermissionMode,
+    pub note: String,
 }
 
 impl AgentInfo {
+    /// What `mode` means with this agent: its own note where it has one, else the mode's meaning.
+    pub fn mode_meaning(&self, mode: PermissionMode) -> String {
+        self.mode_notes.iter().find(|n| n.mode == mode).map_or_else(|| mode.meaning().to_string(), |n| n.note.clone())
+    }
     /// Installed, and not known to be logged out.
     pub fn usable(&self) -> bool {
         self.detection.installed && self.detection.logged_in != Some(false)

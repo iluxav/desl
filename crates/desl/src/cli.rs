@@ -3,7 +3,7 @@
 
 use crate::conn::Conn;
 use anyhow::{Result, bail};
-use desl_ir::{Decision, Event, EventKind, Status, Thread, tool_target, tool_verb};
+use desl_ir::{Decision, Event, EventKind, PermissionMode, Status, Thread, tool_target, tool_verb};
 use desl_proto::paths::Paths;
 use desl_proto::{Change, Command, Reply, ServerFrame, StreamDelta, Workspace};
 use serde_json::{Value, json};
@@ -282,6 +282,32 @@ pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: O
         bail!("The desl daemon did not create the fork.")
     };
     done(out, json!({ "thread_id": thread_id }), thread_id.clone());
+    Ok(())
+}
+
+/// `desl permissions <thread>` says what the thread's agent may do without asking;
+/// `desl permissions <thread> <mode>` changes it.
+pub fn permissions(paths: &Paths, out: &Out, thread: &str, mode: Option<String>) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let t = resolve(&mut conn, thread)?;
+    let Some(word) = mode else {
+        let Reply::Agents { agents } = conn.call(Command::Agents { refresh: false })? else {
+            bail!("The desl daemon did not list the agents.")
+        };
+        let now = t.permission_mode;
+        let meaning = agents.iter().find(|a| a.id == t.active_agent).map_or_else(|| now.meaning().to_string(), |a| a.mode_meaning(now));
+        let text = format!("{} · {} · {}: {meaning}", t.id, t.active_agent, now.word());
+        done(out, json!({ "thread_id": t.id, "agent": t.active_agent, "mode": now, "meaning": meaning }), text);
+        return Ok(());
+    };
+    let Some(mode) = PermissionMode::parse(&word.trim().to_lowercase()) else {
+        bail!("There is no permission mode named {word}. Pick one of ask, edits or yolo.")
+    };
+    let Reply::ModeSet { mode, meaning } = conn.call(Command::SetMode { thread_id: t.id.clone(), mode })? else {
+        bail!("The desl daemon did not set the permissions.")
+    };
+    let text = format!("{} is on {}: {meaning}.", t.id, mode.word());
+    done(out, json!({ "thread_id": t.id, "agent": t.active_agent, "mode": mode, "meaning": meaning }), text);
     Ok(())
 }
 

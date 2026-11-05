@@ -24,11 +24,12 @@ pub const FIXTURES_VERSION: &str = "0.165.0";
 
 pub struct Codex;
 
-/// Exec mode has no per-call approvals; the sandbox decides. `ask` and `edits` both become a
-/// sandbox that can write inside the workspace only.
+/// Exec mode has no per-call approvals; the sandbox decides. `ask` cannot ask, so it changes
+/// nothing: a read-only sandbox. `edits` is a sandbox that can write inside the workspace only.
 fn sandbox_flag(mode: PermissionMode) -> &'static str {
     match mode {
-        PermissionMode::Ask | PermissionMode::Edits | PermissionMode::Worktree => "workspace-write",
+        PermissionMode::Ask => "read-only",
+        PermissionMode::Edits | PermissionMode::Worktree => "workspace-write",
         PermissionMode::Yolo => "danger-full-access",
     }
 }
@@ -83,6 +84,14 @@ impl Adapter for Codex {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities { resume: true, fork: true, model_switch: true, compact: false, interrupt: true, approvals: false, streaming: false }
+    }
+
+    fn permission_note(&self, mode: PermissionMode) -> Option<String> {
+        match mode {
+            PermissionMode::Ask => Some("reads only, because codex cannot ask".into()),
+            PermissionMode::Edits | PermissionMode::Worktree => Some("edits and commands inside this project only".into()),
+            PermissionMode::Yolo => None,
+        }
     }
 
     /// `codex debug models` prints the catalog as JSON at once; nothing is sent to a model.

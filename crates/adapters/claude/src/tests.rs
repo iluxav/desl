@@ -211,3 +211,13 @@ fn the_initialize_reply_lists_the_models_of_claudes_own_picker() {
     // Any other line of the stream is not a model list.
     assert_eq!(parse::models(&json!({ "type": "system", "subtype": "hook_started" })), None);
 }
+
+#[test]
+fn each_permission_mode_has_its_flag_and_yolo_still_asks_the_host() {
+    assert_eq!(permission_flag(PermissionMode::Ask), "manual");
+    assert_eq!(permission_flag(PermissionMode::Edits), "acceptEdits");
+    // Not `bypassPermissions`: Claude Code keeps asking and desl's broker allows, so the log has it.
+    assert_eq!(permission_flag(PermissionMode::Yolo), "acceptEdits");
+    // Claude Code can ask before each call: every mode holds as written.
+    assert!(PermissionMode::CHOICES.into_iter().all(|mode| Claude.permission_note(mode).is_none()));
+}

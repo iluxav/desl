@@ -199,3 +199,13 @@ fn each_model_lists_its_effort_levels_and_the_one_codex_would_use() {
     assert_eq!(set.iter().find(|m| m.id == "gpt-6-astra").unwrap().default_effort.as_deref(), Some("ultra"));
     assert_eq!(set.iter().find(|m| m.id == "gpt-6-luna").unwrap().default_effort.as_deref(), Some("medium"));
 }
+
+#[test]
+fn each_permission_mode_has_its_sandbox_and_a_note_where_codex_cannot_ask() {
+    assert_eq!(sandbox_flag(PermissionMode::Ask), "read-only");
+    assert_eq!(sandbox_flag(PermissionMode::Edits), "workspace-write");
+    assert_eq!(sandbox_flag(PermissionMode::Yolo), "danger-full-access");
+    assert_eq!(Codex.permission_note(PermissionMode::Ask).as_deref(), Some("reads only, because codex cannot ask"));
+    assert_eq!(Codex.permission_note(PermissionMode::Edits).as_deref(), Some("edits and commands inside this project only"));
+    assert_eq!(Codex.permission_note(PermissionMode::Yolo), None, "yolo holds as written");
+}

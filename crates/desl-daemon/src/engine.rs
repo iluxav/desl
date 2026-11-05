@@ -13,7 +13,9 @@ use desl_ir::adapter::{Adapter, AdapterEvent, Session, Sink, StartOpts, Turn};
 use desl_ir::{
     Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, Status, Thread, derive_name,
 };
-use desl_proto::{AgentInfo, BriefPreview, Change, Check, Command, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace};
+use desl_proto::{
+    AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace,
+};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
@@ -85,6 +87,9 @@ struct Live {
     /// Tools the user answered "always" for. Read from the log on first use.
     always: Option<HashSet<String>>,
     turn: Option<TurnState>,
+    /// Agents whose session was started under settings that have since changed. It is replaced
+    /// before its next turn, never in the middle of one.
+    stale: HashSet<String>,
 }
 
 pub struct Engine {
@@ -110,7 +115,18 @@ pub fn now() -> i64 {
 }
 
 fn detect(adapters: &[Arc<dyn Adapter>]) -> Vec<AgentInfo> {
-    adapters.iter().map(|a| AgentInfo { id: a.id().to_string(), detection: a.detect(), capabilities: a.capabilities() }).collect()
+    adapters
+        .iter()
+        .map(|a| AgentInfo {
+            id: a.id().to_string(),
+            detection: a.detect(),
+            capabilities: a.capabilities(),
+            mode_notes: PermissionMode::CHOICES
+                .into_iter()
+                .filter_map(|mode| Some(ModeNote { mode, note: a.permission_note(mode)? }))
+                .collect(),
+        })
+        .collect()
 }
 
 type Outcome = Result<Reply, String>;
@@ -445,6 +461,10 @@ impl Engine {
             prompt.to_string()
         };
 
+        let live = self.live(thread_id);
+        if live.stale.remove(&agent) {
+            live.sessions.remove(&agent);
+        }
         if !self.live(thread_id).sessions.contains_key(&agent) {
             let Some(adapter) = self.adapter(&agent) else {
                 return self.fail(thread_id, format!("desl has no adapter for {agent}. Switch this thread to {}.", self.agent_names()));
@@ -575,13 +595,18 @@ impl Engine {
             EventKind::ApprovalRequest { call_id, tool, summary, .. } => {
                 let (call_id, tool, summary) = (call_id.clone(), tool.clone(), summary.clone());
                 self.append(thread_id, kind);
-                if self.always(thread_id).contains(&tool) {
+                // In `yolo` everything is allowed; otherwise what the user answered "always" for.
+                let policy = match self.threads[i].permission_mode {
+                    PermissionMode::Yolo => Some(Decision::Allow),
+                    _ => self.always(thread_id).contains(&tool).then_some(Decision::Always),
+                };
+                if let Some(decision) = policy {
                     if let Some((_, session)) = self.live(thread_id).sessions.get_mut(agent)
                         && let Err(e) = session.answer(&call_id, Decision::Allow)
                     {
                         tracing::warn!(thread = thread_id, "could not answer an approval: {e}");
                     }
-                    self.append(thread_id, EventKind::ApprovalResponse { call_id, decision: Decision::Always, by: "policy".into() });
+                    self.append(thread_id, EventKind::ApprovalResponse { call_id, decision, by: "policy".into() });
                 } else {
                     self.threads[i].pending_approval = Some(PendingApproval { call_id, tool, summary });
                     self.threads[i].status = Status::Waiting;
@@ -847,6 +872,7 @@ impl Engine {
             },
             Command::SetModel { thread_id, model } => self.set_model(&thread_id, model.as_deref()),
             Command::SetEffort { thread_id, effort } => self.set_effort(&thread_id, effort.as_deref()),
+            Command::SetMode { thread_id, mode } => self.set_mode(&thread_id, mode),
             Command::Wait { thread_id } => match self.idx(&thread_id) {
                 Ok(i) if self.threads[i].status != Status::Working => Ok(Reply::Waited { status: self.threads[i].status }),
                 Ok(_) => {
@@ -1067,6 +1093,41 @@ impl Engine {
         Ok(Reply::Done)
     }
 
+    /// `/permissions`: what the thread's agents may do without asking. The broker follows the
+    /// new mode at once, also for a question that is on screen now; an agent's own flags follow
+    /// with its next turn, so a turn that is running is never cut short.
+    fn set_mode(&mut self, thread_id: &str, mode: PermissionMode) -> Outcome {
+        let i = self.idx(thread_id)?;
+        if mode == PermissionMode::Worktree {
+            return Err("The worktree mode arrives with worktrees. Pick one of ask, edits or yolo.".to_string());
+        }
+        let agent = self.threads[i].active_agent.clone();
+        let meaning = self.agents.iter().find(|a| a.id == agent).map_or_else(|| mode.meaning().to_string(), |a| a.mode_meaning(mode));
+        if self.threads[i].permission_mode != mode {
+            self.threads[i].permission_mode = mode;
+            let live = self.live(thread_id);
+            let started: Vec<String> = live.sessions.keys().cloned().collect();
+            live.stale.extend(started);
+            // A question already on screen is answered by the new policy.
+            if mode == PermissionMode::Yolo
+                && let Some(pending) = self.threads[i].pending_approval.take()
+            {
+                if let Some((_, session)) = self.live(thread_id).sessions.get_mut(&agent)
+                    && let Err(e) = session.answer(&pending.call_id, Decision::Allow)
+                {
+                    tracing::warn!(thread = thread_id, "could not answer an approval: {e}");
+                }
+                self.append(
+                    thread_id,
+                    EventKind::ApprovalResponse { call_id: pending.call_id, decision: Decision::Allow, by: "policy".into() },
+                );
+                self.threads[i].status = Status::Working;
+            }
+            self.persist(thread_id);
+        }
+        Ok(Reply::ModeSet { mode, meaning })
+    }
+
     /// SPEC.md switch algorithm, step 1. The brief goes out with the next prompt (steps 3 to 5).
     fn switch(&mut self, thread_id: &str, to: &str) -> Outcome {
         let i = self.idx(thread_id)?;
@@ -1118,6 +1179,11 @@ impl Engine {
             bindings: Default::default(),
             queued: Vec::new(),
             pending_approval: None,
+            // `yolo` is set per thread, by hand; a fork does not inherit it.
+            permission_mode: match parent.permission_mode {
+                PermissionMode::Yolo => PermissionMode::default(),
+                mode => mode,
+            },
             ..parent.clone()
         };
         let id = fork.id.clone();

@@ -44,6 +44,7 @@ pub enum PickerKind {
     Agents,
     Models,
     Efforts,
+    Modes,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -86,6 +87,8 @@ enum Pending {
     ModelPicker,
     /// A model or an effort was picked: say what the agent will use.
     ModelSet,
+    /// A permission mode was picked: say what it means with this agent.
+    ModeSet,
     /// `/model <name> <effort>`: the model is set, now the effort.
     ModelThenEffort {
         thread_id: String,
@@ -426,6 +429,7 @@ impl App {
                     (None, None) => format!("{agent} is on its default model and effort."),
                 });
             }
+            (Pending::ModeSet, Reply::ModeSet { mode, meaning }) => self.info(format!("{}: {meaning}.", mode.word())),
             (Pending::ModelThenEffort { thread_id, effort }, Reply::ModelSet { .. }) => {
                 self.request(Command::SetEffort { thread_id, effort: Some(effort) }, Pending::ModelSet);
             }
@@ -918,6 +922,7 @@ impl App {
                 // Then how hard it should think, the way Codex asks after a model is picked.
                 self.open_effort_picker(key);
             }
+            PickerKind::Modes => self.set_mode(key),
             PickerKind::Efforts => {
                 let thread_id = self.thread().id().to_string();
                 let effort = Some(key.to_string()).filter(|k| k != DEFAULT_EFFORT);
@@ -949,6 +954,38 @@ impl App {
                 self.input.clear();
                 self.input.insert_str(key);
             }
+        }
+    }
+
+    /// What the thread's agent may do without asking, with the mode in use marked. Each row
+    /// says what the mode means with this agent, which is not the same for one that cannot ask.
+    fn open_mode_picker(&mut self) {
+        let t = self.thread();
+        let (now, agent) = (t.meta.permission_mode, self.agents.iter().find(|a| a.id == t.agent()));
+        let entries: Vec<PickEntry> = PermissionMode::CHOICES
+            .into_iter()
+            .map(|mode| {
+                let meaning = agent.map_or_else(|| mode.meaning().to_string(), |a| a.mode_meaning(mode));
+                PickEntry {
+                    key: mode.word().to_string(),
+                    label: mode.word().to_string(),
+                    hint: if mode == now { format!("✓ current · {meaning}") } else { meaning },
+                }
+            })
+            .collect();
+        let at = PermissionMode::CHOICES.iter().position(|m| *m == now).unwrap_or(0);
+        let picker = Picker::new("permissions", entries).starting_at(at).with_note("enter picks · for this thread only");
+        self.overlay = Overlay::Picker(picker, PickerKind::Modes);
+    }
+
+    fn set_mode(&mut self, word: &str) {
+        let word = word.trim().to_lowercase();
+        match PermissionMode::parse(&word) {
+            Some(mode) => {
+                let thread_id = self.thread().id().to_string();
+                self.request(Command::SetMode { thread_id, mode }, Pending::ModeSet);
+            }
+            None => self.error(format!("There is no permission mode named {word}. Pick one of ask, edits or yolo.")),
         }
     }
 
@@ -1163,7 +1200,14 @@ impl App {
             }
             "/info" => {
                 let t = self.thread();
-                let mut text = format!("{} · on {} · {} turns · ${:.2}", t.id(), t.agent(), t.turns, t.cost_usd);
+                let mut text = format!(
+                    "{} · on {} · {} turns · ${:.2} · permissions {}",
+                    t.id(),
+                    t.agent(),
+                    t.turns,
+                    t.cost_usd,
+                    t.meta.permission_mode.word()
+                );
                 for b in t.meta.bindings.values() {
                     text.push_str(&format!(
                         "\n{}: model {}{} · session {} · seen {} of {} events",
@@ -1210,6 +1254,9 @@ impl App {
                 }
                 None => self.request(Command::SetModel { thread_id, model: Some(arg) }, Pending::ModelSet),
             },
+            // Named, it sets the mode; bare, it shows the modes with the current one marked.
+            "/permissions" if arg.is_empty() => self.open_mode_picker(),
+            "/permissions" => self.set_mode(&arg),
             "/export" => self.export(&arg),
             "/compact" | "/diff" | "/pr" | "/worktree" => {
                 self.info(format!("{cmd} is not built yet. It arrives with panes and worktrees."));

@@ -85,6 +85,12 @@ enum Cmd {
         #[arg(long)]
         effort: Option<String>,
     },
+    /// Show what a thread's agent may do without asking, or change it
+    Permissions {
+        thread: String,
+        /// ask, edits or yolo
+        mode: Option<String>,
+    },
     /// Print the handoff brief desl would send now
     Brief { thread: String },
     /// Block until the thread is waiting, idle or failed
@@ -186,6 +192,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             cli::fork(paths, &out, &thread, agent, at)
         }
         Cmd::Model { thread, name, effort } => cli::model(paths, &out, &thread, name, effort),
+        Cmd::Permissions { thread, mode } => cli::permissions(paths, &out, &thread, mode),
         Cmd::Brief { thread } => cli::brief(paths, &out, &thread),
         Cmd::Wait { thread } => cli::wait(paths, &out, &thread),
         Cmd::Approve { thread, always } => cli::answer(paths, &out, &thread, if always { Decision::Always } else { Decision::Allow }),

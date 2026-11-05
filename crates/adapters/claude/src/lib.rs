@@ -41,12 +41,14 @@ const LOGIN_VARS: &[&str] = &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"]
 
 pub struct Claude;
 
+/// `manual` is Claude Code's name for asking before every edit and command; reads inside the
+/// project never ask. In `yolo` Claude Code still asks and desl's broker allows at once, so
+/// what was allowed is in the thread's log; `bypassPermissions` would leave no trace.
 fn permission_flag(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Ask => "manual",
-        // Worktree isolation is the broker's job; the agent itself runs as in `edits`.
-        PermissionMode::Edits | PermissionMode::Worktree => "acceptEdits",
-        PermissionMode::Yolo => "bypassPermissions",
+        // Worktree isolation is the broker's job too; the agent itself runs as in `edits`.
+        PermissionMode::Edits | PermissionMode::Worktree | PermissionMode::Yolo => "acceptEdits",
     }
 }
 

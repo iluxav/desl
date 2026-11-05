@@ -145,11 +145,11 @@ The default layout is a narrow sidebar on the left, one or more panes on the rig
 
 **Transcript pane.** The agent's prose renders as markdown with syntax-highlighted code blocks and visible fenced boundaries. Tool calls are one collapsed line each with a verb, a target and an outcome; an edit also shows the first rows of its diff under the line. `enter` on a line expands its full output in place or collapses it again, `o` opens the file in `$EDITOR`. Diffs render as unified diffs with gutter colours. Switch and fork events appear as thin labelled dividers. The pane auto-follows while streaming and stops following the moment the user scrolls up, with a `↓ 3 new` pill to jump back.
 
-**Input.** A bordered single-line box that grows to five lines. `/` opens a fuzzy command palette with inline descriptions; a command whose argument is a choice (`/switch`, `/model`) opens a second list of the choices instead of asking the user to type one from memory, and a choice that has its own choices (a model's reasoning effort) opens a third; `@` opens a fuzzy file picker scoped to the project; `ctrl+r` searches prompt history across all threads. `shift+enter` inserts a newline; `enter` sends. While the agent is working, the box stays usable and queued prompts show as `⏳ queued`.
+**Input.** A bordered single-line box that grows to five lines. `/` opens a fuzzy command palette with inline descriptions; a command whose argument is a choice (`/switch`, `/model`, `/permissions`) opens a second list of the choices instead of asking the user to type one from memory, and a choice that has its own choices (a model's reasoning effort) opens a third; `@` opens a fuzzy file picker scoped to the project; `ctrl+r` searches prompt history across all threads. `shift+enter` inserts a newline; `enter` sends. While the agent is working, the box stays usable and queued prompts show as `⏳ queued`.
 
 **Approvals.** A one-line strip between transcript and input, never a modal: `Allow codex: rm -rf dist/  [y]es [n]o [a]lways for this thread [e]dit`. The bell fires and the sidebar glyph changes at the same moment.
 
-**Status bar.** Left to right: status glyph and word, agent, git branch with ahead/behind counts, worktree name, the help hint, the clock. Nothing else. Errors replace the left half in critical colour until dismissed with `esc`.
+**Status bar.** Left to right: status glyph and word, agent, `⚠ yolo` while that permission mode is on, git branch with ahead/behind counts, worktree name, the help hint, the clock. Nothing else. Errors replace the left half in critical colour until dismissed with `esc`.
 
 **Visual language.** One accent colour (default: the terminal's blue), one warning, one critical, three greys. Status glyphs: `●` working, `◐` waiting, `○` idle, `✕` failed, `⊝` detached, with the words always available for screen readers and `NO_COLOR`. Rounded box drawing where the terminal supports it, falling back to ASCII. No emoji in chrome. Respect the terminal's own palette by default; built-in themes (`default`, `mono`, `catppuccin`, `gruvbox`, `solarized`) are opt-in.
 
@@ -173,6 +173,7 @@ Three surfaces, one command set. Every slash command has a CLI equivalent and a 
 | `/resume` | Pick a past thread to reopen | Claude Code, Codex |
 | `/rename <name>` | Rename this thread | tmux |
 | `/model [name] [effort]` | Change the model for this agent. Alone, it opens the agent's own list of models with the current one marked; picking a model then lists its reasoning effort levels the same way | Claude Code, Codex |
+| `/permissions [mode]` | What this thread's agent may do without asking: `ask`, `edits` or `yolo`. Alone, it opens the list with the current one marked | Claude Code, Codex |
 | `/clear` | Start a fresh context on the same thread (new native session, history kept) | Claude Code |
 | `/compact` | Ask the agent to compact its context | Claude Code |
 | `/export [file]` | Write the thread as markdown | Claude Code |
@@ -225,6 +226,7 @@ desl new [-p project] [--agent claude] [--worktree] [-m "prompt"]
 desl send <thread> "prompt"  send and stream the reply to stdout
 desl switch <thread> <agent>
 desl model <thread> [name] [--effort level]   list the agent's models, or pick one and how hard it thinks
+desl permissions <thread> [mode]   what the agent may do without asking, or change it
 desl fork <thread> <agent> [--at N] [--worktree]
 desl brief <thread>          print the handoff brief
 desl wait <thread>           block until the thread is waiting or idle
@@ -416,7 +418,7 @@ Every adapter lives in `adapters/<id>/` with a `fixtures/` directory of real cap
 
 **Raw PTY adapter (phase 2).** Runs any agent's interactive TUI, or a shell, in a pane without owning the conversation. The pane gets a status glyph from output heuristics (prompt detection, idle time) the way Herdr does, but no IR events, so switch and fork are disabled on it and the UI says why. This is the escape hatch for agents without a headless mode and for users who want an agent's native features. After the process exits, desl offers to import the agent's native session file into a thread on a best-effort basis.
 
-**Permission modes.** Adapters receive one of `ask` (every tool call needs a human), `edits` (reads and edits allowed, commands ask), `worktree` (everything allowed inside the thread's worktree, nothing outside), `yolo` (everything allowed; the UI shows a persistent warning). Each adapter maps the mode to its agent's own flags and reports what it could not enforce.
+**Permission modes.** Adapters receive one of `ask` (every edit and command needs a human; reads inside the project do not), `edits` (reads and edits allowed, commands ask), `worktree` (everything allowed inside the thread's worktree, nothing outside; from phase 2), `yolo` (everything allowed; the UI shows a persistent warning). Each adapter maps the mode to its agent's own flags and reports what it could not enforce: the report is a few words per mode, and the permissions list shows them in place of the mode's own meaning. Claude Code holds every mode as written. Codex in exec mode cannot ask before a call, so `ask` runs it in a read-only sandbox (it changes nothing rather than change something unasked) and `edits` runs it sandboxed to the project. In `yolo` Claude Code still sends its requests and the broker allows each one at once, so what was allowed is in the log.
 
 **Version pinning.** `desl doctor` reports each agent's version and whether the adapter has fixtures for it. A newer agent version than any fixture triggers a non-blocking warning. A CI job captures fresh fixtures from the latest agent releases weekly and opens a PR when the IR mapping changes.
 
@@ -428,7 +430,7 @@ Headless agents cannot show their own approval prompts, so desl is the approval 
 
 **Flow.** An adapter emits `approval_request` with the tool, its arguments and a risk class (`read`, `edit`, `command`, `network`, `destructive`). The broker checks the thread's permission mode and its `always` list. Allowed requests are answered at once and logged. Everything else sets the thread to `waiting`, fires the bell, raises the thread in the sidebar and shows the one-line strip. The answer (`y`, `n`, `a`, or `e` to edit the command first) becomes an `approval_response` event and goes back to the adapter.
 
-**Defaults.** New threads start in `edits` mode: reads and file edits inside the project are allowed, commands ask. A thread created with `--worktree` defaults to `worktree` mode. `yolo` is never a default and must be set explicitly per thread; the status bar shows `⚠ yolo` for as long as it is on.
+**Defaults.** New threads start in `edits` mode: reads and file edits inside the project are allowed, commands ask. A thread created with `--worktree` defaults to `worktree` mode. `yolo` is never a default and must be set explicitly per thread with `/permissions`; a fork does not inherit it, and the status bar shows `⚠ yolo` for as long as it is on. A mode change reaches the broker at once, also for a question already on screen, and reaches the agent's own flags with its next turn, so a running turn is never cut short.
 
 **Destructive classification.** Commands matching a built-in list (`rm -rf`, `git push --force`, `git reset --hard`, `drop table`, package publish commands, anything touching paths outside the worktree) are classed `destructive` and always ask, even in `worktree` mode. The list is extensible in `config.toml` and the agent is told, in the preamble, that these will prompt.
 
@@ -588,7 +590,7 @@ Decisions the building agent should raise before phase 0 ends, with the current 
 - [ ] **Name collision check.** Confirm `desl` is free on npm, crates.io, Homebrew, GitHub and as a `.dev` domain; the first pass on 2026-11-04 found it clean. Fallback: segue, not `muster`.
 - [x] **Exact headless flags.** Pinned to Claude Code 2.1.312 and Codex CLI 0.165.0; the real flags are recorded in `docs/adapters.md`.
 - [x] **Approval transport for Claude Code.** Approvals arrive in the stream as `control_request` lines with `--permission-prompts host --permission-prompt-tool stdio`, and are answered on stdin. A plain subprocess drives it; no Node sidecar.
-- [x] **Codex approval policy.** `codex exec` has no per-call approvals; its sandbox decides. `ask` degrades to `edits` for Codex (the UI does not say so yet). `codex app-server` is the route to per-call approvals and to streamed replies.
+- [x] **Codex approval policy.** `codex exec` has no per-call approvals; its sandbox decides. `ask` runs Codex read-only and `edits` runs it sandboxed to the project, and the permissions list says so. `codex app-server` is the route to per-call approvals and to streamed replies.
 - [x] **Token estimation.** Bytes divided by four, always shown with `~`.
 - [ ] **Store sync.** Append-only event log makes later sync possible; decide whether phase 3 ships one-shot `export`/`import` only or a live sync over the remote protocol.
 - [ ] **Agent preamble wording.** The short system-prompt addition that tells an agent it is inside desl (thread name, worktree, what will prompt for approval); draft and test with both agents for unintended behaviour changes.

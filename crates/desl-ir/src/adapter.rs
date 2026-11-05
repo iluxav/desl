@@ -106,6 +106,12 @@ pub trait Adapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn detect(&self) -> Detection;
     fn capabilities(&self) -> Capabilities;
+    /// What the agent does in `mode` when it cannot do what the mode says (SPEC.md "Permission
+    /// modes": an adapter reports what it could not enforce). A few words that take the place
+    /// of the mode's own meaning in the permissions list. None when the mode holds as written.
+    fn permission_note(&self, _mode: PermissionMode) -> Option<String> {
+        None
+    }
     /// The models the agent offers, in the order its own picker shows them. May start the
     /// agent to ask, so it can take a second or two: never call it on the engine's thread.
     fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError>;

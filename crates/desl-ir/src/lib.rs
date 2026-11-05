@@ -77,6 +77,19 @@ impl PermissionMode {
             PermissionMode::Yolo => "yolo",
         }
     }
+    /// The modes a thread can be put in today, mildest first. `worktree` joins them with worktrees.
+    pub const CHOICES: [PermissionMode; 3] = [PermissionMode::Ask, PermissionMode::Edits, PermissionMode::Yolo];
+
+    /// What the mode means, in a few words, for an agent that can ask before each call.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            PermissionMode::Ask => "every edit and command asks first",
+            PermissionMode::Edits => "file edits are allowed, commands ask",
+            PermissionMode::Worktree => "everything is allowed inside the worktree",
+            PermissionMode::Yolo => "everything is allowed, nothing asks",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<PermissionMode> {
         Some(match s {
             "ask" => PermissionMode::Ask,

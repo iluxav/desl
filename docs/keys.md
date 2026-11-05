@@ -86,6 +86,7 @@ Generated from the keymap and the command registry in `crates/desl/src`; do not 
 | `/resume` | Pick a past thread to reopen |
 | `/rename <name>` | Rename this thread |
 | `/model [name] [effort]` | Change this agent's model and effort; alone, pick from a list |
+| `/permissions [mode]` | What the agent may do without asking; alone, pick from a list |
 | `/clear` | Start a fresh context on the same thread |
 | `/compact` | Ask the agent to compact its context (not built yet) |
 | `/export [file]` | Write the thread as markdown |

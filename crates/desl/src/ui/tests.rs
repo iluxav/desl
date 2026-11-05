@@ -9,7 +9,7 @@ use desl_ir::adapter::{Capabilities, Detection};
 use desl_ir::{
     Binding, ChangeKind, Effort, Event, EventKind, GitState, ModelInfo, PendingApproval, PermissionMode, Project, Risk, Status, Thread,
 };
-use desl_proto::{AgentInfo, Reply, ServerFrame, StreamDelta, Workspace};
+use desl_proto::{AgentInfo, Change, ModeNote, Reply, ServerFrame, StreamDelta, Workspace};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use serde_json::json;
@@ -57,6 +57,14 @@ fn agents() -> Vec<AgentInfo> {
             id: (*id).to_string(),
             detection: Detection { installed: true, logged_in: Some(true), ..Detection::default() },
             capabilities: Capabilities::default(),
+            // Like the real adapters: Claude Code can ask before each call, Codex cannot.
+            mode_notes: match *id {
+                "codex" => vec![
+                    ModeNote { mode: PermissionMode::Ask, note: "reads only, because codex cannot ask".into() },
+                    ModeNote { mode: PermissionMode::Edits, note: "edits and commands inside this project only".into() },
+                ],
+                _ => Vec::new(),
+            },
         })
         .collect()
 }
@@ -487,4 +495,62 @@ fn a_long_list_scrolls_with_the_selection() {
     }
     let bottom = screen(&mut app, 80, 24);
     assert!(bottom.contains("▸ Model 13") && !bottom.contains("Model 3 ") && !bottom.contains("more"), "{bottom}");
+}
+
+#[test]
+fn snapshot_permissions_alone_lists_the_modes_with_the_current_one_marked() {
+    let first = thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1);
+    let (mut app, mut peer) = attached(workspace_threads(first.clone()), conversation(), None);
+    type_line(&mut app, "/permissions");
+    let got = screen(&mut app, 80, 24);
+    snapshot("permissions-picker-80x24", &got);
+    assert!(got.contains("▸ edits  ✓ current · file edits are allowed, commands ask"), "{got}");
+    assert!(
+        got.contains("ask    every edit and command asks first") && got.contains("yolo   everything is allowed, nothing asks"),
+        "{got}"
+    );
+    assert!(!got.contains("worktree"), "a mode that cannot be picked yet is not offered");
+
+    // Down one row and enter: yolo goes to the daemon, and its answer says what it means.
+    press(&mut app, ratatui::crossterm::event::KeyCode::Down);
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["mode"].as_str()), (Some("set_mode"), Some("yolo")));
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id: sent["id"].as_u64().unwrap(),
+        ok: Some(Reply::ModeSet { mode: PermissionMode::Yolo, meaning: "everything is allowed, nothing asks".into() }),
+        error: None,
+    }));
+    assert!(screen(&mut app, 80, 24).contains("yolo: everything is allowed, nothing asks."));
+
+    // The thread comes back in yolo: the status bar says so for as long as it lasts.
+    let yolo = Thread { permission_mode: PermissionMode::Yolo, ..first };
+    app.handle(Msg::Daemon(ServerFrame::Event { change: Change::Thread { thread: Box::new(yolo) } }));
+    press(&mut app, ratatui::crossterm::event::KeyCode::Esc);
+    let got = screen(&mut app, 80, 24);
+    snapshot("yolo-80x24", &got);
+    assert!(got.contains("○ idle  claude  ⚠ yolo  main"), "{got}");
+    type_line(&mut app, "/permissions");
+    assert!(screen(&mut app, 80, 24).contains("▸ yolo   ✓ current"), "the list starts on the mode in use");
+}
+
+#[test]
+fn the_permissions_list_says_what_each_mode_means_with_an_agent_that_cannot_ask() {
+    let (mut app, _peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "codex", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/permissions");
+    let got = screen(&mut app, 80, 24);
+    assert!(got.contains("ask    reads only, because codex cannot ask"), "{got}");
+    assert!(got.contains("▸ edits  ✓ current · edits and commands inside this project only"), "{got}");
+    assert!(got.contains("yolo   everything is allowed, nothing asks"), "{got}");
+}
+
+#[test]
+fn a_permission_mode_can_be_typed_and_a_wrong_one_is_refused_with_the_choices() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/permissions Ask");
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["mode"].as_str()), (Some("set_mode"), Some("ask")));
+    type_line(&mut app, "/permissions never");
+    assert!(last_request(&mut peer).is_null(), "nothing was sent");
+    assert!(screen(&mut app, 100, 24).contains("There is no permission mode named never. Pick one of ask, edits or yolo."));
 }

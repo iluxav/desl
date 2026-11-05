@@ -27,6 +27,12 @@ pub static COMMANDS: &[SlashCommand] = &[
         desc: "Change this agent's model and effort; alone, pick from a list",
         built: true,
     },
+    SlashCommand {
+        name: "/permissions",
+        args: "[mode]",
+        desc: "What the agent may do without asking; alone, pick from a list",
+        built: true,
+    },
     SlashCommand { name: "/clear", args: "", desc: "Start a fresh context on the same thread", built: true },
     SlashCommand { name: "/compact", args: "", desc: "Ask the agent to compact its context", built: false },
     SlashCommand { name: "/export", args: "[file]", desc: "Write the thread as markdown", built: true },

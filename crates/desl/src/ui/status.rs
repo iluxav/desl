@@ -1,10 +1,12 @@
-//! One line: status glyph and word, agent, branch, help hint, clock. Errors replace the left half.
+//! One line: status glyph and word, agent, `⚠ yolo` while it is on, branch, help hint, clock.
+//! Errors replace the left half.
 
 use super::chrome::ChromeView;
 use super::sidebar::glyph_style;
 use crate::app::Level;
 use crate::keymap;
 use crate::theme;
+use desl_ir::PermissionMode;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -42,6 +44,10 @@ pub fn draw(f: &mut Frame, app: &ChromeView, area: Rect) {
         left.push(Span::styled(t.status().glyph().to_string(), glyph_style(t.status())));
         left.push(Span::styled(format!(" {}", t.status().word()), theme::dim()));
         left.push(Span::styled(format!("  {}", t.agent()), theme::normal()));
+        // Shown for as long as nothing asks (SPEC.md "Permissions and safety").
+        if t.meta.permission_mode == PermissionMode::Yolo {
+            left.push(Span::styled("  ⚠ yolo", theme::warning()));
+        }
         let git = &t.meta.git;
         match &git.branch {
             Some(b) => {

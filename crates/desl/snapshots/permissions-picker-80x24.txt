@@ -1,0 +1,24 @@
+╭ desl ─────────────┬──────────────────────────────────────────────────────────╮
+│ PROJECTS          │ t-7f3a · claude · main                                   │
+│ ▾ api (3)         │   ▾ edit src/auth/middleware.ts                    +2 −1 │
+│ ▸ ○ t-7f3a  auth  │   │  8     const header = req.headers.authorization ??   │
+│   ◐ t-91c2  tests │   │      "";                                             │
+│ ╭ permissions ─────────────────────────────────────────────────────────────╮ │
+│ │ ›                                                                        │ │
+│ │                                                                          │ │
+│ │   ask    every edit and command asks first                               │ │
+│ │ ▸ edits  ✓ current · file edits are allowed, commands ask                │ │
+│ │   yolo   everything is allowed, nothing asks                             │ │
+│ │                                                                          │ │
+│ │ enter picks · for this thread only                                       │ │
+│ ╰──────────────────────────────────────────────────────────────────────────╯ │
+│                   │                                                          │
+│                   │   Want me to add the revocation list?                    │
+│                   │                                                          │
+│                   │                                                          │
+│                   │ ╭──────────────────────────────────────────────────────╮ │
+│ WAITING (1)       │ │ ›                                                    │ │
+│   ◐ t-91c2        │ ╰──────────────────────────────────────────────────────╯ │
+├───────────────────┴──────────────────────────────────────────────────────────┤
+│ ○ idle  claude  main ↑2                               ctrl+b ? help  │ 12:41 │
+╰──────────────────────────────────────────────────────────────────────────────╯

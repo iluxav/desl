@@ -20,6 +20,8 @@ struct FakeState {
     models: Vec<Option<String>>,
     /// The effort each started session was given.
     efforts: Vec<Option<String>>,
+    /// The permission mode each started session was given.
+    modes: Vec<PermissionMode>,
     /// How many times the model list was asked for.
     listed: usize,
     answers: Vec<(String, Decision)>,
@@ -61,6 +63,10 @@ impl Adapter for Fake {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
+    /// The fake codex is like the real one: it cannot ask per call.
+    fn permission_note(&self, mode: PermissionMode) -> Option<String> {
+        (self.id == "codex" && mode == PermissionMode::Ask).then(|| "reads only, because codex cannot ask".to_string())
+    }
     fn models(&self, _cwd: &Path) -> Result<Vec<ModelInfo>, AdapterError> {
         self.state.lock().unwrap().listed += 1;
         let model = |id: &str, name: &str, default: bool, levels: &[&str]| ModelInfo {
@@ -82,6 +88,7 @@ impl Adapter for Fake {
         s.starts.push(opts.resume_session_id.clone());
         s.models.push(opts.model.clone());
         s.efforts.push(opts.effort.clone());
+        s.modes.push(opts.permission_mode);
         s.sink = Some(sink.clone());
         Ok(Box::new(FakeSession {
             id: self.id,
@@ -707,4 +714,126 @@ fn an_effort_the_new_model_does_not_take_goes_with_the_old_model() {
     r.prompt(&t, "go");
     let s = r.claude.lock().unwrap();
     assert_eq!((s.models.last().unwrap().as_deref(), s.efforts.last().unwrap().as_deref()), (Some("fast"), None));
+}
+
+fn rm_call(id: &str) -> Vec<AdapterEvent> {
+    vec![
+        ev(EventKind::ToolCall { id: id.into(), name: tool::BASH.into(), args: json!({ "command": "rm -rf dist/" }) }),
+        ev(EventKind::ApprovalRequest { call_id: id.into(), tool: tool::BASH.into(), summary: "rm -rf dist/".into(), risk: Risk::Command }),
+    ]
+}
+
+fn answered_by(r: &Rig, thread: &str) -> Vec<(Decision, String)> {
+    r.events(thread)
+        .into_iter()
+        .filter_map(|e| match e.kind {
+            EventKind::ApprovalResponse { decision, by, .. } => Some((decision, by)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn in_yolo_every_request_is_allowed_by_policy_and_still_logged() {
+    let mut r = rig("yolo");
+    let t = r.t.clone();
+    let Reply::ModeSet { mode, meaning } = r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Yolo }).unwrap() else {
+        panic!()
+    };
+    assert_eq!((mode, meaning.as_str()), (PermissionMode::Yolo, "everything is allowed, nothing asks"));
+    r.claude.lock().unwrap().plan.push_back(rm_call("c1"));
+    r.prompt(&t, "clean up");
+    let thread = r.thread(&t);
+    assert_eq!((thread.status, thread.pending_approval), (Status::Working, None), "the user is not asked");
+    assert_eq!(r.claude.lock().unwrap().answers, vec![("c1".to_string(), Decision::Allow)]);
+    assert_eq!(answered_by(&r, &t), [(Decision::Allow, "policy".to_string())], "what yolo allowed is in the log");
+    assert_eq!(r.engine.store.threads().unwrap()[0].permission_mode, PermissionMode::Yolo, "the mode outlives the daemon");
+}
+
+#[test]
+fn going_yolo_answers_the_question_that_is_on_screen() {
+    let mut r = rig("yolo-pending");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().plan.push_back(rm_call("c1"));
+    r.prompt(&t, "clean up");
+    assert_eq!(r.thread(&t).status, Status::Waiting);
+    r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Yolo }).unwrap();
+    let thread = r.thread(&t);
+    assert_eq!((thread.status, thread.pending_approval), (Status::Working, None));
+    assert_eq!(r.claude.lock().unwrap().answers, vec![("c1".to_string(), Decision::Allow)]);
+    assert_eq!(answered_by(&r, &t), [(Decision::Allow, "policy".to_string())]);
+
+    // Back to asking: the next request waits for the user again.
+    r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Edits }).unwrap();
+    let claude = r.claude.clone();
+    r.emit(&claude, rm_call("c2"));
+    assert_eq!(r.thread(&t).status, Status::Waiting);
+}
+
+#[test]
+fn a_new_mode_reaches_the_agent_with_its_next_turn_and_never_cuts_one_short() {
+    let mut r = rig("mode-flags");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Ask }).unwrap();
+    r.prompt(&t, "second");
+    {
+        let s = r.claude.lock().unwrap();
+        assert_eq!(s.modes, vec![PermissionMode::Edits, PermissionMode::Ask]);
+        assert_eq!(s.starts, vec![None, Some("claude-s1".to_string())], "the same native session, resumed under the new mode");
+        assert_eq!(s.payloads[1], "second", "a mode change is not a handoff: no brief");
+    }
+
+    // The same mode again changes nothing: the agent is not restarted for it.
+    r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Ask }).unwrap();
+    r.claude.lock().unwrap().plan.push_back(vec![AdapterEvent::TextStart]);
+    r.prompt(&t, "third");
+    assert_eq!(r.claude.lock().unwrap().starts.len(), 2);
+
+    // A change in the middle of a turn: the turn runs on to its end, the next one starts fresh.
+    assert_eq!(r.thread(&t).status, Status::Working);
+    r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Edits }).unwrap();
+    let claude = r.claude.clone();
+    r.emit(
+        &claude,
+        vec![ev(EventKind::AssistantMessage { text: "finished all the same".into(), model: None }), AdapterEvent::TurnEnd { error: None }],
+    );
+    assert_eq!(r.thread(&t).status, Status::Idle);
+    assert!(r.events(&t).iter().any(|e| matches!(&e.kind, EventKind::AssistantMessage { text, .. } if text == "finished all the same")));
+    r.prompt(&t, "fourth");
+    let s = r.claude.lock().unwrap();
+    assert_eq!((s.starts.len(), s.modes.last()), (3, Some(&PermissionMode::Edits)));
+}
+
+#[test]
+fn a_fork_keeps_ask_and_never_inherits_yolo() {
+    let mut r = rig("mode-fork");
+    let t = r.t.clone();
+    r.prompt(&t, "one");
+    let fork_in = |r: &mut Rig, mode| {
+        r.cmd(Command::SetMode { thread_id: t.clone(), mode }).unwrap();
+        let Reply::Created { thread_id } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None }).unwrap() else { panic!() };
+        r.thread(&thread_id).permission_mode
+    };
+    assert_eq!(fork_in(&mut r, PermissionMode::Yolo), PermissionMode::Edits, "yolo is set by hand, per thread");
+    assert_eq!(fork_in(&mut r, PermissionMode::Ask), PermissionMode::Ask);
+}
+
+#[test]
+fn an_agent_that_cannot_ask_says_what_it_does_instead() {
+    let mut r = rig("mode-notes");
+    let t = r.t.clone();
+    let meaning = |r: &mut Rig, mode| match r.cmd(Command::SetMode { thread_id: t.clone(), mode }).unwrap() {
+        Reply::ModeSet { meaning, .. } => meaning,
+        _ => panic!(),
+    };
+    assert_eq!(meaning(&mut r, PermissionMode::Ask), "every edit and command asks first");
+    r.cmd(Command::Switch { thread_id: t.clone(), agent: "codex".into() }).unwrap();
+    assert_eq!(meaning(&mut r, PermissionMode::Ask), "reads only, because codex cannot ask");
+    assert_eq!(meaning(&mut r, PermissionMode::Edits), "file edits are allowed, commands ask");
+    let Reply::Agents { agents } = r.cmd(Command::Agents { refresh: false }).unwrap() else { panic!() };
+    assert_eq!(agents[1].mode_notes.len(), 1, "the list of agents carries the note, so a client can show it before the pick");
+
+    let refused = r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Worktree }).unwrap_err();
+    assert_eq!(refused, "The worktree mode arrives with worktrees. Pick one of ask, edits or yolo.");
 }

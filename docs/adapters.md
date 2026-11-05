@@ -16,6 +16,7 @@ An adapter is the only code that knows an agent's native format. It lives in
 | `id()` | The word the user types after `/switch`: `claude`, `codex`. |
 | `detect()` | Installed, version, logged in, binary path, and the sentences to show when it is missing or logged out. |
 | `capabilities()` | `resume`, `fork`, `model_switch`, `compact`, `interrupt`, `approvals`, `streaming`. |
+| `permission_note(mode)` | A few words when the agent cannot do what a permission mode says; none when the mode holds as written. Shown in the permissions list in place of the mode's own meaning. |
 | `start(opts, sink)` | Prepares a native session for a thread: working directory, permission mode, the session id to resume. Nothing reaches the agent until the first `send`. |
 
 | `Session` | |
@@ -106,6 +107,20 @@ answers on the new model. Codex then emits an `error` item, "This session was re
 
 The model fixtures (`2.1.312-initialize-models.json`, `0.165.0-debug-models.json`,
 `0.165.0-debug-models-levels.json`) are real output cut down to the fields desl reads.
+
+### Permission modes
+
+`StartOpts.permission_mode` is the thread's mode. Each adapter maps it to its agent's flags.
+
+| Mode | Claude Code | Codex |
+| --- | --- | --- |
+| `ask` | `--permission-mode manual`. Verified: an edit arrives as a `can_use_tool` request and waits for the answer; reads inside the project do not ask. | `-s read-only`. Verified: asked to create a file, Codex answers that the filesystem is read-only and nothing is written. Exec mode cannot ask, so this is the mode that changes nothing unasked. |
+| `edits` | `--permission-mode acceptEdits`. Edits pass, commands arrive as requests. | `-s workspace-write`. Edits and commands stay inside the workspace (and `/tmp`). |
+| `yolo` | `--permission-mode acceptEdits`, and desl's broker allows every request at once. Verified: a command that asks in `edits` runs without a question, and the log holds "policy answered Allow". `bypassPermissions` is not used: it would leave nothing in the log. | `-s danger-full-access`. Verified: a write outside the workspace succeeds. |
+
+A mode change replaces the agent's process before its next turn and resumes the native
+session; both agents were verified to keep the conversation across it. `Adapter::permission_note`
+is how Codex says what `ask` and `edits` mean for it.
 
 ### Reasoning effort
 

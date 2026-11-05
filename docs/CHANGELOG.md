@@ -40,6 +40,11 @@ Phase 1, "the real thing", in progress. Nothing has been released.
   agent's own setting as the first row. `/model <name> <effort>` and
   `desl model <thread> [name] --effort <level>` set it directly. A level the model does not
   take is refused before it reaches the agent.
+- `/permissions` alone opens the permission modes (`ask`, `edits`, `yolo`) with the current one
+  marked; `/permissions <mode>` and `desl permissions <thread> [mode]` set one. Each row says
+  what the mode means with the thread's agent: Codex cannot ask before a call, so `ask` runs it
+  read-only. `yolo` shows `⚠ yolo` in the status bar, answers a question that is already
+  waiting, and logs everything it allowed. A fork does not inherit it.
 - The store migrates forward on start and keeps a backup of the previous version beside it.
 
 ### Fixed

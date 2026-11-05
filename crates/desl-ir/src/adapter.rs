@@ -81,6 +81,21 @@ pub struct Launch {
     pub session_id: Option<String>,
 }
 
+/// What one line of an agent's session file says (the native route).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reading {
+    Event(EventKind),
+    /// A turn began: the user sent something and the agent is on it.
+    Working,
+    /// The turn is over, finished or stopped.
+    Idle,
+}
+
+/// Turns an agent's session file into events, one line at a time, as the agent appends them.
+pub trait SessionReader: Send {
+    fn line(&mut self, line: &str) -> Vec<Reading>;
+}
+
 pub struct Turn {
     pub text: String,
     pub attachments: Vec<String>,
@@ -149,6 +164,23 @@ pub trait Adapter: Send + Sync {
     fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError>;
     /// Prepares a native session. Nothing is sent to the agent until the first `send`.
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError>;
+    /// The session's file, and its id: by `session_id` when desl knows it, else the newest
+    /// session in `cwd` begun after `since` (an agent that names its own sessions).
+    fn session_file(&self, cwd: &std::path::Path, session_id: Option<&str>, since: std::time::SystemTime) -> Option<(String, PathBuf)> {
+        let _ = (cwd, session_id, since);
+        None
+    }
+    /// A reader for this agent's session files; None when the agent has none.
+    fn session_reader(&self, cwd: &std::path::Path) -> Option<Box<dyn SessionReader>> {
+        let _ = cwd;
+        None
+    }
+    /// Whether the bottom of the agent's screen shows it asking the user something: its
+    /// approval dialog or a question it waits on.
+    fn waiting(&self, screen_tail: &str) -> bool {
+        let _ = screen_tail;
+        false
+    }
     /// The command line of the agent's own interface for `opts` (the native route).
     fn launch(&self, opts: &LaunchOpts) -> Launch {
         let _ = opts;

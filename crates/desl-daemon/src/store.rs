@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -124,6 +124,12 @@ impl Store {
             // The reasoning effort the user picked with /model, per thread and agent.
             self.conn.execute_batch("BEGIN; ALTER TABLE bindings ADD COLUMN effort_choice TEXT; PRAGMA user_version = 3; COMMIT;")?;
         }
+        if version < 4 {
+            // How far desl has read the agent's session file, per thread and agent.
+            self.conn.execute_batch(
+                "BEGIN; ALTER TABLE bindings ADD COLUMN file_offset INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 4; COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -150,7 +156,7 @@ impl Store {
         let mut bindings: BTreeMap<String, BTreeMap<String, Binding>> = BTreeMap::new();
         {
             let mut st = self.conn.prepare(
-                "SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice FROM bindings",
+                "SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice, file_offset FROM bindings",
             )?;
             let rows = st.query_map([], |r| {
                 Ok((
@@ -163,6 +169,7 @@ impl Store {
                         last_used_at: r.get(5)?,
                         model_choice: r.get(6)?,
                         effort_choice: r.get(7)?,
+                        file_offset: r.get(8)?,
                     },
                 ))
             })?;
@@ -232,9 +239,9 @@ impl Store {
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
         for b in t.bindings.values() {
             self.conn.execute(
-                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at, b.model_choice, b.effort_choice],
+                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice, file_offset)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at, b.model_choice, b.effort_choice, b.file_offset],
             )?;
         }
         Ok(())
@@ -447,6 +454,7 @@ mod tests {
                 model_choice: Some("sonnet".into()),
                 effort_choice: Some("high".into()),
                 last_used_at: 5,
+                file_offset: 7,
             },
         );
         s.put_thread(&t).unwrap();

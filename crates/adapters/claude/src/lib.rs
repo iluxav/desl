@@ -3,16 +3,18 @@
 //! flags and output. Verified against Claude Code 2.1.312; see docs/adapters.md.
 
 mod parse;
+mod session;
 
 use desl_ir::adapter::{
-    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, Sink, StartOpts, Turn, last_words,
-    scrub_env, terminate_group, which,
+    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, SessionReader, Sink, StartOpts, Turn,
+    last_words, scrub_env, terminate_group, which,
 };
 use desl_ir::{Decision, ModelInfo, PermissionMode};
 pub use parse::{DEFAULT_MODEL, NativeRequest, Parser};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -133,6 +135,19 @@ impl Adapter for Claude {
         drop(stdin);
         terminate_group(&mut child, Duration::from_secs(2));
         answer.and_then(|models| if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) })
+    }
+
+    fn session_file(&self, cwd: &Path, session_id: Option<&str>, _since: std::time::SystemTime) -> Option<(String, PathBuf)> {
+        let id = session_id?;
+        session::file(cwd, id).map(|p| (id.to_string(), p))
+    }
+
+    fn session_reader(&self, cwd: &Path) -> Option<Box<dyn SessionReader>> {
+        Some(Box::new(session::Reader::new(cwd)))
+    }
+
+    fn waiting(&self, screen_tail: &str) -> bool {
+        session::waiting(screen_tail)
     }
 
     fn launch(&self, opts: &LaunchOpts) -> Launch {

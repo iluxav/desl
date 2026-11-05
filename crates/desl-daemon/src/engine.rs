@@ -10,7 +10,7 @@
 use crate::pty::Pty;
 use crate::store::Store;
 use crate::{git, projector};
-use desl_ir::adapter::{Adapter, AdapterEvent, LaunchOpts, Open, Session, Sink, StartOpts, Turn};
+use desl_ir::adapter::{Adapter, AdapterEvent, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn};
 use desl_ir::{
     Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, Status, Thread, derive_name,
 };
@@ -18,10 +18,10 @@ use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, term,
 };
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Sender;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub type ClientId = u64;
 /// Encoded frames on their way to one client. Unbounded: a slow client never blocks the engine.
@@ -91,6 +91,25 @@ struct TurnState {
     user_index: u64,
 }
 
+/// Following one running agent's session file (the native route).
+struct Tail {
+    agent: String,
+    reader: Box<dyn SessionReader>,
+    /// None until the file is found: Codex writes nothing before its first turn.
+    path: Option<PathBuf>,
+    /// When the agent started, for an agent that names its own session.
+    since: SystemTime,
+    /// The thread's log already holds this session's history (from before desl read files):
+    /// start reading at the end of the file.
+    skip_existing: bool,
+    /// The start of a line the agent has not finished writing.
+    partial: Vec<u8>,
+    last_poll: Instant,
+}
+
+/// The lines of the screen's bottom that are checked for a question from the agent.
+const ASKING_ROWS: usize = 14;
+
 /// What exists only while the daemon runs.
 #[derive(Default)]
 struct Live {
@@ -124,6 +143,8 @@ pub struct Engine {
     ptys: HashMap<String, (u64, Pty)>,
     /// What the user's terminal answers to the questions agents ask, from the last attach.
     answers: term::Answers,
+    /// The session file of each thread's running agent.
+    tails: HashMap<String, Tail>,
     ticks: u64,
     pub stopping: bool,
 }
@@ -184,6 +205,7 @@ impl Engine {
             generation: 0,
             ptys: HashMap::new(),
             answers: term::Answers::default(),
+            tails: HashMap::new(),
             ticks: 0,
             stopping: false,
         };
@@ -793,6 +815,21 @@ impl Engine {
         )?;
         tracing::info!(thread = %thread_id, agent = %agent, args = ?launch.args, "started the agent's interface");
         self.ptys.insert(thread_id.clone(), (generation, pty));
+        if let Some(reader) = adapter.session_reader(Path::new(&t.cwd)) {
+            let read_before = binding.is_some_and(|b| b.file_offset > 0);
+            self.tails.insert(
+                thread_id.clone(),
+                Tail {
+                    agent: agent.clone(),
+                    reader,
+                    path: None,
+                    since: SystemTime::now(),
+                    skip_existing: !read_before && t.head > 0,
+                    partial: Vec::new(),
+                    last_poll: Instant::now(),
+                },
+            );
+        }
         if let Some(session_id) = launch.session_id {
             let ts = now();
             let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding {
@@ -803,6 +840,7 @@ impl Engine {
                 model_choice: None,
                 effort_choice: None,
                 last_used_at: ts,
+                file_offset: 0,
             });
             b.session_id = Some(session_id);
             b.last_used_at = ts;
@@ -833,6 +871,10 @@ impl Engine {
             return;
         }
         pty.took(data);
+        if self.tails.get(thread_id).is_some_and(|t| t.last_poll.elapsed() >= Duration::from_millis(250)) {
+            self.poll_tail(thread_id);
+        }
+        let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
         let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
         if shown.is_empty() {
             // Nobody's terminal is there to answer what the agent asks it: answer as it would.
@@ -848,9 +890,119 @@ impl Engine {
         }
     }
 
+    /// Reads what the agent added to its session file, appends it to the thread's log, and sets
+    /// the thread's status from it and from the agent's screen.
+    fn poll_tail(&mut self, thread_id: &str) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        let Some(tail) = self.tails.get_mut(thread_id) else { return };
+        tail.last_poll = Instant::now();
+        let agent = tail.agent.clone();
+        let cwd = self.threads[i].cwd.clone();
+        let mut changed = false;
+        if tail.path.is_none() {
+            let Some(adapter) = self.adapters.iter().find(|a| a.id() == agent).cloned() else { return };
+            let known = self.threads[i].bindings.get(&agent).and_then(|b| b.session_id.clone());
+            let Some((session_id, path)) = adapter.session_file(Path::new(&cwd), known.as_deref(), tail.since) else {
+                return self.check_asking(thread_id);
+            };
+            tail.path = Some(path);
+            let ts = now();
+            let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding { agent: agent.clone(), ..Binding::default() });
+            if b.session_id.as_deref() != Some(&session_id) {
+                tracing::info!(thread = %thread_id, agent = %agent, "found the agent's own session");
+                b.session_id = Some(session_id);
+                b.last_used_at = ts;
+                changed = true;
+            }
+        }
+        let Some(path) = tail.path.clone() else { return };
+        let b = self.threads[i].bindings.get_mut(&agent);
+        let Some(b) = b else { return };
+        let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if tail.skip_existing {
+            tail.skip_existing = false;
+            b.file_offset = len;
+            changed = true;
+        }
+        if len < b.file_offset {
+            // The agent rewrote its file: read it again from the start.
+            b.file_offset = 0;
+            tail.partial.clear();
+        }
+        let mut readings = Vec::new();
+        if len > b.file_offset {
+            let mut bytes = Vec::new();
+            if let Ok(mut f) = std::fs::File::open(&path) {
+                use std::io::{Read, Seek, SeekFrom};
+                if f.seek(SeekFrom::Start(b.file_offset)).is_ok() {
+                    let _ = f.take(len - b.file_offset).read_to_end(&mut bytes);
+                }
+            }
+            b.file_offset += bytes.len() as u64;
+            tail.partial.extend_from_slice(&bytes);
+            if let Some(end) = tail.partial.iter().rposition(|c| *c == b'\n') {
+                let complete: Vec<u8> = tail.partial.drain(..=end).collect();
+                for line in String::from_utf8_lossy(&complete).lines() {
+                    readings.extend(tail.reader.line(line));
+                }
+            }
+            changed = true;
+        }
+        for r in readings {
+            match r {
+                Reading::Event(kind) => {
+                    if let EventKind::UserMessage { text, .. } = &kind
+                        && self.threads[i].name.is_empty()
+                    {
+                        self.threads[i].name = derive_name(text);
+                    }
+                    self.append(thread_id, kind);
+                }
+                Reading::Working => self.threads[i].status = Status::Working,
+                Reading::Idle => self.threads[i].status = Status::Idle,
+            }
+        }
+        if changed {
+            let head = self.threads[i].head;
+            if let Some(b) = self.threads[i].bindings.get_mut(&agent) {
+                // The agent wrote all of it, so it has seen all of it.
+                b.seen_up_to = head;
+            }
+            self.persist(thread_id);
+        }
+        self.check_asking(thread_id);
+    }
+
+    /// `waiting` while the agent's screen shows it asking something in the middle of a turn.
+    fn check_asking(&mut self, thread_id: &str) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        let Some((_, pty)) = self.ptys.get(thread_id) else { return };
+        let Some(adapter) = self.adapter(&pty.agent) else { return };
+        let asking = adapter.waiting(&pty.tail_text(ASKING_ROWS));
+        let status = self.threads[i].status;
+        let next = match status {
+            Status::Working if asking => Status::Waiting,
+            Status::Waiting if !asking => Status::Working,
+            other => other,
+        };
+        if next != status {
+            self.threads[i].status = next;
+            self.persist(thread_id);
+        }
+    }
+
     fn pty_exit(&mut self, thread_id: &str, generation: u64) {
         if self.ptys.get(thread_id).is_none_or(|(g, _)| *g != generation) {
             return;
+        }
+        // What the agent wrote last, before it is forgotten.
+        self.poll_tail(thread_id);
+        self.tails.remove(thread_id);
+        if let Ok(i) = self.idx(thread_id)
+            && self.threads[i].status.busy()
+        {
+            self.threads[i].status = Status::Idle;
+            self.persist(thread_id);
         }
         let code = self.ptys.get_mut(thread_id).and_then(|(_, p)| p.exit_code());
         self.ptys.remove(thread_id);
@@ -867,6 +1019,10 @@ impl Engine {
 
     /// Branch state changes behind desl's back; the threads on screen are checked every few seconds.
     fn tick(&mut self) {
+        let tailed: Vec<String> = self.tails.keys().cloned().collect();
+        for id in tailed {
+            self.poll_tail(&id);
+        }
         self.ticks += 1;
         if !self.ticks.is_multiple_of(5) {
             return;
@@ -966,6 +1122,7 @@ impl Engine {
                 // Dropping the sessions ends their processes.
                 self.live.remove(&thread_id);
                 self.ptys.remove(&thread_id);
+                self.tails.remove(&thread_id);
                 if let Err(e) = self.store.delete_thread(&thread_id) {
                     tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
                 }
@@ -1436,6 +1593,7 @@ impl Engine {
         // Dropping a session closes it: SIGTERM to its process group, SIGKILL after five seconds.
         self.live.clear();
         self.ptys.clear();
+        self.tails.clear();
         self.broadcast(Change::Bye);
     }
 }

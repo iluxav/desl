@@ -47,8 +47,8 @@ install: build
 	@case ":$$PATH:" in *":$(BINDIR):"*) ;; *) echo "note: $(BINDIR) is not on your PATH";; esac
 	@echo
 	@echo "Run inside a repository:"
-	@echo "  desl             attach; ? lists the keys; /quit or ctrl+b d detaches and the agents keep running"
-	@echo "  desl status      the sidebar as text"
+	@echo "  desl             attach: the agent's own interface; ctrl+b d detaches and the agents keep running"
+	@echo "  desl status      the thread list as text"
 	@echo "  desl doctor      check the agents, the daemon and the store"
 	@echo "  desl --help      every command"
 

@@ -66,7 +66,7 @@ fn event(kind: EventKind) -> AdapterEvent {
 }
 
 /// `/usr/bin/bash -lc 'cat src/x.ts'` reads as `cat src/x.ts`.
-fn unwrap_shell(command: &str) -> String {
+pub fn unwrap_shell(command: &str) -> String {
     let c = command.trim();
     for prefix in [
         "/usr/bin/bash -lc ",

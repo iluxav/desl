@@ -120,11 +120,31 @@ folder it has not seen, in its own interface, before anything else.
 | Agent | New thread | Existing session | Mode flags |
 | --- | --- | --- | --- |
 | Claude Code | `claude --session-id <uuid>` (desl picks the id, so the session file is known) | `claude --resume <id>` | `--permission-mode manual` (ask), `acceptEdits` (edits, worktree), `bypassPermissions` (yolo); `--model`, `--effort` when picked |
-| Codex | `codex --no-daemon` (Codex names the session) | `codex --no-daemon … resume <id>` | `-s workspace-write -a untrusted` (ask), `-s workspace-write -a on-request` (edits, worktree), `--dangerously-bypass-approvals-and-sandbox` (yolo); `-m`, `-c model_reasoning_effort="…"` when picked; all before `resume` |
+| Codex | `codex --no-daemon` (Codex names the session) | `codex --no-daemon … resume <id>` | `-s read-only -a on-request` (ask: Codex asks before anything that writes), `-s workspace-write -a on-request` (edits, worktree; asks before anything outside the project). 0.166 takes only `on-request` and `never` for `-a`; `untrusted` fails at start, `--dangerously-bypass-approvals-and-sandbox` (yolo); `-m`, `-c model_reasoning_effort="…"` when picked; all before `resume` |
 
 Claude Code's interface sends a kitty graphics query (`ESC _ G … a=q … ESC \`) at start; tmux
 takes any APC as a pane title, so the client puts desl's title back after one. On `/exit` Claude
 Code prints its own `claude --resume <id>` line.
+
+### Reading the session files (the native route)
+
+While an agent's interface runs, the daemon follows its session file (`session_file`,
+`session_reader`): every line the agent appends becomes events in the thread's log, and turn
+markers set the thread's status. The offset read so far is kept per binding, so nothing is read
+twice; a thread whose log already held the session's history (from the headless route) starts at
+the end of the file. Verified 2026-11-05 on Claude Code 2.1.318 and Codex CLI 0.166.0.
+
+| | Claude Code | Codex |
+| --- | --- | --- |
+| Found by | the id desl gave it (`--session-id`) | the newest rollout for the cwd created after the start; its id becomes the binding's |
+| Working | a user line whose content is a string (not a tag) | `event_msg` `task_started` |
+| Idle | `system` `turn_duration`; `[Request interrupted…]` | `task_complete`; `turn_aborted` |
+| Events | user, assistant and tool-result lines through the stream parser (`toolUseResult` is the stream's `tool_use_result`); `isSidechain` lines skipped | `response_item` messages, `custom_tool_call` (`exec` scripts unpacked to their command, `apply_patch` to an edit), `function_call`, outputs |
+| Waiting (bottom 14 rows, only mid-turn) | `Do you want to` with `1. Yes`; the trust question | `Would you like to run the following command?` (seen live), `Trust this folder` |
+
+In `ask` mode (`-s read-only -a on-request`) Codex asks only when the model decides to request
+more: asked plainly to create a file it reported the sandbox refusal; asked to request
+permission, it showed the approval above.
 
 ### Permission modes
 

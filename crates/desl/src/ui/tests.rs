@@ -41,6 +41,7 @@ fn thread(id: &str, project: &str, name: &str, agent: &str, status: Status, crea
                 model_choice: None,
                 effort_choice: None,
                 last_used_at: 0,
+                file_offset: 0,
             },
         )]
         .into(),

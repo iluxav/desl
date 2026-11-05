@@ -97,6 +97,14 @@ impl Pty {
         &self.log
     }
 
+    /// The bottom `rows` lines of the agent's screen as text, for telling that it asks something.
+    pub fn tail_text(&self, rows: usize) -> String {
+        let screen = self.screen.screen();
+        let (_, cols) = screen.size();
+        let lines: Vec<String> = screen.rows(0, cols.get()).collect();
+        lines[lines.len().saturating_sub(rows)..].join("\n")
+    }
+
     /// The agent's cursor on its own screen, (row, column) from 0.
     pub fn cursor(&self) -> (u16, u16) {
         self.screen.screen().cursor_position()

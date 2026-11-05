@@ -298,6 +298,9 @@ pub struct Binding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort_choice: Option<String>,
     pub last_used_at: i64,
+    /// How far into the agent's session file desl has read, in bytes (the native route).
+    #[serde(default)]
+    pub file_offset: u64,
 }
 
 /// One model an agent offers, as its own picker would show it.

@@ -3,10 +3,11 @@
 //! flags and output. Verified against Codex CLI 0.165.0; see docs/adapters.md.
 
 mod parse;
+mod session;
 
 use desl_ir::adapter::{
-    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, Sink, StartOpts, Turn, last_words,
-    scrub_env, terminate_group, which,
+    Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Launch, LaunchOpts, Open, Session, SessionReader, Sink, StartOpts, Turn,
+    last_words, scrub_env, terminate_group, which,
 };
 use desl_ir::{Decision, ModelInfo, PermissionMode};
 pub use parse::Parser;
@@ -34,12 +35,13 @@ fn sandbox_flag(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// In its own interface Codex asks before calls; the sandbox and the approval policy together
-/// hold each mode.
+/// In its own interface Codex asks when the sandbox would stop a call (`-a on-request`; 0.166
+/// takes only `on-request` and `never`), so the sandbox decides what needs a human: in `ask`
+/// nothing may write without asking, in `edits` everything inside the project may.
 fn interactive_flags(mode: PermissionMode) -> Vec<String> {
     let pair = |s: &str, a: &str| vec!["-s".to_string(), s.to_string(), "-a".to_string(), a.to_string()];
     match mode {
-        PermissionMode::Ask => pair("workspace-write", "untrusted"),
+        PermissionMode::Ask => pair("read-only", "on-request"),
         PermissionMode::Edits | PermissionMode::Worktree => pair("workspace-write", "on-request"),
         PermissionMode::Yolo => vec!["--dangerously-bypass-approvals-and-sandbox".to_string()],
     }
@@ -99,8 +101,10 @@ impl Adapter for Codex {
 
     fn permission_note(&self, mode: PermissionMode) -> Option<String> {
         match mode {
-            PermissionMode::Ask => Some("reads only, because codex cannot ask".into()),
-            PermissionMode::Edits | PermissionMode::Worktree => Some("edits and commands inside this project only".into()),
+            PermissionMode::Ask => Some("reads run; codex asks before anything that writes".into()),
+            PermissionMode::Edits | PermissionMode::Worktree => {
+                Some("edits and commands inside this project run without asking; codex asks before anything outside it".into())
+            }
             PermissionMode::Yolo => None,
         }
     }
@@ -122,6 +126,23 @@ impl Adapter for Codex {
         let catalog: Value = serde_json::from_slice(&out.stdout).map_err(|_| failed("its answer was not JSON".into()))?;
         let models = parse::models(&catalog, configured_model().as_deref(), configured("model_reasoning_effort").as_deref());
         if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) }
+    }
+
+    fn session_file(
+        &self,
+        cwd: &std::path::Path,
+        session_id: Option<&str>,
+        since: std::time::SystemTime,
+    ) -> Option<(String, std::path::PathBuf)> {
+        session::file(cwd, session_id, since)
+    }
+
+    fn session_reader(&self, cwd: &std::path::Path) -> Option<Box<dyn SessionReader>> {
+        Some(Box::new(session::Reader::new(cwd)))
+    }
+
+    fn waiting(&self, screen_tail: &str) -> bool {
+        session::waiting(screen_tail)
     }
 
     fn launch(&self, opts: &LaunchOpts) -> Launch {

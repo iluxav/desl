@@ -8,7 +8,6 @@ pub enum Ctx {
     Prompt,
     Transcript,
     Sidebar,
-    Pane,
     Approval,
     Workspace,
 }
@@ -19,7 +18,6 @@ impl Ctx {
             Ctx::Prompt => "Prompt",
             Ctx::Transcript => "Transcript",
             Ctx::Sidebar => "Sidebar",
-            Ctx::Pane => "Agent pane",
             Ctx::Approval => "Approval",
             Ctx::Workspace => "Workspace",
         }
@@ -61,8 +59,6 @@ pub enum Action {
     Fork,
     JumpN,
     Sidebar,
-    ScrollMode,
-    Passthrough,
 }
 
 pub struct Key {
@@ -145,9 +141,6 @@ pub static KEYMAP: &[Binding] = &[
     b!(&[k(KeyCode::Esc)], false, Back, "Follow again, back to the prompt", Transcript, true),
     b!(&[k(KeyCode::Enter)], false, Expand, "Expand or collapse the selected tool call or brief", Transcript, true),
     b!(&[k(KeyCode::Char('o'))], false, OpenFile, "Open the selected file in $EDITOR", Transcript, false),
-    // Agent pane (Prototype B): everything unprefixed belongs to the agent's own interface.
-    Binding { keys: &[], prefix: false, action: Action::Passthrough, desc: "Every other key goes to the agent's own interface", ctx: Ctx::Pane, built: true, label: Some("any key") },
-    b!(&[k(KeyCode::Char('['))], true, ScrollMode, "Scroll back (j/k, pgup/pgdn; esc returns)", Pane, true),
     // Approval
     b!(&[k(KeyCode::Char('y'))], false, Approve, "Allow this once, or answer yes", Approval, true),
     b!(&[k(KeyCode::Char('n'))], false, Deny, "Deny, or answer no", Approval, true),

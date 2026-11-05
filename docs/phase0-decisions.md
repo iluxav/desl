@@ -366,5 +366,21 @@ of phase 0; the winning ones go back into `SPEC.md` at the gate. Newest at the b
     "looks good"; the native view "obviously looks better but it misses the point"; switching in
     B "shows that it pastes the text from claude". Not measured, and so not claimed: the
     per-moment medians the spec's gate asks for. **Needs the spec to move**: the phase 0 gate
-    in the roadmap, and every later place the hallway protocol gates a release. Open until the
-    author says: whether their own testing replaces the protocol in those later gates too.
+    in the roadmap, and every later place the hallway protocol gates a release (done, decision 95).
+94. **Prototype B, the blind launcher and the hallway kit were removed** (2026-11-04), as the
+    gate asks of the prototype that was not chosen. Removed with them: B's session-file parsers
+    and fixtures, its recordings, the PTY and terminal-emulator dependencies, and the test
+    drivers for B and the launcher. Kept: Prototype A as the reference the phase 1 client is
+    rebuilt to match, with its fixtures, recordings and test drivers, and the session-file
+    findings in `docs/adapters.md`. Everything removed is in the repository's first commit. The
+    command is now `proto-a`; `make install` clears the retired `proto-b` and `desl-proto` out
+    of the install directory. The decisions above that speak of Prototype B or the hallway
+    sessions stay as the record of what was tried.
+95. **`SPEC.md` now names the author as the only tester.** Five sentences changed: the feel
+    bar's opening ("scored by the author"), the hallway protocol paragraph (one tester, a score
+    of 4 passes, no sessions or recordings), the roadmap's opening ("settled first, hands-on"),
+    the phase 0 entry (an outcome sentence) and the phase 1 gate ("the author runs the hallway
+    protocol on the build and every moment passes"; there are no prototype scores to compare
+    with). The author was told this reading before the commit and did not object; they did not
+    confirm it in words either. `AGENTS.md` and `CLAUDE.md` still describe phase 0 as current
+    and "judged by ten real users"; they are the author's to move when phase 1 starts.

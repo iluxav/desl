@@ -1,9 +1,8 @@
-//! Shared code for both phase 0 prototypes: the chrome (sidebar, status bar, help, keys), the
-//! model and projector, the Claude and Codex adapters, and Prototype A's host and client.
+//! Prototype A, the phase 0 winner: the chrome (sidebar, status bar, help, keys), the model and
+//! projector, the Claude and Codex adapters, and the host and client. Throwaway; kept as the
+//! reference for the phase 1 client.
 
 pub mod agent;
-pub mod b64;
-pub mod bhost;
 pub mod app;
 pub mod commands;
 pub mod diff;
@@ -17,8 +16,6 @@ pub mod model;
 pub mod paths;
 pub mod picker;
 pub mod projector;
-pub mod pty;
 pub mod theme;
-pub mod transcript;
 pub mod ui;
 pub mod workspace;

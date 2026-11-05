@@ -167,8 +167,10 @@ codex exec -s workspace-write [resume <thread-id>] --json --skip-git-repo-check 
 
 ## Session files (Prototype B)
 
-Prototype B reads the agents' own transcripts instead of driving a headless stream. Fixtures in
-`phase0/fixtures/transcripts/`; parsers in `phase0/proto-a/src/transcript/`.
+Prototype B read the agents' own transcripts instead of driving a headless stream. It was not
+chosen and was removed on 2026-11-04; its parsers (`phase0/proto-a/src/transcript/`) and fixtures
+(`phase0/fixtures/transcripts/`) are in the repository's first commit. The findings stay here
+because they describe the agents, not the prototype.
 
 ### Claude Code 2.1.312
 
@@ -220,10 +222,10 @@ stack, which stays in the stack paragraph of `SPEC.md`.
 | --- | --- | --- |
 | `ratatui` (with its `crossterm`) | 0.30 | The interface. In the spec's stack. |
 | `serde`, `serde_json` | 1 | Agent streams, the host protocol, the log. In the spec's stack. |
-| `portable-pty` | 0.9 | Prototype B's panes. In the spec's stack. |
-| `vt100` | 0.18 | Prototype B: turns a pane's bytes into a screen of cells. Not in the spec's stack. |
-| `pulldown-cmark` | 0.13, default features off | Prototype A: parses an answer's markdown (tables, nested lists, links). Added 2026-11-04 after the hand-written renderer was judged poor. Not in the spec's stack; phase 1 needs a markdown parser named there. |
-| `chrono` | 0.4, `clock` only | The status-bar clock, log timestamps, Codex rollout dates. |
+| `pulldown-cmark` | 0.13, default features off | Parses an answer's markdown (tables, nested lists, links). Added 2026-11-04 after the hand-written renderer was judged poor. Not in the spec's stack; phase 1 needs a markdown parser named there. |
+| `chrono` | 0.4, `clock` only | The status-bar clock. |
 | `unicode-width` | 0.2 | Column widths for wrapping. |
 | `anyhow` | 1 | Error context in the binaries. |
+
+`portable-pty` 0.9 and `vt100` 0.18 served Prototype B's panes and left with it.
 

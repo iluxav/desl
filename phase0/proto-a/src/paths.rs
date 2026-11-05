@@ -27,32 +27,18 @@ fn state_dir() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// `proto` is "a" or "b": each prototype keeps its own hosts, sockets and logs.
-pub fn socket_path_for(cwd: &Path, proto: &str) -> PathBuf {
-    runtime_dir().join(format!("desl-proto-{proto}")).join(format!("{}.sock", project_key(cwd)))
-}
-
-pub fn log_path_for(cwd: &Path, proto: &str) -> PathBuf {
-    state_dir().join(format!("desl-proto-{proto}")).join(format!("{}.jsonl", project_key(cwd)))
-}
-
-pub fn host_stderr_path_for(cwd: &Path, proto: &str) -> PathBuf {
-    state_dir().join(format!("desl-proto-{proto}")).join(format!("{}.host.log", project_key(cwd)))
-}
+/// The directory names are the ones Prototype A always used, so logs written before Prototype B
+/// was removed still load.
+const DIR: &str = "desl-proto-a";
 
 pub fn socket_path(cwd: &Path) -> PathBuf {
-    socket_path_for(cwd, "a")
+    runtime_dir().join(DIR).join(format!("{}.sock", project_key(cwd)))
 }
 
 pub fn log_path(cwd: &Path) -> PathBuf {
-    log_path_for(cwd, "a")
+    state_dir().join(DIR).join(format!("{}.jsonl", project_key(cwd)))
 }
 
 pub fn host_stderr_path(cwd: &Path) -> PathBuf {
-    host_stderr_path_for(cwd, "a")
-}
-
-/// Where the launcher records which prototype each session ran.
-pub fn launcher_log() -> PathBuf {
-    state_dir().join("desl-proto").join("launches.jsonl")
+    state_dir().join(DIR).join(format!("{}.host.log", project_key(cwd)))
 }

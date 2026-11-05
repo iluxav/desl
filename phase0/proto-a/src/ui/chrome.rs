@@ -19,8 +19,6 @@ pub struct ChromeView<'a> {
     pub approval_pending: bool,
     /// The status bar's hint, e.g. `ctrl+b ? help`.
     pub hint: &'a str,
-    /// Prototype B: unprefixed workspace keys belong to the agent, so the help lists prefixed ones only.
-    pub prefix_only: bool,
     /// Actions this prototype has not built even though the shared keymap marks them built.
     pub not_built: &'a [Action],
 }

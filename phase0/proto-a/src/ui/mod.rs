@@ -98,7 +98,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             focused_ctx,
             approval_pending: app.approval_pending(),
             hint: &hint,
-            prefix_only: false,
             not_built: &[],
         };
         frame(f, &view, app.sidebar_visible)
@@ -121,7 +120,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 focused_ctx,
                 approval_pending: app.approval_pending(),
                 hint: &hint,
-                prefix_only: false,
                 not_built: &[],
             };
             let mut scroll = app.help_scroll;

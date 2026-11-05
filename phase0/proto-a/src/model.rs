@@ -31,13 +31,6 @@ impl Agent {
             Agent::Codex => Agent::Claude,
         }
     }
-    /// How to continue the native session by hand, printed on quit so nothing is lost.
-    pub fn resume_command(self, session_id: &str) -> String {
-        match self {
-            Agent::Claude => format!("claude --resume {session_id}"),
-            Agent::Codex => format!("codex resume {session_id}"),
-        }
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]

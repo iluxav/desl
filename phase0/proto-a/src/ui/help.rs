@@ -21,7 +21,7 @@ pub fn draw(f: &mut Frame, app: &ChromeView, scroll: &mut usize, area: Rect) {
 
     let shown: Vec<&'static keymap::Binding> = KEYMAP
         .iter()
-        .filter(|b| order.contains(&b.ctx) && (!app.prefix_only || b.prefix || b.ctx != Ctx::Workspace))
+        .filter(|b| order.contains(&b.ctx))
         .collect();
     let label_w = shown.iter().map(|b| keymap::binding_label(b).width()).max().unwrap_or(8) + 2;
 

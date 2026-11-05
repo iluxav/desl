@@ -36,6 +36,10 @@ Phase 1, "the real thing", in progress. Nothing has been released.
 - `/model` alone opens the active agent's own list of models with the current one marked;
   `/model <name>` and `desl model <thread> [name]` pick one. The pick takes effect with the next
   prompt and keeps the native session. Each agent of a thread keeps its own model.
+- Picking a model goes on to its reasoning effort levels, with the one in use marked and the
+  agent's own setting as the first row. `/model <name> <effort>` and
+  `desl model <thread> [name] --effort <level>` set it directly. A level the model does not
+  take is refused before it reaches the agent.
 - The store migrates forward on start and keeps a backup of the previous version beside it.
 
 ### Fixed

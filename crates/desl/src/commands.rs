@@ -21,7 +21,12 @@ pub static COMMANDS: &[SlashCommand] = &[
     SlashCommand { name: "/threads", args: "", desc: "Fuzzy thread picker", built: true },
     SlashCommand { name: "/resume", args: "", desc: "Pick a past thread to reopen", built: true },
     SlashCommand { name: "/rename", args: "<name>", desc: "Rename this thread", built: true },
-    SlashCommand { name: "/model", args: "[name]", desc: "Change the model for this agent; alone, pick from a list", built: true },
+    SlashCommand {
+        name: "/model",
+        args: "[name] [effort]",
+        desc: "Change this agent's model and effort; alone, pick from a list",
+        built: true,
+    },
     SlashCommand { name: "/clear", args: "", desc: "Start a fresh context on the same thread", built: true },
     SlashCommand { name: "/compact", args: "", desc: "Ask the agent to compact its context", built: false },
     SlashCommand { name: "/export", args: "[file]", desc: "Write the thread as markdown", built: true },

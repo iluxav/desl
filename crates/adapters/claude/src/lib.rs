@@ -185,6 +185,11 @@ impl ClaudeSession {
         if let Some(model) = self.opts.model.as_deref().filter(|m| *m != DEFAULT_MODEL) {
             cmd.args(["--model", model]);
         }
+        // An unknown level is only a warning to Claude Code, which then uses its default; desl
+        // checks the level against the model's list before it gets here.
+        if let Some(effort) = &self.opts.effort {
+            cmd.args(["--effort", effort]);
+        }
         for var in PARENT_SESSION_VARS {
             cmd.env_remove(var);
         }

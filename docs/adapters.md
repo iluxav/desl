@@ -104,8 +104,21 @@ and `codex exec -s … -m gpt-6-luna resume <id> …`. Both verified: the native
 answers on the new model. Codex then emits an `error` item, "This session was recorded with model
 … but is resuming with …"; the adapter drops it, because the user asked for exactly that.
 
-The model fixtures (`2.1.312-initialize-models.json`, `0.165.0-debug-models.json`) are real
-output cut down to the fields above. Reasoning effort is in both lists and is not offered yet.
+The model fixtures (`2.1.312-initialize-models.json`, `0.165.0-debug-models.json`,
+`0.165.0-debug-models-levels.json`) are real output cut down to the fields desl reads.
+
+### Reasoning effort
+
+Each model lists its effort levels, and `/model` offers them after a model is picked.
+
+| Agent | Where the levels are | The flag | Notes |
+| --- | --- | --- | --- |
+| Claude Code | `supportedEffortLevels` on each entry of `models[]`, when `supportsEffort` is set. Names only. | `--effort <level>` | Verified: accepted with `--resume`, and a different level on the next process keeps the session. An unknown level is a warning on stderr and Claude Code falls back to its default, so desl checks the level first. Claude Code does not report which level a session uses when none is passed; the list says "claude's own setting" and no more. |
+| Codex | `supported_reasoning_levels[] {effort, description}` and `default_reasoning_level` on each entry of `codex debug models`. | `-c model_reasoning_effort="<level>"`, before `resume` | Verified: accepted on a new and on a resumed session. A level the model does not take fails the turn with a 400 from the API, so desl checks the level first. With no pick the level is `model_reasoning_effort` from `~/.codex/config.toml` when the model takes it, else the model's default; the list names it. |
+
+`StartOpts.effort` carries the pick. `ModelInfo.efforts` and `ModelInfo.default_effort` carry
+the lists; an adapter whose agent has no such setting leaves both empty and the second list
+never opens.
 
 ## Agent notes
 

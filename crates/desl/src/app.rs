@@ -7,7 +7,7 @@ use crate::input::Input;
 use crate::keymap::{self, Action, Binding, Ctx};
 use crate::model::{Ask, AskKind, Item, Status, Thread};
 use crate::picker::{Entry as PickEntry, Picker};
-use desl_ir::{Decision, GitState, PermissionMode, Project};
+use desl_ir::{Decision, GitState, ModelInfo, PermissionMode, Project};
 use desl_proto::{AgentInfo, BriefPreview, Change, Command, Reply, ServerFrame, StreamDelta};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use serde_json::{Value, json};
@@ -43,6 +43,7 @@ pub enum PickerKind {
     History,
     Agents,
     Models,
+    Efforts,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,8 +84,13 @@ enum Pending {
     History,
     /// The active agent's models, to choose from.
     ModelPicker,
-    /// A model was picked: say what the agent will use.
+    /// A model or an effort was picked: say what the agent will use.
     ModelSet,
+    /// `/model <name> <effort>`: the model is set, now the effort.
+    ModelThenEffort {
+        thread_id: String,
+        effort: String,
+    },
     /// On success, say this.
     Say(String),
     /// Nothing to do on success. An error becomes a notice either way.
@@ -118,9 +124,16 @@ pub struct App {
     pub clock: String,
     /// A file to open in `$EDITOR`; the main loop leaves the screen, runs the editor and returns.
     pub open_in_editor: Option<PathBuf>,
+    /// What the last `/model` listed, so picking a model can go on to its effort levels.
+    model_list: Vec<ModelInfo>,
+    /// The thread's effort pick when that list was read.
+    effort_choice: Option<String>,
 }
 
 const INFO_TTL: Duration = Duration::from_secs(6);
+
+/// The row of the effort list that means not choosing, and what `/model <name> default` takes.
+const DEFAULT_EFFORT: &str = "default";
 
 fn fmt_tokens(n: u64) -> String {
     if n >= 1000 { format!("~{:.1}k tokens", n as f64 / 1000.0) } else { format!("~{n} tokens") }
@@ -175,6 +188,8 @@ impl App {
             help_scroll: 0,
             clock: now_hhmm(),
             open_in_editor: None,
+            model_list: Vec::new(),
+            effort_choice: None,
         };
         let cwd = app.cwd.to_string_lossy().to_string();
         app.request(Command::Subscribe { cwd: Some(cwd) }, Pending::Subscribe);
@@ -379,28 +394,41 @@ impl App {
                     self.overlay = Overlay::Picker(Picker::new("history", entries), PickerKind::History);
                 }
             }
-            (Pending::ModelPicker, Reply::Models { agent, models, current }) => {
+            (Pending::ModelPicker, Reply::Models { agent, models, current, effort }) => {
                 let at = models.iter().position(|m| Some(&m.id) == current.as_ref()).unwrap_or(0);
                 let entries: Vec<PickEntry> = models
-                    .into_iter()
+                    .iter()
                     .map(|m| {
                         let now = Some(&m.id) == current.as_ref();
-                        PickEntry {
-                            hint: if now { format!("✓ current · {}", m.description) } else { m.description },
-                            label: m.name,
-                            key: m.id,
-                        }
+                        let hint = match (now, &effort) {
+                            (true, Some(level)) => format!("✓ current · {level} effort · {}", m.description),
+                            (true, None) => format!("✓ current · {}", m.description),
+                            (false, _) => m.description.clone(),
+                        };
+                        PickEntry { hint, label: m.name.clone(), key: m.id.clone() }
                     })
                     .collect();
                 let picker = Picker::new(format!("{agent} models"), entries)
                     .starting_at(at)
                     .with_note("enter picks · it takes effect with your next prompt");
                 self.overlay = Overlay::Picker(picker, PickerKind::Models);
+                self.model_list = models;
+                self.effort_choice = effort;
             }
-            (Pending::ModelSet, Reply::ModelSet { agent, model }) => match model {
-                Some(m) if !m.default => self.info(format!("{agent} will use {} from your next prompt.", m.name)),
-                _ => self.info(format!("{agent} is back on its default model from your next prompt.")),
-            },
+            (Pending::ModelSet, Reply::ModelSet { agent, model, effort }) => {
+                self.effort_choice = effort.clone();
+                let model = model.filter(|m| !m.default).map(|m| m.name);
+                // Short enough to be read whole in the status bar of an 80-column terminal.
+                self.info(match (model, effort) {
+                    (Some(m), Some(e)) => format!("{m} at {e} effort from your next prompt."),
+                    (Some(m), None) => format!("{agent} will use {m} from your next prompt."),
+                    (None, Some(e)) => format!("{agent} is at {e} effort from your next prompt."),
+                    (None, None) => format!("{agent} is on its default model and effort."),
+                });
+            }
+            (Pending::ModelThenEffort { thread_id, effort }, Reply::ModelSet { .. }) => {
+                self.request(Command::SetEffort { thread_id, effort: Some(effort) }, Pending::ModelSet);
+            }
             (Pending::Say(text), _) => self.info(text),
             _ => {}
         }
@@ -887,6 +915,13 @@ impl App {
             PickerKind::Models => {
                 let thread_id = self.thread().id().to_string();
                 self.request(Command::SetModel { thread_id, model: Some(key.to_string()) }, Pending::ModelSet);
+                // Then how hard it should think, the way Codex asks after a model is picked.
+                self.open_effort_picker(key);
+            }
+            PickerKind::Efforts => {
+                let thread_id = self.thread().id().to_string();
+                let effort = Some(key.to_string()).filter(|k| k != DEFAULT_EFFORT);
+                self.request(Command::SetEffort { thread_id, effort }, Pending::ModelSet);
             }
             PickerKind::Commands => {
                 // A full command typed into the palette runs as typed; a bare name runs or waits for its argument.
@@ -915,6 +950,34 @@ impl App {
                 self.input.insert_str(key);
             }
         }
+    }
+
+    /// The effort levels of the model just picked, with the one in use marked. The first row
+    /// is not choosing: the agent's own setting, named where the agent says what it is.
+    fn open_effort_picker(&mut self, model_id: &str) {
+        let Some(m) = self.model_list.iter().find(|m| m.id == model_id).filter(|m| !m.efforts.is_empty()) else { return };
+        let agent = self.thread().agent().to_string();
+        let chosen = self.effort_choice.as_ref().filter(|c| m.efforts.iter().any(|e| &e.id == *c));
+        let mark = |now: bool, text: String| match (now, text.is_empty()) {
+            (true, true) => "✓ current".to_string(),
+            (true, false) => format!("✓ current · {text}"),
+            (false, _) => text,
+        };
+        let own = match &m.default_effort {
+            Some(level) => format!("{agent}'s own setting, now {level}"),
+            None => format!("{agent}'s own setting"),
+        };
+        let mut entries =
+            vec![PickEntry { key: DEFAULT_EFFORT.to_string(), label: DEFAULT_EFFORT.to_string(), hint: mark(chosen.is_none(), own) }];
+        entries.extend(m.efforts.iter().map(|e| PickEntry {
+            key: e.id.clone(),
+            label: e.id.clone(),
+            hint: mark(chosen == Some(&e.id), e.description.clone()),
+        }));
+        let at = chosen.and_then(|c| m.efforts.iter().position(|e| &e.id == c)).map_or(0, |i| i + 1);
+        let picker =
+            Picker::new(format!("{} effort", m.name), entries).starting_at(at).with_note("enter picks · esc keeps the effort as it is");
+        self.overlay = Overlay::Picker(picker, PickerKind::Efforts);
     }
 
     fn open_palette(&mut self) {
@@ -1103,9 +1166,10 @@ impl App {
                 let mut text = format!("{} · on {} · {} turns · ${:.2}", t.id(), t.agent(), t.turns, t.cost_usd);
                 for b in t.meta.bindings.values() {
                     text.push_str(&format!(
-                        "\n{}: model {} · session {} · seen {} of {} events",
+                        "\n{}: model {}{} · session {} · seen {} of {} events",
                         b.agent,
                         b.model.clone().unwrap_or_else(|| "unknown".into()),
+                        b.effort_choice.as_ref().map(|e| format!(" at {e} effort")).unwrap_or_default(),
                         b.session_id.clone().unwrap_or_else(|| "not started".into()),
                         b.seen_up_to,
                         t.meta.head
@@ -1138,7 +1202,14 @@ impl App {
             }
             // Named, it sets the model; bare, it shows the agent's models with the current one marked.
             "/model" if arg.is_empty() => self.request(Command::Models { thread_id }, Pending::ModelPicker),
-            "/model" => self.request(Command::SetModel { thread_id, model: Some(arg) }, Pending::ModelSet),
+            // `/model sonnet high`: a second word is the effort.
+            "/model" => match arg.split_once(char::is_whitespace) {
+                Some((model, effort)) => {
+                    let then = Pending::ModelThenEffort { thread_id: thread_id.clone(), effort: effort.trim().to_string() };
+                    self.request(Command::SetModel { thread_id, model: Some(model.to_string()) }, then);
+                }
+                None => self.request(Command::SetModel { thread_id, model: Some(arg) }, Pending::ModelSet),
+            },
             "/export" => self.export(&arg),
             "/compact" | "/diff" | "/pr" | "/worktree" => {
                 self.info(format!("{cmd} is not built yet. It arrives with panes and worktrees."));

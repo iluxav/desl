@@ -2,7 +2,7 @@
 //! Shapes verified against Claude Code 2.1.312; see docs/adapters.md.
 
 use desl_ir::adapter::AdapterEvent;
-use desl_ir::{ChangeKind, EventKind, ModelInfo, Risk, diff, tool};
+use desl_ir::{ChangeKind, Effort, EventKind, ModelInfo, Risk, diff, tool};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -87,10 +87,22 @@ pub fn models(v: &Value) -> Option<Vec<ModelInfo>> {
         list.iter()
             .filter_map(|m| {
                 let id = str_of(m, "value");
+                // Claude Code names the levels and nothing more: it does not say which one a
+                // session uses when none is picked, so `default_effort` stays empty.
+                let efforts = m
+                    .get("supportedEffortLevels")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(|level| Effort { id: level.to_string(), description: String::new() })
+                    .collect();
                 (!id.is_empty()).then(|| ModelInfo {
                     name: Some(str_of(m, "displayName")).filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone()),
                     description: str_of(m, "description"),
                     default: id == DEFAULT_MODEL,
+                    efforts,
+                    default_effort: None,
                     id,
                 })
             })

@@ -150,7 +150,7 @@ fn a_failed_turn_ends_with_a_sentence() {
 fn the_catalog_lists_the_models_codex_shows_and_marks_the_configured_one() {
     let text = std::fs::read_to_string(fixtures().join("0.165.0-debug-models.json")).unwrap();
     let catalog: Value = serde_json::from_str(&text).unwrap();
-    let models = parse::models(&catalog, Some("gpt-6-astra"));
+    let models = parse::models(&catalog, Some("gpt-6-astra"), None);
     let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -161,10 +161,10 @@ fn the_catalog_lists_the_models_codex_shows_and_marks_the_configured_one() {
     assert_eq!(default, ["gpt-6-astra"]);
     assert_eq!(models[1].name, "GPT-6-Astra");
     // With nothing configured, Codex's first entry is what a turn would use.
-    let unset = parse::models(&catalog, None);
+    let unset = parse::models(&catalog, None, None);
     assert_eq!(unset.iter().find(|m| m.default).map(|m| m.id.as_str()), Some("gpt-6.1-sol"));
     // A configured model Codex does not list changes nothing in the list.
-    assert_eq!(parse::models(&catalog, Some("my-own-model")).iter().filter(|m| m.default).count(), 1);
+    assert_eq!(parse::models(&catalog, Some("my-own-model"), None).iter().filter(|m| m.default).count(), 1);
 }
 
 #[test]
@@ -179,4 +179,23 @@ fn the_notice_about_resuming_on_another_model_is_not_an_error() {
             event: EventKind::Error { message: "codex reported: stream disconnected before completion.".into(), recoverable: true }
         }]
     );
+}
+
+#[test]
+fn each_model_lists_its_effort_levels_and_the_one_codex_would_use() {
+    let text = std::fs::read_to_string(fixtures().join("0.165.0-debug-models-levels.json")).unwrap();
+    let catalog: Value = serde_json::from_str(&text).unwrap();
+    let models = parse::models(&catalog, None, None);
+    let astra = models.iter().find(|m| m.id == "gpt-6-astra").unwrap();
+    let levels: Vec<&str> = astra.efforts.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(levels, ["low", "medium", "high", "xhigh", "max", "ultra"]);
+    assert_eq!(astra.efforts[0].description, "Fast responses with lighter reasoning");
+    assert_eq!(astra.default_effort.as_deref(), Some("medium"), "the model's own default when the user set none");
+    let luna = models.iter().find(|m| m.id == "gpt-6-luna").unwrap();
+    assert!(!luna.efforts.iter().any(|e| e.id == "ultra"), "levels are per model");
+
+    // The user's config wins where the model takes that level, and only there.
+    let set = parse::models(&catalog, None, Some("ultra"));
+    assert_eq!(set.iter().find(|m| m.id == "gpt-6-astra").unwrap().default_effort.as_deref(), Some("ultra"));
+    assert_eq!(set.iter().find(|m| m.id == "gpt-6-luna").unwrap().default_effort.as_deref(), Some("medium"));
 }

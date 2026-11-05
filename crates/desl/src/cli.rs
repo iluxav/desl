@@ -286,40 +286,54 @@ pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: O
 }
 
 /// `desl model <thread>` lists the models of the thread's agent with the current one marked;
-/// `desl model <thread> <name>` picks one.
-pub fn model(paths: &Paths, out: &Out, thread: &str, name: Option<String>) -> Result<()> {
+/// `desl model <thread> <name>` picks one, and `--effort <level>` picks how hard it thinks.
+pub fn model(paths: &Paths, out: &Out, thread: &str, name: Option<String>, effort: Option<String>) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
-    match name {
-        None => {
-            let Reply::Models { agent, models, current } = conn.call(Command::Models { thread_id: t.id.clone() })? else {
-                bail!("The desl daemon did not list the models.")
-            };
-            if out.json {
-                out.value(&json!({ "thread_id": t.id, "agent": agent, "current": current, "models": models }));
-                return Ok(());
-            }
-            let id_w = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
-            let name_w = models.iter().map(|m| m.name.chars().count()).max().unwrap_or(0);
-            println!("{} · {agent}", t.id);
-            for m in &models {
-                let mark = if Some(&m.id) == current.as_ref() { "✓" } else { " " };
-                println!("{mark} {:<id_w$}  {:<name_w$}  {}", m.id, m.name, m.description);
-            }
+    // The list makes a name checkable; ask for it first so a typo is caught here.
+    let Reply::Models { agent, models, current, effort: effort_now } = conn.call(Command::Models { thread_id: t.id.clone() })? else {
+        bail!("The desl daemon did not list the models.")
+    };
+    if name.is_none() && effort.is_none() {
+        if out.json {
+            out.value(&json!({ "thread_id": t.id, "agent": agent, "current": current, "effort": effort_now, "models": models }));
+            return Ok(());
         }
-        Some(name) => {
-            // The list makes a name checkable; ask for it first so a typo is caught here.
-            conn.call(Command::Models { thread_id: t.id.clone() })?;
-            let Reply::ModelSet { agent, model } = conn.call(Command::SetModel { thread_id: t.id.clone(), model: Some(name) })? else {
-                bail!("The desl daemon did not set the model.")
-            };
-            let text = match &model {
-                Some(m) if !m.default => format!("{agent} will use {} in {} from its next prompt.", m.name, t.id),
-                _ => format!("{agent} is back on its default model in {}.", t.id),
-            };
-            done(out, json!({ "thread_id": t.id, "agent": agent, "model": model }), text);
+        let id_w = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
+        let name_w = models.iter().map(|m| m.name.chars().count()).max().unwrap_or(0);
+        println!("{} · {agent}", t.id);
+        for m in &models {
+            let mark = if Some(&m.id) == current.as_ref() { "✓" } else { " " };
+            println!("{mark} {:<id_w$}  {:<name_w$}  {}", m.id, m.name, m.description);
         }
+        // The effort line is about the model in use: its levels, and which one applies.
+        if let Some(m) = models.iter().find(|m| Some(&m.id) == current.as_ref()).filter(|m| !m.efforts.is_empty()) {
+            let levels: Vec<&str> = m.efforts.iter().map(|e| e.id.as_str()).collect();
+            let now = match (&effort_now, &m.default_effort) {
+                (Some(level), _) => level.clone(),
+                (None, Some(level)) => format!("{agent}'s own setting, now {level}"),
+                (None, None) => format!("{agent}'s own setting"),
+            };
+            println!("effort: {now} (levels: {})", levels.join(", "));
+        }
+        return Ok(());
     }
+    let mut set = None;
+    if let Some(name) = name {
+        set = Some(conn.call(Command::SetModel { thread_id: t.id.clone(), model: Some(name) })?);
+    }
+    if let Some(level) = effort {
+        set = Some(conn.call(Command::SetEffort { thread_id: t.id.clone(), effort: Some(level) })?);
+    }
+    let Some(Reply::ModelSet { agent, model, effort }) = set else { bail!("The desl daemon did not set the model.") };
+    let model = model.filter(|m| !m.default);
+    let text = match (&model, &effort) {
+        (Some(m), Some(e)) => format!("{agent} will use {} at {e} effort in {} from its next prompt.", m.name, t.id),
+        (Some(m), None) => format!("{agent} will use {} in {} from its next prompt.", m.name, t.id),
+        (None, Some(e)) => format!("{agent} will use its default model at {e} effort in {} from its next prompt.", t.id),
+        (None, None) => format!("{agent} is on its default model and effort in {}.", t.id),
+    };
+    done(out, json!({ "thread_id": t.id, "agent": agent, "model": model, "effort": effort }), text);
     Ok(())
 }
 

@@ -202,6 +202,12 @@ fn the_initialize_reply_lists_the_models_of_claudes_own_picker() {
     assert_eq!(models.iter().filter(|m| m.default).count(), 1);
     let sonnet = models.iter().find(|m| m.id == "sonnet").unwrap();
     assert_eq!((sonnet.name.as_str(), sonnet.description.as_str()), ("Sonnet 5.5", "Most efficient for simpler tasks"));
+    // Effort levels are per model, and Claude Code does not say which one is the default.
+    let levels = |id: &str| models.iter().find(|m| m.id == id).unwrap().efforts.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(levels("sonnet"), ["low", "medium", "high", "xhigh", "max"]);
+    assert_eq!(levels("claude-opus-4-6"), ["low", "medium", "high", "max"]);
+    assert!(levels("claude-haiku-4-5-20251001").is_empty(), "a model without effort levels offers none");
+    assert_eq!(sonnet.default_effort, None);
     // Any other line of the stream is not a model list.
     assert_eq!(parse::models(&json!({ "type": "system", "subtype": "hook_started" })), None);
 }

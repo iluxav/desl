@@ -145,7 +145,7 @@ The default layout is a narrow sidebar on the left, one or more panes on the rig
 
 **Transcript pane.** The agent's prose renders as markdown with syntax-highlighted code blocks and visible fenced boundaries. Tool calls are one collapsed line each with a verb, a target and an outcome; an edit also shows the first rows of its diff under the line. `enter` on a line expands its full output in place or collapses it again, `o` opens the file in `$EDITOR`. Diffs render as unified diffs with gutter colours. Switch and fork events appear as thin labelled dividers. The pane auto-follows while streaming and stops following the moment the user scrolls up, with a `↓ 3 new` pill to jump back.
 
-**Input.** A bordered single-line box that grows to five lines. `/` opens a fuzzy command palette with inline descriptions; a command whose argument is a choice (`/switch`, `/model`) opens a second list of the choices instead of asking the user to type one from memory; `@` opens a fuzzy file picker scoped to the project; `ctrl+r` searches prompt history across all threads. `shift+enter` inserts a newline; `enter` sends. While the agent is working, the box stays usable and queued prompts show as `⏳ queued`.
+**Input.** A bordered single-line box that grows to five lines. `/` opens a fuzzy command palette with inline descriptions; a command whose argument is a choice (`/switch`, `/model`) opens a second list of the choices instead of asking the user to type one from memory, and a choice that has its own choices (a model's reasoning effort) opens a third; `@` opens a fuzzy file picker scoped to the project; `ctrl+r` searches prompt history across all threads. `shift+enter` inserts a newline; `enter` sends. While the agent is working, the box stays usable and queued prompts show as `⏳ queued`.
 
 **Approvals.** A one-line strip between transcript and input, never a modal: `Allow codex: rm -rf dist/  [y]es [n]o [a]lways for this thread [e]dit`. The bell fires and the sidebar glyph changes at the same moment.
 
@@ -172,7 +172,7 @@ Three surfaces, one command set. Every slash command has a CLI equivalent and a 
 | `/threads` | Fuzzy thread picker | T3 Code |
 | `/resume` | Pick a past thread to reopen | Claude Code, Codex |
 | `/rename <name>` | Rename this thread | tmux |
-| `/model [name]` | Change the model for this agent. Alone, it opens the agent's own list of models with the current one marked | Claude Code, Codex |
+| `/model [name] [effort]` | Change the model for this agent. Alone, it opens the agent's own list of models with the current one marked; picking a model then lists its reasoning effort levels the same way | Claude Code, Codex |
 | `/clear` | Start a fresh context on the same thread (new native session, history kept) | Claude Code |
 | `/compact` | Ask the agent to compact its context | Claude Code |
 | `/export [file]` | Write the thread as markdown | Claude Code |
@@ -224,7 +224,7 @@ desl thread list|show|rename|rm
 desl new [-p project] [--agent claude] [--worktree] [-m "prompt"]
 desl send <thread> "prompt"  send and stream the reply to stdout
 desl switch <thread> <agent>
-desl model <thread> [name]   list the agent's models, or pick one
+desl model <thread> [name] [--effort level]   list the agent's models, or pick one and how hard it thinks
 desl fork <thread> <agent> [--at N] [--worktree]
 desl brief <thread>          print the handoff brief
 desl wait <thread>           block until the thread is waiting or idle
@@ -265,6 +265,7 @@ Binding {
   seen_up_to:   41                 // index of the last event this agent has in context
   model:        "claude-opus-5-5"   // what the agent reported for its session
   model_choice: "sonnet" | null     // picked with /model; null follows the agent's default
+  effort_choice: "high" | null      // reasoning effort picked with /model; null follows the agent's own setting
   last_used_at
 }
 ```
@@ -398,7 +399,7 @@ interface Adapter {
   id():            "claude" | "codex" | ...
   detect():        { installed: bool, version, logged_in: bool, binary_path }
   capabilities():  { resume, fork, model_switch, compact, interrupt, approvals }
-  start(thread, opts: { resume_session_id?, model?, cwd, permission_mode }) → Session
+  start(thread, opts: { resume_session_id?, model?, effort?, cwd, permission_mode }) → Session
   send(session, turn: { text, attachments[], prefix? }) → AsyncStream<IREvent>
   interrupt(session)
   answer(session, approval: { call_id, decision })

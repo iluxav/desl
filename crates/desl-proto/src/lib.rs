@@ -138,6 +138,12 @@ pub enum Command {
         thread_id: String,
         model: Option<String>,
     },
+    /// Picks a reasoning effort for the thread's active agent, by `Effort::id`. `None` goes back
+    /// to the agent's own setting. Takes effect with the next prompt.
+    SetEffort {
+        thread_id: String,
+        effort: Option<String>,
+    },
     /// Replies when the thread is waiting, idle or failed.
     Wait {
         thread_id: String,
@@ -224,15 +230,22 @@ pub enum Reply {
     },
     Brief(BriefPreview),
     /// `current` is the id of the model this thread uses: the user's pick, else the default.
+    /// `effort` is the user's pick of a reasoning effort; None follows the agent's own setting.
     Models {
         agent: String,
         models: Vec<ModelInfo>,
         current: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
-    /// The pick as the agent names it; None when the thread went back to the default.
+    /// The answer to `set_model` and `set_effort`: what the thread's agent will use from its
+    /// next turn. `model` is None on the agent's default model, `effort` is None on the agent's
+    /// own effort setting.
     ModelSet {
         agent: String,
         model: Option<ModelInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
     },
     Waited {
         status: Status,

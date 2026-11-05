@@ -458,6 +458,7 @@ impl Engine {
                 cwd: t.cwd.clone().into(),
                 resume_session_id: session_id,
                 model: t.bindings.get(&agent).and_then(|b| b.model_choice.clone()),
+                effort: t.bindings.get(&agent).and_then(|b| b.effort_choice.clone()),
                 permission_mode: t.permission_mode,
             };
             match adapter.start(opts, self.sink(thread_id, &agent, generation)) {
@@ -845,6 +846,7 @@ impl Engine {
                 Err(e) => Err(e),
             },
             Command::SetModel { thread_id, model } => self.set_model(&thread_id, model.as_deref()),
+            Command::SetEffort { thread_id, effort } => self.set_effort(&thread_id, effort.as_deref()),
             Command::Wait { thread_id } => match self.idx(&thread_id) {
                 Ok(i) if self.threads[i].status != Status::Working => Ok(Reply::Waited { status: self.threads[i].status }),
                 Ok(_) => {
@@ -890,9 +892,20 @@ impl Engine {
     fn models_reply(&self, thread_id: &str, agent: &str) -> Outcome {
         let i = self.idx(thread_id)?;
         let models = self.models.get(agent).cloned().unwrap_or_default();
-        let choice = self.threads[i].bindings.get(agent).and_then(|b| b.model_choice.clone());
+        let binding = self.threads[i].bindings.get(agent);
+        let choice = binding.and_then(|b| b.model_choice.clone());
         let current = choice.or_else(|| models.iter().find(|m| m.default).map(|m| m.id.clone()));
-        Ok(Reply::Models { agent: agent.to_string(), models, current })
+        Ok(Reply::Models { agent: agent.to_string(), models, current, effort: binding.and_then(|b| b.effort_choice.clone()) })
+    }
+
+    /// The model a thread's agent runs: the user's pick, else the agent's default. None while
+    /// the agent's list has not been read.
+    fn model_in_use(&self, i: usize, agent: &str) -> Option<&ModelInfo> {
+        let list = self.models.get(agent)?;
+        match self.threads[i].bindings.get(agent).and_then(|b| b.model_choice.as_deref()) {
+            Some(choice) => list.iter().find(|m| m.id == choice),
+            None => list.iter().find(|m| m.default),
+        }
     }
 
     /// `/model`: the pick is kept in the thread's binding and reaches the agent with its next
@@ -909,12 +922,14 @@ impl Engine {
                 // The list is known: the name has to be on it.
                 Some(list) => match list.iter().find(|m| m.id.eq_ignore_ascii_case(wanted) || m.name.eq_ignore_ascii_case(wanted)) {
                     Some(m) => Some(m.clone()),
+                    // No model is called that: it means the agent's own.
+                    None if wanted.eq_ignore_ascii_case("default") => None,
                     None => {
                         let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
                         return Err(format!("{agent} has no model named {wanted}. It offers {}.", ids.join(", ")));
                     }
                 },
-                None => Some(ModelInfo { id: wanted.to_string(), name: wanted.to_string(), description: String::new(), default: false }),
+                None => Some(ModelInfo::named(wanted)),
             },
         };
         let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding { agent: agent.clone(), ..Binding::default() });
@@ -922,8 +937,45 @@ impl Engine {
         b.model_choice = picked.as_ref().filter(|m| !m.default).map(|m| m.id.clone());
         // The live process keeps its model; ending it makes the next turn start one with the new model.
         self.live(thread_id).sessions.remove(&agent);
+        // An effort the new model does not take would fail its next turn: drop it with the old model.
+        let kept = self.threads[i].bindings.get(&agent).and_then(|b| b.effort_choice.clone());
+        let fits = match (&kept, self.model_in_use(i, &agent)) {
+            (Some(level), Some(m)) => m.efforts.iter().any(|e| &e.id == level),
+            _ => true,
+        };
+        if !fits && let Some(b) = self.threads[i].bindings.get_mut(&agent) {
+            b.effort_choice = None;
+        }
         self.persist(thread_id);
-        Ok(Reply::ModelSet { agent, model: picked })
+        let effort = self.threads[i].bindings.get(&agent).and_then(|b| b.effort_choice.clone());
+        Ok(Reply::ModelSet { agent, model: picked, effort })
+    }
+
+    /// The second half of `/model`: how hard the agent thinks. Kept in the binding like the
+    /// model, and it reaches the agent the same way, with its next turn.
+    fn set_effort(&mut self, thread_id: &str, effort: Option<&str>) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let agent = self.threads[i].active_agent.clone();
+        if self.threads[i].status.busy() {
+            return Err(format!("{agent} is still working. Wait for it to finish or press ctrl+c, then change the effort."));
+        }
+        let model = self.model_in_use(i, &agent).cloned();
+        let wanted = effort.map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty() && e != "default");
+        // The model's levels are known: the level has to be one of them.
+        if let (Some(level), Some(m)) = (&wanted, &model)
+            && !m.efforts.iter().any(|e| &e.id == level)
+        {
+            let levels: Vec<&str> = m.efforts.iter().map(|e| e.id.as_str()).collect();
+            return Err(match levels.is_empty() {
+                true => format!("{} has no effort levels to choose from.", m.name),
+                false => format!("{} has no effort level named {level}. It takes {}.", m.name, levels.join(", ")),
+            });
+        }
+        let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding { agent: agent.clone(), ..Binding::default() });
+        b.effort_choice = wanted.clone();
+        self.live(thread_id).sessions.remove(&agent);
+        self.persist(thread_id);
+        Ok(Reply::ModelSet { agent, model: model.filter(|m| !m.default), effort: wanted })
     }
 
     fn subscribe(&mut self, client: ClientId, cwd: Option<&str>) -> Outcome {

@@ -2,7 +2,7 @@
 
 use super::*;
 use desl_ir::adapter::{AdapterError, Capabilities, Detection};
-use desl_ir::{ModelInfo, Risk, tool};
+use desl_ir::{Effort, ModelInfo, Risk, tool};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -18,6 +18,8 @@ struct FakeState {
     starts: Vec<Option<String>>,
     /// The model each `start` was given.
     models: Vec<Option<String>>,
+    /// The effort each started session was given.
+    efforts: Vec<Option<String>>,
     /// How many times the model list was asked for.
     listed: usize,
     answers: Vec<(String, Decision)>,
@@ -61,18 +63,25 @@ impl Adapter for Fake {
     }
     fn models(&self, _cwd: &Path) -> Result<Vec<ModelInfo>, AdapterError> {
         self.state.lock().unwrap().listed += 1;
-        let model = |id: &str, name: &str, default: bool| ModelInfo {
+        let model = |id: &str, name: &str, default: bool, levels: &[&str]| ModelInfo {
             id: id.into(),
             name: name.into(),
             description: format!("{name} of {}", self.id),
             default,
+            efforts: levels.iter().map(|l| Effort { id: l.to_string(), description: String::new() }).collect(),
+            default_effort: default.then(|| "medium".to_string()),
         };
-        Ok(vec![model("default", "Default", true), model("fast", "Fast One", false), model("deep", "Deep One", false)])
+        Ok(vec![
+            model("default", "Default", true, &["low", "medium", "high"]),
+            model("fast", "Fast One", false, &["low", "medium"]),
+            model("deep", "Deep One", false, &["low", "medium", "high", "max"]),
+        ])
     }
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {
         let mut s = self.state.lock().unwrap();
         s.starts.push(opts.resume_session_id.clone());
         s.models.push(opts.model.clone());
+        s.efforts.push(opts.effort.clone());
         s.sink = Some(sink.clone());
         Ok(Box::new(FakeSession {
             id: self.id,
@@ -596,7 +605,7 @@ impl Rig {
 fn the_model_list_is_asked_once_and_marks_what_the_thread_uses() {
     let mut r = rig("models");
     let t = r.t.clone();
-    let Reply::Models { agent, models, current } = r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
+    let Reply::Models { agent, models, current, .. } = r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
     assert_eq!((agent.as_str(), models.len(), current.as_deref()), ("claude", 3, Some("default")));
     r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("Fast One".into()) }).unwrap();
     let Reply::Models { current, .. } = r.cmd(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
@@ -610,7 +619,8 @@ fn a_new_model_reaches_the_agent_with_the_next_prompt_and_keeps_the_session() {
     let t = r.t.clone();
     r.prompt(&t, "first");
     r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap();
-    let Reply::ModelSet { agent, model } = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("deep".into()) }).unwrap() else {
+    let Reply::ModelSet { agent, model, .. } = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("deep".into()) }).unwrap()
+    else {
         panic!()
     };
     assert_eq!((agent.as_str(), model.map(|m| m.name)), ("claude", Some("Deep One".to_string())));
@@ -642,4 +652,59 @@ fn each_agent_of_a_thread_keeps_its_own_model() {
     r.prompt(&t, "two");
     assert_eq!(r.codex.lock().unwrap().models, vec![None]);
     assert_eq!(r.claude.lock().unwrap().models, vec![Some("fast".to_string())]);
+}
+
+#[test]
+fn an_effort_reaches_the_agent_with_the_next_prompt_and_keeps_the_session() {
+    let mut r = rig("set-effort");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap();
+    let Reply::ModelSet { agent, model, effort } = r.cmd(Command::SetEffort { thread_id: t.clone(), effort: Some("High".into()) }).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!((agent.as_str(), model, effort.as_deref()), ("claude", None, Some("high")), "the default model, thinking harder");
+    r.prompt(&t, "second");
+    {
+        let s = r.claude.lock().unwrap();
+        assert_eq!(s.efforts, vec![None, Some("high".to_string())]);
+        assert_eq!(s.starts, vec![None, Some("claude-s1".to_string())], "the same native session, resumed at the new effort");
+        assert_eq!(s.payloads[1], "second", "an effort change is not a handoff: no brief");
+    }
+    let Reply::Models { effort, .. } = r.cmd(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
+    assert_eq!(effort.as_deref(), Some("high"), "the list says what the thread uses");
+
+    // A level the model does not take is refused here, not by the agent in the middle of a turn.
+    let unknown = r.cmd(Command::SetEffort { thread_id: t.clone(), effort: Some("ultra".into()) }).unwrap_err();
+    assert_eq!(unknown, "Default has no effort level named ultra. It takes low, medium, high.");
+    assert_eq!(r.thread(&t).bindings["claude"].effort_choice.as_deref(), Some("high"));
+
+    // Back to the agent's own setting: the choice is cleared, not pinned.
+    r.cmd(Command::SetEffort { thread_id: t.clone(), effort: Some("default".into()) }).unwrap();
+    assert_eq!(r.thread(&t).bindings["claude"].effort_choice, None);
+}
+
+#[test]
+fn an_effort_the_new_model_does_not_take_goes_with_the_old_model() {
+    let mut r = rig("effort-per-model");
+    let t = r.t.clone();
+    r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap();
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("deep".into()) }).unwrap();
+    r.cmd(Command::SetEffort { thread_id: t.clone(), effort: Some("low".into()) }).unwrap();
+    let Reply::ModelSet { effort, .. } = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("fast".into()) }).unwrap() else {
+        panic!()
+    };
+    assert_eq!(effort.as_deref(), Some("low"), "a level both models take is kept");
+
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("deep".into()) }).unwrap();
+    r.cmd(Command::SetEffort { thread_id: t.clone(), effort: Some("max".into()) }).unwrap();
+    let Reply::ModelSet { effort, .. } = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("fast".into()) }).unwrap() else {
+        panic!()
+    };
+    assert_eq!(effort, None, "fast has no max: the thread is back on the agent's own setting");
+    assert_eq!(r.thread(&t).bindings["claude"].effort_choice, None);
+    r.prompt(&t, "go");
+    let s = r.claude.lock().unwrap();
+    assert_eq!((s.models.last().unwrap().as_deref(), s.efforts.last().unwrap().as_deref()), (Some("fast"), None));
 }

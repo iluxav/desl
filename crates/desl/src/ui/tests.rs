@@ -6,7 +6,9 @@
 use crate::app::{App, Focus, Msg, Overlay};
 use crate::conn::Link;
 use desl_ir::adapter::{Capabilities, Detection};
-use desl_ir::{Binding, ChangeKind, Event, EventKind, GitState, ModelInfo, PendingApproval, PermissionMode, Project, Risk, Status, Thread};
+use desl_ir::{
+    Binding, ChangeKind, Effort, Event, EventKind, GitState, ModelInfo, PendingApproval, PermissionMode, Project, Risk, Status, Thread,
+};
 use desl_proto::{AgentInfo, Reply, ServerFrame, StreamDelta, Workspace};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -37,6 +39,7 @@ fn thread(id: &str, project: &str, name: &str, agent: &str, status: Status, crea
                 seen_up_to: 0,
                 model: Some("m".into()),
                 model_choice: None,
+                effort_choice: None,
                 last_used_at: 0,
             },
         )]
@@ -298,6 +301,11 @@ fn snapshot_model_alone_lists_the_agents_models_with_the_current_one_marked() {
         name: name.into(),
         description: description.into(),
         default,
+        efforts: ["low", "medium", "high", "xhigh", "max"]
+            .iter()
+            .map(|l| Effort { id: l.to_string(), description: String::new() })
+            .collect(),
+        default_effort: None,
     };
     let models = vec![
         model("default", "Default (recommended)", "Opus 5.5 · Best for everyday, complex tasks", true),
@@ -309,7 +317,7 @@ fn snapshot_model_alone_lists_the_agents_models_with_the_current_one_marked() {
     let id = asked["id"].as_u64().unwrap();
     app.handle(Msg::Daemon(ServerFrame::Reply {
         id,
-        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("sonnet".into()) }),
+        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("sonnet".into()), effort: None }),
         error: None,
     }));
     let got = screen(&mut app, 80, 24);
@@ -325,10 +333,131 @@ fn snapshot_model_alone_lists_the_agents_models_with_the_current_one_marked() {
     let picked = model("fable", "Fable 5.1", "For your toughest challenges", false);
     app.handle(Msg::Daemon(ServerFrame::Reply {
         id,
-        ok: Some(Reply::ModelSet { agent: "claude".into(), model: Some(picked) }),
+        ok: Some(Reply::ModelSet { agent: "claude".into(), model: Some(picked.clone()), effort: None }),
         error: None,
     }));
-    assert!(screen(&mut app, 80, 24).contains("claude will use Fable 5.1 from your next prompt."));
+
+    // The model is set, and its effort levels are already on screen: Claude Code does not say
+    // which one it uses, so the row that is current is "not choosing".
+    let got = screen(&mut app, 80, 24);
+    snapshot("effort-picker-80x24", &got);
+    assert!(got.contains("claude will use Fable 5.1 from your next prompt."), "{got}");
+    assert!(got.contains("Fable 5.1 effort") && got.contains("▸ default") && got.contains("✓ current · claude's own setting"), "{got}");
+    for _ in 0..3 {
+        press(&mut app, ratatui::crossterm::event::KeyCode::Down);
+    }
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["effort"].as_str()), (Some("set_effort"), Some("high")));
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id: sent["id"].as_u64().unwrap(),
+        ok: Some(Reply::ModelSet { agent: "claude".into(), model: Some(picked), effort: Some("high".into()) }),
+        error: None,
+    }));
+    assert!(screen(&mut app, 80, 24).contains("Fable 5.1 at high effort from your next prompt."));
+}
+
+#[test]
+fn the_effort_list_marks_the_level_in_use_and_its_first_row_goes_back_to_the_agents_own() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "codex", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/model");
+    let id = last_request(&mut peer)["id"].as_u64().unwrap();
+    let level = |id: &str, description: &str| Effort { id: id.into(), description: description.into() };
+    let astra = ModelInfo {
+        id: "gpt-6-astra".into(),
+        name: "GPT-6-Astra".into(),
+        description: "Frontier coding model".into(),
+        default: true,
+        efforts: vec![
+            level("low", "Fast responses with lighter reasoning"),
+            level("medium", "Balances speed and reasoning depth for everyday tasks"),
+            level("high", "Greater reasoning depth for complex problems"),
+        ],
+        default_effort: Some("medium".into()),
+    };
+    // A model without levels has no second list.
+    let plain = ModelInfo { efforts: Vec::new(), default_effort: None, default: false, ..astra.clone() };
+    let plain = ModelInfo { id: "plain".into(), name: "Plain".into(), ..plain };
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id,
+        ok: Some(Reply::Models {
+            agent: "codex".into(),
+            models: vec![astra, plain],
+            current: Some("gpt-6-astra".into()),
+            effort: Some("high".into()),
+        }),
+        error: None,
+    }));
+    let models = screen(&mut app, 100, 24);
+    assert!(models.contains("✓ current · high effort · Frontier coding model"), "{models}");
+
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    assert_eq!(last_request(&mut peer)["command"].as_str(), Some("set_model"));
+    let efforts = screen(&mut app, 100, 24);
+    assert!(efforts.contains("GPT-6-Astra effort"), "{efforts}");
+    assert!(efforts.contains("▸ high") && efforts.contains("✓ current · Greater reasoning depth for complex problems"), "{efforts}");
+    assert!(efforts.contains("codex's own setting, now medium"), "{efforts}");
+
+    // Up to the first row: not choosing. It reaches the daemon as no effort at all.
+    for _ in 0..3 {
+        press(&mut app, ratatui::crossterm::event::KeyCode::Up);
+    }
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["effort"].is_null()), (Some("set_effort"), true));
+
+    // The model without levels: enter picks it and the list closes.
+    type_line(&mut app, "/model");
+    let id = last_request(&mut peer)["id"].as_u64().unwrap();
+    let again = ModelInfo {
+        id: "plain".into(),
+        name: "Plain".into(),
+        description: String::new(),
+        default: true,
+        efforts: Vec::new(),
+        default_effort: None,
+    };
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id,
+        ok: Some(Reply::Models { agent: "codex".into(), models: vec![again], current: Some("plain".into()), effort: None }),
+        error: None,
+    }));
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    assert!(!screen(&mut app, 100, 24).contains("effort"), "no levels, no second list");
+}
+
+#[test]
+fn a_model_and_an_effort_typed_together_are_set_one_after_the_other() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/model sonnet high");
+    let first = last_request(&mut peer);
+    assert_eq!((first["command"].as_str(), first["model"].as_str()), (Some("set_model"), Some("sonnet")));
+    let sonnet = ModelInfo {
+        id: "sonnet".into(),
+        name: "Sonnet 5.5".into(),
+        description: String::new(),
+        default: false,
+        efforts: Vec::new(),
+        default_effort: None,
+    };
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id: first["id"].as_u64().unwrap(),
+        ok: Some(Reply::ModelSet { agent: "claude".into(), model: Some(sonnet), effort: None }),
+        error: None,
+    }));
+    let second = last_request(&mut peer);
+    assert_eq!((second["command"].as_str(), second["effort"].as_str()), (Some("set_effort"), Some("high")));
+
+    // A model the agent does not have stops there: the effort is not applied to the old model.
+    type_line(&mut app, "/model sonet high");
+    let bad = last_request(&mut peer);
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id: bad["id"].as_u64().unwrap(),
+        ok: None,
+        error: Some("claude has no model named sonet. It offers default, sonnet.".into()),
+    }));
+    assert!(screen(&mut app, 100, 24).contains("claude has no model named sonet."));
+    assert!(last_request(&mut peer).is_null(), "nothing more was sent");
 }
 
 #[test]
@@ -337,11 +466,18 @@ fn a_long_list_scrolls_with_the_selection() {
     type_line(&mut app, "/model");
     let id = last_request(&mut peer)["id"].as_u64().unwrap();
     let models: Vec<ModelInfo> = (1..=13)
-        .map(|n| ModelInfo { id: format!("m{n}"), name: format!("Model {n}"), description: String::new(), default: n == 1 })
+        .map(|n| ModelInfo {
+            id: format!("m{n}"),
+            name: format!("Model {n}"),
+            description: String::new(),
+            default: n == 1,
+            efforts: Vec::new(),
+            default_effort: None,
+        })
         .collect();
     app.handle(Msg::Daemon(ServerFrame::Reply {
         id,
-        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("m1".into()) }),
+        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("m1".into()), effort: None }),
         error: None,
     }));
     let top = screen(&mut app, 80, 24);

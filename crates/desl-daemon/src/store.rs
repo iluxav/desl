@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -120,6 +120,10 @@ impl Store {
             // The model the user picked with /model, per thread and agent.
             self.conn.execute_batch("BEGIN; ALTER TABLE bindings ADD COLUMN model_choice TEXT; PRAGMA user_version = 2; COMMIT;")?;
         }
+        if version < 3 {
+            // The reasoning effort the user picked with /model, per thread and agent.
+            self.conn.execute_batch("BEGIN; ALTER TABLE bindings ADD COLUMN effort_choice TEXT; PRAGMA user_version = 3; COMMIT;")?;
+        }
         Ok(())
     }
 
@@ -145,8 +149,9 @@ impl Store {
     pub fn threads(&self) -> Result<Vec<Thread>> {
         let mut bindings: BTreeMap<String, BTreeMap<String, Binding>> = BTreeMap::new();
         {
-            let mut st =
-                self.conn.prepare("SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice FROM bindings")?;
+            let mut st = self.conn.prepare(
+                "SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice FROM bindings",
+            )?;
             let rows = st.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
@@ -157,6 +162,7 @@ impl Store {
                         model: r.get(4)?,
                         last_used_at: r.get(5)?,
                         model_choice: r.get(6)?,
+                        effort_choice: r.get(7)?,
                     },
                 ))
             })?;
@@ -226,8 +232,9 @@ impl Store {
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
         for b in t.bindings.values() {
             self.conn.execute(
-                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at, b.model_choice],
+                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice, effort_choice)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at, b.model_choice, b.effort_choice],
             )?;
         }
         Ok(())
@@ -438,6 +445,7 @@ mod tests {
                 seen_up_to: 2,
                 model: Some("m".into()),
                 model_choice: Some("sonnet".into()),
+                effort_choice: Some("high".into()),
                 last_used_at: 5,
             },
         );
@@ -451,6 +459,7 @@ mod tests {
         assert_eq!(back[0].queued, vec!["next".to_string()]);
         assert_eq!(back[0].bindings["claude"].session_id.as_deref(), Some("s1"));
         assert_eq!(back[0].bindings["claude"].model_choice.as_deref(), Some("sonnet"));
+        assert_eq!(back[0].bindings["claude"].effort_choice.as_deref(), Some("high"));
         assert_eq!(s.queue_pop("t-1").unwrap().as_deref(), Some("next"));
         assert_eq!(s.queue_pop("t-1").unwrap(), None);
         let _ = std::fs::remove_dir_all(dir);
@@ -543,6 +552,7 @@ mod tests {
         let s = Store::open(&db, &dir.join("blobs")).unwrap();
         let t = &s.threads().unwrap()[0];
         assert_eq!((t.bindings["claude"].session_id.as_deref(), t.bindings["claude"].model_choice.as_deref()), (Some("s1"), None));
+        assert_eq!(t.bindings["claude"].effort_choice, None);
         assert!(dir.join("workspace.db.v1.bak").exists(), "the store as it was is kept beside the migrated one");
         let version: i64 = s.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);

@@ -281,6 +281,9 @@ pub struct Binding {
     /// The model the user picked with `/model`; None follows the agent's own default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_choice: Option<String>,
+    /// The reasoning effort the user picked with `/model`; None follows the agent's own setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort_choice: Option<String>,
     pub last_used_at: i64,
 }
 
@@ -293,6 +296,36 @@ pub struct ModelInfo {
     pub description: String,
     /// The one the agent uses when the user has not picked.
     pub default: bool,
+    /// The reasoning effort levels this model takes, lightest first. Empty when it has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub efforts: Vec<Effort>,
+    /// The level the agent uses when the user has not picked, when the agent says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_effort: Option<String>,
+}
+
+impl ModelInfo {
+    /// A model known by name only: the agent's list has not been read.
+    pub fn named(id: &str) -> ModelInfo {
+        ModelInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            description: String::new(),
+            default: false,
+            efforts: Vec::new(),
+            default_effort: None,
+        }
+    }
+}
+
+/// One reasoning effort level of a model, as the agent names it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Effort {
+    /// What the agent takes on its command line: `low`, `high`.
+    pub id: String,
+    /// The agent's own line about the level; empty when it has none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
 }
 
 /// Branch state for the status bar, read by the daemon's git service.

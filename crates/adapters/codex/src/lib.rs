@@ -33,17 +33,22 @@ fn sandbox_flag(mode: PermissionMode) -> &'static str {
     }
 }
 
-/// The model name from the user's own config, for the status line and `/info` only.
-fn configured_model() -> Option<String> {
+/// A top-level string from the user's own Codex config: `model`, `model_reasoning_effort`.
+/// Read so the lists can mark what Codex uses when the user has not picked in desl.
+fn configured(key: &str) -> Option<String> {
     let path = std::env::var_os("CODEX_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
         .map(|d| d.join("config.toml"))?;
     let text = std::fs::read_to_string(path).ok()?;
     text.lines().take_while(|l| !l.trim_start().starts_with('[')).find_map(|l| {
-        let rest = l.trim().strip_prefix("model")?.trim_start().strip_prefix('=')?;
+        let rest = l.trim().strip_prefix(key)?.trim_start().strip_prefix('=')?;
         Some(rest.trim().trim_matches('"').to_string()).filter(|m| !m.is_empty())
     })
+}
+
+fn configured_model() -> Option<String> {
+    configured("model")
 }
 
 impl Adapter for Codex {
@@ -95,7 +100,7 @@ impl Adapter for Codex {
             return Err(failed("`codex debug models` failed".into()));
         }
         let catalog: Value = serde_json::from_slice(&out.stdout).map_err(|_| failed("its answer was not JSON".into()))?;
-        let models = parse::models(&catalog, configured_model().as_deref());
+        let models = parse::models(&catalog, configured_model().as_deref(), configured("model_reasoning_effort").as_deref());
         if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) }
     }
 
@@ -147,6 +152,12 @@ impl Session for CodexSession {
         cmd.args(["exec", "-s", sandbox_flag(self.opts.permission_mode)]);
         if let Some(model) = &self.opts.model {
             cmd.args(["-m", model]);
+        }
+        // A config override, parsed as TOML, so the level is quoted. Like `-s` it goes before
+        // `resume`. A level the model does not take fails the turn with a 400; desl checks the
+        // level against the model's list before it gets here.
+        if let Some(effort) = &self.opts.effort {
+            cmd.args(["-c", &format!("model_reasoning_effort=\"{effort}\"")]);
         }
         if let Some(id) = self.session_id.lock().ok().and_then(|s| s.clone()) {
             cmd.args(["resume", &id]);

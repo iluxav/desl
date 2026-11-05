@@ -44,6 +44,8 @@ pub struct StartOpts {
     pub resume_session_id: Option<String>,
     /// The user's pick, by `ModelInfo::id`; None lets the agent use its default.
     pub model: Option<String>,
+    /// The user's reasoning effort, by `Effort::id`; None lets the agent use its own setting.
+    pub effort: Option<String>,
     pub permission_mode: PermissionMode,
 }
 

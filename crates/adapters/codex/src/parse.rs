@@ -5,7 +5,7 @@
 //! the file but never says what changed, and item ids start again at `item_0` in every turn.
 
 use desl_ir::adapter::AdapterEvent;
-use desl_ir::{ChangeKind, EventKind, ModelInfo, diff, tool};
+use desl_ir::{ChangeKind, Effort, EventKind, ModelInfo, diff, tool};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -93,7 +93,7 @@ fn unwrap_shell(command: &str) -> String {
 /// `codex debug models`: the catalog behind Codex's own `/model` picker. Entries Codex hides
 /// are left out; the rest keep its order. `configured` is the model in the user's config, which
 /// is the one a turn uses when nothing else is said; without it, Codex's first entry is.
-pub fn models(v: &Value, configured: Option<&str>) -> Vec<ModelInfo> {
+pub fn models(v: &Value, configured: Option<&str>, configured_effort: Option<&str>) -> Vec<ModelInfo> {
     let mut listed: Vec<&Value> =
         v.get("models").and_then(Value::as_array).into_iter().flatten().filter(|m| str_of(m, "visibility") != "hide").collect();
     listed.sort_by_key(|m| m.get("priority").and_then(Value::as_i64).unwrap_or(i64::MAX));
@@ -105,10 +105,25 @@ pub fn models(v: &Value, configured: Option<&str>) -> Vec<ModelInfo> {
         .into_iter()
         .filter_map(|m| {
             let id = str_of(m, "slug");
+            let efforts: Vec<Effort> = m
+                .get("supported_reasoning_levels")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|l| Effort { id: str_of(l, "effort"), description: str_of(l, "description") })
+                .filter(|e| !e.id.is_empty())
+                .collect();
+            // The user's own config wins over the model's default, as it does in Codex itself.
+            let default_effort = configured_effort
+                .filter(|c| efforts.iter().any(|e| e.id == *c))
+                .map(str::to_string)
+                .or_else(|| Some(str_of(m, "default_reasoning_level")).filter(|l| !l.is_empty()));
             (!id.is_empty()).then(|| ModelInfo {
                 name: Some(str_of(m, "display_name")).filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone()),
                 description: str_of(m, "description"),
                 default: Some(&id) == default.as_ref(),
+                efforts,
+                default_effort,
                 id,
             })
         })

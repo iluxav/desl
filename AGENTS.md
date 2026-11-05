@@ -22,8 +22,8 @@ The experience is the product. Every tool in this space already has the technolo
 
 ## Phases
 
-- **Phase 0 (done 2026-11-04): the experience prototype.** Two throwaway prototypes of the same experience. Prototype A (desl renders the conversation from headless agents) won, decided by the author's own testing; it stays in `phase0/` as the reference for the client and nothing else from it is kept.
-- **Phase 1 (now): the real thing**, in Rust (ratatui, crossterm, rusqlite, clap, serde, tracing; the stack paragraph of `SPEC.md` has the full list), built to match Prototype A pixel for pixel. The author is the only tester.
+- **Phase 0 (done 2026-11-04, reversed 2026-11-05): the experience prototype.** Prototype A (desl renders the conversation from headless agents) won first; the author reversed it for the native route after `phase0/proto-n` showed a seamless switch between the agents' own interfaces. The reasons are in the phase 0 outcome in `SPEC.md`.
+- **Phase 1 (now): the real thing**, in Rust (ratatui, crossterm, portable-pty, vt100, rusqlite, clap, serde, tracing; the stack paragraph of `SPEC.md` has the full list), on the native route: the switch behaves as in `phase0/proto-n`, the overlays look like Prototype A. The author is the only tester.
 - **Phase 2: panes and worktrees. Phase 3: reach.** See the roadmap in `SPEC.md`.
 
 ## Layout
@@ -40,7 +40,7 @@ crates/
     pty/           the raw PTY adapter (phase 2)
 docs/
   protocol.md  adapters.md  keys.md (generated)  CHANGELOG.md  phase0-decisions.md
-phase0/            Prototype A, the interface reference; its own workspace, not part of the build
+phase0/            proto-n, the reference for the native switch; proto-a, the look of the overlays; its own workspace, not part of the build
 SPEC.md  AGENTS.md  CLAUDE.md  README.md
 ```
 
@@ -58,5 +58,5 @@ SPEC.md  AGENTS.md  CLAUDE.md  README.md
 
 `SPEC.md` exported from the design doc replaces two drawings with placeholders. They say:
 
-- **Architecture.** Three clients (the TUI, the CLI and scripts, a later remote client) talk over a Unix socket in JSON frames to one daemon. Inside the daemon: a thread engine (the core), a projector and an approval broker in the first row; a SQLite store, a git service, a PTY host and an event bus in the second; Claude, Codex and raw-PTY adapters in the third. Each adapter drives one process: `claude -p --output-format stream-json`, `codex exec --json`, or any agent TUI or shell.
+- **Architecture.** Three clients (the TUI, the CLI and scripts, a later remote client) talk over a Unix socket in JSON frames to one daemon. Inside the daemon: a thread engine (the core), a projector for the fallback brief and attention in the first row; a SQLite store, a git service, a PTY host and an event bus in the second; Claude and Codex adapters in the third. Each agent runs its own interface in a PTY the daemon owns (`claude --session-id|--resume`, `codex --no-daemon [resume]`); its adapter reads and writes the agent's session files. The drawing predates the native route of 2026-11-05 and still shows headless processes (`claude -p`, `codex exec --json`).
 - **Roadmap.** Four bands left to right — Feel prototype (weeks 1–3), The real thing (weeks 4–8), Panes and worktrees (weeks 9–11), Reach (weeks 12–15) — with a gate after each: users pick the feel; five scenarios and budgets met; twenty threads for eight hours with no leaks; phone-to-server handoff.

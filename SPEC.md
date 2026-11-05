@@ -1,6 +1,6 @@
 # desl — Product Specification
 
-Nov 4, 2026 · @Ilya Vinokurov
+Nov 4, 2026 · @Ilya Vinokurov · revised Nov 5, 2026 for the native route
 
 ## Vision and positioning
 
@@ -18,23 +18,23 @@ desl (say diesel) is a single-binary terminal workspace that runs many coding ag
 
 **What desl is not.** Not a new coding agent, not a model router, not an IDE. It drives the agents the user already has, with the user's own subscriptions and logins, on the user's own machine.
 
-**Success looks like.** A user starts a thread in Claude Code, types `/switch codex`, and Codex continues as if it had been there all along. They close the laptop, SSH in from a phone, and every agent is still running. They never read a manual, because every key and command works the way tmux, lazygit, Claude Code and Codex already taught them.
+**Success looks like.** A user starts a thread in Claude Code, presses `ctrl+b s`, and Codex opens on the same conversation and continues as if it had been there all along. They close the laptop, SSH in from a phone, and every agent is still running. They never read a manual, because every key and command works the way tmux, lazygit, Claude Code and Codex already taught them.
 
 ## User experience walkthrough
 
 These five scenarios are the acceptance script. Each must work exactly as written, with no step added.
 
-**First run.** The user runs `curl -fsSL https://desl.dev/install.sh | sh`, then `desl` inside a repo. desl starts the daemon in the background, detects `claude` and `codex` on PATH and whether each is logged in, registers the repo as a project, and opens the workspace with one empty thread on the default agent. The status line reads `claude · main · t-7f3a`. Total time under ten seconds; nothing to configure. If no agent is found, desl says which ones it supports and how to install each, then exits cleanly.
+**First run.** The user runs `curl -fsSL https://desl.dev/install.sh | sh`, then `desl` inside a repo. desl starts the daemon in the background, detects `claude` and `codex` on PATH and whether each is logged in, registers the repo as a project, and opens one thread on the default agent: the agent's own interface, full screen, exactly as if the user had typed `claude`. The terminal title reads `desl · claude · t-7f3a`. Total time under ten seconds; nothing to configure. If no agent is found, desl says which ones it supports and how to install each, then exits cleanly.
 
-**The daily loop.** The user types a prompt. The transcript streams tokens as they arrive; tool calls collapse to one line each (`read src/auth.ts`, `edit 3 files`, `run pnpm test ✓`) and expand on `enter`. When the agent asks for approval, the thread turns `waiting` in the sidebar, a single-line prompt appears above the input (`Allow: rm -rf dist/ ? [y]es [n]o [a]lways`), and a terminal bell fires if the user is in another pane. `ctrl+n` opens a second thread in a new worktree; `ctrl+1`/`ctrl+2` jump between them. The sidebar shows every thread with its status and age, waiting threads sorted to the top.
+**The daily loop.** The user types into the agent's own prompt and everything on screen is the agent's own: its streaming, its tool calls, its approval dialogs, its `/` commands, skills and MCP servers, its scrollback and mouse wheel. desl owns only the prefix key. When the agent asks a question or for approval, the thread turns `waiting`: if the user is looking at another thread the bell fires once and the title gains `1 waiting`. `prefix c` opens a second thread, `prefix n` / `prefix p` move between threads, and `prefix w` opens the thread list over the screen, with every thread's status, agent and age and the waiting ones at the top; closing it puts the screen back exactly as it was.
 
-**Switch.** Mid-thread, the user types `/switch codex`. desl shows a one-line confirmation with what will be sent (`Handing 41 turns to codex as a brief (2.1k tokens). Continue? [y]`), builds the brief, starts a Codex session with it, and marks the thread `codex`. The next prompt goes to Codex. The transcript shows a thin divider: `── switched to codex ──`. `/switch claude` later resumes the original Claude session and prepends only the delta since Claude last saw the thread. The user never sees a native session id.
+**Switch.** Mid-thread, the user presses `prefix s`. desl copies the conversation so far into a new session of the other agent, starts that agent out of sight, and once it has drawn the conversation the screen changes to it in one frame: the same prompts, replies and tool calls, now in Codex's interface. The title says `codex`. The next prompt goes to Codex, which answers it knowing everything that came before. `prefix s` again copies the turns Codex added back into a new Claude session the same way. The user never sees a native session id.
 
-**Fork.** The user runs `/fork claude` to try a different approach from the current point, or `/fork claude @12` to fork from message 12 (shown as a gutter number on hover or with `/messages`). A new thread opens beside the old one, named `t-7f3a/1`, with the parent's history up to the fork point and a fresh agent. Optionally `--worktree` puts it on its own branch. The parent is untouched.
+**Fork.** The user presses `prefix f` and picks an agent to try a different approach from the current point. A new thread opens, named `t-7f3a/1`, with the parent's conversation up to here in a fresh session of the chosen agent, and becomes the one on screen. From the CLI, `desl fork t-7f3a claude --at 12 --worktree` forks from message 12 onto its own branch. The parent is untouched.
 
-**Detach and return.** `prefix d` detaches; all agents keep working. From another machine, `ssh box && desl` reattaches to the same workspace with every thread where it was. `desl status` from any shell prints the sidebar as text; `desl wait t-7f3a` blocks until that thread needs attention, for use in scripts.
+**Detach and return.** `prefix d` detaches; all agents keep working. From another machine, `ssh box && desl` reattaches to the same workspace with every thread where it was, the screen and its scrollback included. `desl status` from any shell prints the thread list as text; `desl wait t-7f3a` blocks until that thread needs attention, for use in scripts.
 
-Throughout, three things are always true: the current agent name is visible, the current git branch is visible, and `?` shows every key that works right now.
+Throughout, three things are always true: the current agent and thread are in the terminal title, the thread list shows each thread's agent and git branch, and `prefix ?` shows every key desl owns.
 
 ## The feel bar
 
@@ -42,10 +42,10 @@ Nine named moments. Each is a testable experience target, scored by the author i
 
 1. **First reply in ten seconds.** From a finished install to a first agent reply, a new user reads nothing, configures nothing, and is never asked a question they do not understand.
 2. **Keys you already know.** A user who knows tmux and Claude Code discovers switch, fork, detach and the waiting list within ten minutes, unprompted, and never hits a key that does something surprising.
-3. **Switching feels like changing the model.** `/switch codex` shows no seam except the thin divider; the next reply answers the user's question, not the brief; the user never sees or types a native session id.
-4. **Nothing moves under your eyes.** While the user is reading, nothing flickers, jumps or reflows. Streaming never scrolls away the line being read; new output waits behind a `↓ n new` pill.
-5. **Waiting is impossible to miss and impossible to be nagged by.** One bell, one sidebar glyph, one line above the input. Never a modal, never a repeat, never a notification for something already answered.
-6. **The agent is the hero.** The user's eye lands on the agent's words and diffs, not on desl's chrome. A screenshot reads as a conversation with a border, not as a dashboard.
+3. **Switching feels like changing the model.** `prefix s` shows no seam: the other agent opens on the whole conversation, never on a blank screen; the next reply answers the user's question with that history in mind; the user never sees or types a native session id.
+4. **Nothing moves under your eyes.** desl never draws over the agent unasked. A switch, a thread change or a reattach replaces the screen in one frame: no blank frame, no half-drawn screen, no flicker.
+5. **Waiting is impossible to miss and impossible to be nagged by.** One bell, one mark in the title, one place at the top of the thread list. Never a modal from desl, never a repeat, never a notification for something already answered.
+6. **The agent is the hero.** The screen is the agent's own interface; desl's chrome appears only when the user calls it with the prefix and leaves without a trace.
 7. **Coming back is instant.** Reattach from any device restores the exact screen, scroll positions and focus in under a second, and every agent is where it was.
 8. **Errors read like a colleague.** Every error says what happened and what to do next, in one line, in plain words, with a key to press. No stack traces, no codes without text.
 9. **Leaving is always safe.** Quitting detaches. Closing the terminal detaches. Killing the process loses nothing. The user never has to think about whether it is safe to stop.
@@ -61,10 +61,10 @@ Every design decision is tested against these eight rules. When two conflict, th
 1. **Nothing is ever lost.** Thread state is an append-only log on disk. A crash, a killed terminal or a dead agent process never loses a message, a diff or a decision. Recovery is automatic and silent.
 2. **Zero to useful in ten seconds.** First run detects installed agents, detects the repo in the current directory, and opens a thread. No config file, no wizard, no account.
 3. **Borrow, never invent.** Keys, words and commands come from tmux, lazygit, fzf, Claude Code and Codex. A new concept gets a new word only when no community word fits. Users should guess right the first time.
-4. **The agent is the star.** desl's chrome stays quiet so the agent's output reads cleanly. One accent colour, no banners, no animation that does not carry information.
-5. **Interrupt the agent, never the app.** `ctrl+c` stops the running agent turn. Quitting desl is a deliberate command, and the daemon keeps running regardless.
-6. **Everything is scriptable.** Every action in the TUI exists as a CLI subcommand with `--json` output. Agents can drive desl through the same interface a human uses.
-7. **Fast by default.** Sub-16 ms frame redraws, instant thread switching, token streaming without stutter. Performance is a feature with a budget, not a cleanup phase.
+4. **The agent is the star.** The agent's own interface fills the screen. desl's chrome is an overlay called with the prefix: one accent colour, no banners, no animation that does not carry information.
+5. **Interrupt the agent, never the app.** Every key without the prefix belongs to the agent, `ctrl+c` included. Quitting desl is a deliberate command, and the daemon keeps running regardless.
+6. **Everything is scriptable.** Every action desl owns exists as a CLI subcommand with `--json` output. Agents can drive desl through the same interface a human uses.
+7. **Fast by default.** Keys reach the agent with no delay a person could notice; a switch or a thread change lands in one frame. Performance is a feature with a budget, not a cleanup phase.
 8. **Honest status.** The UI never says "done" when a process is still running, never hides an error, and shows which agent and which native session is behind every thread.
 
 ## Non-goals
@@ -97,12 +97,12 @@ All user-facing words are fixed here. Code, docs, help text and error messages u
 | session | The agent's own native conversation id, bound to a thread | Claude Code, Codex |
 | pane | A region of the screen showing a thread, a shell or a raw agent | tmux, Herdr |
 | worktree | A git worktree a thread runs in | git, T3 Code |
-| brief | The handoff summary desl builds when a thread changes agent | new |
+| brief | The handoff summary desl sends when a thread's conversation cannot be copied into the other agent's session | new |
 | switch | Continue this thread with a different agent | new |
 | fork | Copy a thread up to a point into a new thread | git, Claude Code |
 | detach / attach | Leave or rejoin the workspace, agents keep running | tmux |
 
-Status words, used identically in the sidebar, the CLI and notifications:
+Status words, used identically in the thread list, the CLI and notifications:
 
 | Status | Meaning | Colour role |
 | --- | --- | --- |
@@ -114,105 +114,73 @@ Status words, used identically in the sidebar, the CLI and notifications:
 
 Verbs in commands and help follow the agents' own grammar: `resume`, `clear`, `compact`, `export`, `model` keep their Claude Code and Codex meanings. desl adds `switch`, `fork`, `brief`, `worktree`, `attach`, `detach`. Never use "session" for a desl thread or "thread" for an agent's native session.
 
-Identifiers: thread ids are short, typeable and prefixed, in the style of git short SHAs: `t-7f3a`. Native session ids are shown only on request (`/info`) and never required from the user.
+Identifiers: thread ids are short, typeable and prefixed, in the style of git short SHAs: `t-7f3a`. Native session ids are shown only on request (`prefix i`, `desl thread show`) and never required from the user.
 
 ## Interface design
 
-The default layout is a narrow sidebar on the left, one or more panes on the right, and a one-line status bar at the bottom. It must read well at 80×24 and scale to 300×80 without changing shape.
+The agent's own interface fills the terminal. desl passes the agent's output straight to the terminal and the user's keys straight to the agent, so the agent's scrollback, mouse wheel, colours, keys and dialogs are its own and behave as they do without desl. desl owns one key, the prefix, and draws only when the user calls it. It must read well at 80×24 and scale to 300×80 without changing shape.
 
 ```
-┌ desl ─────────────┬──────────────────────────────────────────────────────┐
-│ PROJECTS          │ t-7f3a · claude · main                               │
-│ ▾ api (3)         │                                                      │
-│   ● t-7f3a  auth  │ › Add refresh-token rotation to the auth middleware  │
-│   ◐ t-91c2  tests │                                                      │
-│   ○ t-04be  docs  │   I'll start by reading the current middleware.      │
-│ ▸ web (1)         │   ▸ read src/auth/middleware.ts                      │
-│                   │   ▸ edit src/auth/middleware.ts (+41 −7)             │
-│ WAITING (1)       │   ▸ run pnpm test                        ✓ 84 passed │
-│   ◐ t-91c2        │                                                      │
-│                   │   Rotation is in. Want me to add the revocation list?│
-│                   │                                                      │
-│                   │ ┌────────────────────────────────────────────────────┐
-│                   │ │ ›                                                  │
-│                   │ └────────────────────────────────────────────────────┘
-├───────────────────┴──────────────────────────────────────────────────────┤
-│ ● working  claude  main ↑2  worktree: auth   ctrl+b ? help  │ 12:41  │
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ▐▛███▛█   Claude Code v2.1.318                                           │
+│                                                                          │
+│ ❯ Add refresh-token rotation to the auth middleware                      │
+│   Read 2 files                                                           │
+│ ● Rotation is in. Want me to add the revocation list?                    │
+│                                                                          │
+│ ❯ _                                                                      │
 └──────────────────────────────────────────────────────────────────────────┘
+  terminal title: desl · claude · t-7f3a · 1 waiting
 ```
 
-**Sidebar.** Projects collapse like a file tree. Each thread shows a status glyph, its id and a short name derived from its first prompt (editable with `/rename`). A `WAITING` group at the bottom repeats every thread that needs the user, newest first, so attention never requires scrolling. Hidden with `prefix b` for a full-width transcript.
+**Terminal title.** Always `desl · <agent> · <thread>`, with `· n waiting` while other threads need the user and `· switching to codex…` while a switch is being prepared. This is the only chrome that is always present.
 
-**Transcript pane.** The agent's prose renders as markdown with syntax-highlighted code blocks and visible fenced boundaries. Tool calls are one collapsed line each with a verb, a target and an outcome; an edit also shows the first rows of its diff under the line. `enter` on a line expands its full output in place or collapses it again, `o` opens the file in `$EDITOR`. Diffs render as unified diffs with gutter colours. Switch and fork events appear as thin labelled dividers. The pane auto-follows while streaming and stops following the moment the user scrolls up, with a `↓ 3 new` pill to jump back.
+**Thread list.** `prefix w` opens it over the screen, in the style of tmux's `choose-tree` and lazygit's lists: projects that collapse, each thread with a status glyph, its id, a short name derived from its first prompt, its agent, git branch and age, and a `WAITING` group at the top. `j`/`k` move, `enter` opens the thread, `/` filters, `r` renames, `esc` closes. It is drawn on the terminal's alternate screen, so closing it restores the agent's screen and scrollback untouched.
 
-**Input.** A bordered single-line box that grows to five lines. `/` opens a fuzzy command palette with inline descriptions; a command whose argument is a choice (`/switch`, `/model`, `/permissions`) opens a second list of the choices instead of asking the user to type one from memory, and a choice that has its own choices (a model's reasoning effort) opens a third; `@` opens a fuzzy file picker scoped to the project; `ctrl+r` searches prompt history across all threads. `shift+enter` inserts a newline; `enter` sends. While the agent is working, the box stays usable and queued prompts show as `⏳ queued`.
+```
+┌ threads ──────────────────────────────────────────────────────────────┐
+│ WAITING                                                               │
+│   ◐ t-91c2  tests   codex   main ↑2   2m                              │
+│ ▾ api (3)                                                             │
+│   ● t-7f3a  auth    claude  auth      now                             │
+│   ○ t-04be  docs    claude  main      1h                              │
+│ ▸ web (1)                                                             │
+└────────────────────────────────── enter open · s switch · ? help ─────┘
+```
 
-**Approvals.** A one-line strip between transcript and input, never a modal: `Allow codex: rm -rf dist/  [y]es [n]o [a]lways for this thread [e]dit`. The bell fires and the sidebar glyph changes at the same moment.
+**Changing what is on screen.** A switch, a thread change and a reattach all work the same way: the agent to be shown has been drawing into a hidden terminal kept by the daemon, and desl replaces the screen with that terminal's output, scrollback included, inside one synchronized-output frame (`CSI ? 2026 h … l`). The old screen stays until the new one is complete; there is no blank or half-drawn frame. While the new agent is getting ready, keys typed are held and delivered to it.
 
-**Status bar.** Left to right: status glyph and word, agent, `⚠ yolo` while that permission mode is on, git branch with ahead/behind counts, worktree name, the help hint, the clock. Nothing else. Errors replace the left half in critical colour until dismissed with `esc`.
+**Approvals and questions** are the agent's own dialogs, answered in the agent's own way. desl only notices them (see Agent adapters) to mark the thread `waiting`, ring the bell for a thread that is not on screen, and sort it to the top of the list.
+
+**Errors and notices** from desl appear as a one-line strip at the bottom of the thread list, which opens for them, never drawn over the agent; `esc` dismisses.
 
 **Visual language.** One accent colour (default: the terminal's blue), one warning, one critical, three greys. Status glyphs: `●` working, `◐` waiting, `○` idle, `✕` failed, `⊝` detached, with the words always available for screen readers and `NO_COLOR`. Rounded box drawing where the terminal supports it, falling back to ASCII. No emoji in chrome. Respect the terminal's own palette by default; built-in themes (`default`, `mono`, `catppuccin`, `gruvbox`, `solarized`) are opt-in.
 
-**Panes.** `prefix %` and `prefix "` split as in tmux. A pane holds a thread, a plain shell, or a raw agent TUI (see Agent adapters). Raw and shell panes get the same border, title and status glyph as thread panes so the workspace feels uniform.
+**Splits (phase 2).** `prefix %` and `prefix "` show two threads side by side, as in tmux. A split draws the agents through desl's own terminal emulator, so inside a split the scrollback is desl's (`prefix [`, the wheel) rather than the terminal's; `prefix z` zooms back to full screen and the terminal's own scrollback. Shell panes work the same way.
 
-**Help.** `?` anywhere opens a context overlay listing the keys that work in the focused element, grouped by purpose, in the style of lazygit. The overlay is generated from the keymap, never hand-written, so it is always correct.
+**Help.** `prefix ?` opens an overlay listing the keys desl owns, grouped by purpose, in the style of lazygit, with one row saying that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
 
 ## Commands, keybindings and CLI
 
-Three surfaces, one command set. Every slash command has a CLI equivalent and a keymap entry; the help overlay, the command palette and `desl --help` are all generated from the same registry.
+Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of its own; a `/` command typed into the agent goes to the agent, so its own commands, skills and MCP prompts work unchanged. Every prefixed key has a CLI equivalent, and the help overlay and `desl --help` are generated from the same registry.
 
-**Slash commands** (typed in the input, fuzzy-matched in the palette):
-
-| Command | Action | Source of the name |
-| --- | --- | --- |
-| `/switch [agent]` | Continue this thread with another agent. Alone, it opens a list of the agents with the current one marked | desl |
-| `/fork <agent> [@n] [--worktree]` | New thread from here or from message n | desl, git |
-| `/brief` | Show the handoff brief desl would send right now | desl |
-| `/new [--worktree]` | New thread in this project | T3 Code |
-| `/threads` | Fuzzy thread picker | T3 Code |
-| `/resume` | Pick a past thread to reopen | Claude Code, Codex |
-| `/rename <name>` | Rename this thread | tmux |
-| `/model [name] [effort]` | Change the model for this agent. Alone, it opens the agent's own list of models with the current one marked; picking a model then lists its reasoning effort levels the same way | Claude Code, Codex |
-| `/permissions [mode]` | What this thread's agent may do without asking: `ask`, `edits` or `yolo`. Alone, it opens the list with the current one marked | Claude Code, Codex |
-| `/clear` | Start a fresh context on the same thread (new native session, history kept) | Claude Code |
-| `/compact` | Ask the agent to compact its context | Claude Code |
-| `/export [file]` | Write the thread as markdown | Claude Code |
-| `/diff` | Show the worktree diff in a pane | lazygit, T3 Code |
-| `/pr` | Create a pull request from this worktree | T3 Code |
-| \`/worktree new | list | rm\` |
-| `/info` | Agent, model, native session id, token usage | desl |
-| `/help` | The help overlay | universal |
-| `/quit` | Detach and close the client; daemon keeps running | universal |
-
-Unknown slash commands are forwarded to the agent, so agent-specific commands and user skills keep working.
-
-**Keys.** The prefix is `ctrl+b` by default (`ctrl+a` and `ctrl+space` offered on first run). Keys without a prefix act on the focused element; prefixed keys act on the workspace.
+**Keys.** The prefix is `ctrl+b` by default (`ctrl+a` and `ctrl+space` offered on first run); pressed twice it sends `ctrl+b` to the agent. desl recognises the prefix in every encoding an agent may switch the terminal into: the plain control byte, the kitty keyboard protocol and xterm's modifyOtherKeys. Every key without the prefix belongs to the agent.
 
 | Key | Action | Source |
 | --- | --- | --- |
-| `enter` | Send prompt, or expand the selected tool call | universal |
-| `shift+enter` | Newline in prompt | Claude Code |
-| `ctrl+c` | Interrupt the agent's current turn; twice to clear input | Claude Code, Codex |
-| `esc` | Dismiss overlay, stop following, back out | universal |
-| `j` / `k`, `↓` / `↑` | Move in lists and the transcript | vim, lazygit |
-| `g` / `G` | Top / bottom of the transcript | vim |
-| `/` | Command palette (input empty) or filter (in a list) | fzf, lazygit |
-| `@` | File picker into the prompt | Claude Code |
-| `ctrl+r` | Prompt history search | shell |
-| `ctrl+t` | Fuzzy jump to any thread | fzf |
-| `ctrl+n` | New thread | T3 Code |
-| `ctrl+1`…`ctrl+9` | Jump to thread n in the sidebar | browsers |
-| `tab` / `shift+tab` | Next / previous pane | tmux |
-| `y` / `n` / `a` | Answer an approval | Claude Code |
-| `o` | Open selected file in `$EDITOR` | lazygit |
-| `?` | Help overlay for the focused element | lazygit |
+| `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
+| `prefix f` | Fork from here: pick the agent, a new thread opens with the conversation so far | desl |
+| `prefix c` | New thread in this project, on the default agent | tmux |
+| `prefix w` | Thread list | tmux |
+| `prefix n` / `prefix p` | Next / previous thread | tmux |
+| `prefix 1`…`prefix 9` | Jump to thread n in the list | tmux |
+| `prefix l` | Back to the thread shown before | tmux |
+| `prefix ,` | Rename this thread | tmux |
+| `prefix i` | Agent, native session id, model, worktree | desl |
+| `prefix x` | Close this thread's agent (the thread is kept and reopens on demand) | tmux |
 | `prefix d` | Detach | tmux |
-| `prefix %` / `prefix "` | Split pane right / below | tmux |
-| `prefix x` | Close pane | tmux |
-| `prefix b` | Toggle sidebar | desl |
-| `prefix z` | Zoom the focused pane | tmux |
-| `prefix s` | Switch agent (same as `/switch`) | desl |
-| `prefix f` | Fork thread (same as `/fork`) | desl |
+| `prefix ?` | Help overlay | lazygit |
+| `prefix prefix` | Send the prefix key to the agent | tmux |
 
 All keys are remappable in `keys.toml` by named command, with `vim` and `emacs` presets. desl detects when it runs inside tmux and offers to change its prefix on first run.
 
@@ -220,17 +188,16 @@ All keys are remappable in `keys.toml` by named command, with `vim` and `emacs` 
 
 ```
 desl                         attach to the workspace (starts the daemon if needed)
-desl status                  the sidebar as text
+desl status                  the thread list as text
 desl thread list|show|rename|rm
 desl new [-p project] [--agent claude] [--worktree] [-m "prompt"]
-desl send <thread> "prompt"  send and stream the reply to stdout
+desl send <thread> "prompt"  type the prompt into the thread's agent and print the reply when the turn ends
 desl switch <thread> <agent>
-desl model <thread> [name] [--effort level]   list the agent's models, or pick one and how hard it thinks
-desl permissions <thread> [mode]   what the agent may do without asking, or change it
+desl model <thread> [name] [--effort level]   the model desl starts the agent with when it opens a session
+desl permissions <thread> [mode]   the permission mode desl starts the agent with
 desl fork <thread> <agent> [--at N] [--worktree]
-desl brief <thread>          print the handoff brief
+desl brief <thread>          print the handoff brief, the fallback for a copy
 desl wait <thread>           block until the thread is waiting or idle
-desl approve|deny <thread>
 desl worktree new|list|rm
 desl agents                  detected agents and login state
 desl doctor                  check binaries, logins, daemon, permissions
@@ -238,11 +205,13 @@ desl daemon start|stop|restart|logs
 desl upgrade
 ```
 
+Inside the agent, its own `/model` and permission keys work as always; `desl model` and `desl permissions` decide what desl passes when it opens a session for the thread (a switch, a fork, a restart). The lists they show come from the agents, as before.
+
 The CLI is how scripts, CI and other agents drive desl. A `desl` skill file for Claude Code and Codex (shipped in the repo, installable with `desl skill install`) teaches agents to open threads, wait on them and fork work, the way Herdr's skill does.
 
 ## Core concepts and data model
 
-desl owns the conversation; the agents' native sessions are caches. Every thread is an append-only list of provider-neutral events, and each agent that has touched the thread holds a binding that records its native session id and how much of the thread it has seen.
+desl owns the conversation; the agents' native sessions are working copies. Every thread is an append-only list of provider-neutral events, read by the adapters from the session file of whichever agent the thread is on. Each agent that has touched the thread holds a binding that records the native session it has open for the thread and how much of the thread that session holds.
 
 **Thread.**
 
@@ -266,15 +235,15 @@ Binding {
   session_id:   "session-id-1"    // the agent's own id, resumable
   seen_up_to:   41                 // index of the last event this agent has in context
   model:        "claude-opus-5-5"   // what the agent reported for its session
-  model_choice: "sonnet" | null     // picked with /model; null follows the agent's default
-  effort_choice: "high" | null      // reasoning effort picked with /model; null follows the agent's own setting
+  model_choice: "sonnet" | null     // picked with desl model; null follows the agent's default
+  effort_choice: "high" | null      // reasoning effort picked with desl model; null follows the agent's own setting
   last_used_at
 }
 ```
 
-`seen_up_to` is the high-water mark. When the thread head is ahead of an agent's mark, that agent is missing exactly the events between the two, and the brief for a switch back to it is built from that range alone.
+`seen_up_to` is the high-water mark. When the thread head is ahead of an agent's mark, that agent's session is missing exactly the events between the two; a switch back gives it a new session holding the whole thread (see Cross-agent continuity), and the brief, when the fallback is used, covers that range alone.
 
-**Events (the IR).** One schema for every agent. Adapters translate native output into these and nothing else.
+**Events (the IR).** One schema for every agent. Adapters translate the agent's session file into these, and these back into a new session file, and nothing else.
 
 | Kind | Fields | Notes |
 | --- | --- | --- |
@@ -283,11 +252,11 @@ Binding {
 | tool\_call | id, name, args, agent | `read`, `edit`, `bash`, `search`, or the agent's own name |
 | tool\_result | call\_id, output, exit\_code, is\_error, truncated, blob | Output stored in full on disk, truncated in memory; `blob` names the full text |
 | file\_change | path, diff, kind (create/modify/delete), call\_id | Derived from tool results or git, so handoffs know what changed; `call_id` ties it to the edit that made it |
-| approval\_request | call\_id, tool, summary, risk | Surfaced in the UI as `waiting`; `tool` is the key of the thread's "always" list |
-| approval\_response | call\_id, decision (allow/deny/always), by (user/policy) |  |
-| agent\_switch | from, to, brief\_event\_id | Rendered as a divider |
+| approval\_request | call\_id, tool, summary | The agent showed its own approval dialog or question; the thread is `waiting` |
+| approval\_response | call\_id, decision (allow/deny) | Read back from the session file once the agent records the answer |
+| agent\_switch | from, to, session\_id, brief\_event\_id | The thread moved to another agent; `brief_event_id` only when the fallback was used |
 | fork | parent\_id, fork\_point | First event of a forked thread |
-| brief | text, token\_estimate, covers\_range, delta | The handoff text that was actually sent |
+| brief | text, token\_estimate, covers\_range, delta | The fallback handoff text, when it was sent |
 | usage | agent, input\_tokens, output\_tokens, cost\_estimate | Per turn |
 | error | message, recoverable | Process crashes, adapter failures |
 | interrupt |  | The user stopped the turn |
@@ -296,7 +265,7 @@ Every event carries `index`, `thread_id`, `timestamp` and `agent`. Indices start
 
 **Project.** A registered git repository: id, path, default agent, default branch, list of worktrees. Projects are discovered from `cwd` on first run and can be added with `desl project add`.
 
-**Workspace.** The set of projects, threads, panes and client layouts the daemon holds for one user on one machine. Pane layout is persisted so reattach restores the exact screen.
+**Workspace.** The set of projects, threads, panes and client layouts the daemon holds for one user on one machine. Each live agent's terminal output is kept by the daemon (capped, see Process hygiene) so reattach restores the exact screen and its scrollback.
 
 **Storage.** SQLite, one file at `$XDG_DATA_HOME/desl/workspace.db`, WAL mode. Events are rows; large tool outputs live in content-addressed files beside the database and are referenced by hash. The schema has a version and every migration is forward-only. A `desl export <thread>` writes a self-contained JSONL that `desl import` can load on another machine, which is the sync path for a later release.
 
@@ -308,51 +277,51 @@ One binary, two roles: a long-lived daemon that owns all state and processes, an
 
 Clients never touch agent processes or the store directly; everything goes through the daemon, which is why detach, reattach and remote access cost nothing extra.
 
-**Daemon** (`desl daemon`). Starts on first use, runs as a user-level background process (launchd agent on macOS, systemd user unit on Linux, Windows service later). Owns the SQLite store, every agent subprocess, every PTY, the git service and the event bus. Listens on a Unix socket at `$XDG_RUNTIME_DIR/desl.sock` (named pipe on Windows), optionally on TCP with a token for remote clients. One daemon per user per machine; projects are a dimension inside it.
+**Daemon** (`desl daemon`). Starts on first use, runs as a user-level background process (launchd agent on macOS, systemd user unit on Linux, Windows service later). Owns the SQLite store, every agent process and the PTY it runs in, the git service and the event bus. Listens on a Unix socket at `$XDG_RUNTIME_DIR/desl.sock` (named pipe on Windows), optionally on TCP with a token for remote clients. One daemon per user per machine; projects are a dimension inside it.
 
-**Client** (`desl`, the TUI). Connects to the socket, subscribes to the workspace, renders the store and sends commands. Holds no state that matters beyond scroll position and focus. Can be killed at any time. The CLI subcommands are the same client without the screen.
+**Client** (`desl`, the TUI). Connects to the socket, passes the shown thread's terminal output to the real terminal and the user's keys to its agent, draws the overlays, and sends commands. Holds no state that matters beyond which thread is shown. Can be killed at any time. The CLI subcommands are the same client without the screen.
 
-**Protocol.** Length-prefixed JSON frames over the socket (msgpack if profiling shows JSON on the hot path). Three message families: `command` (client → daemon, with a request id and a typed reply), `event` (daemon → client, every IR event plus workspace changes, as they happen), and `stream` (token deltas for the thread a client is viewing, sent only to subscribed clients). The protocol is versioned and documented in `docs/protocol.md`; the daemon refuses clients with a mismatched major version and tells them to upgrade.
+**Protocol.** Length-prefixed JSON frames over the socket (msgpack if profiling shows JSON on the hot path). Three message families: `command` (client → daemon, with a request id and a typed reply), `event` (daemon → client, every IR event plus workspace changes, as they happen), and `pty` (the raw terminal bytes of the thread a client shows, both ways, sent only to that client). The protocol is versioned and documented in `docs/protocol.md`; the daemon refuses clients with a mismatched major version and tells them to upgrade.
 
-**Thread engine.** The core state machine. Takes a user prompt, appends the event, resolves the thread's active adapter, checks the high-water mark, asks the projector for a delta brief if needed, sends the turn, consumes the adapter's event stream, appends events, updates status, bumps the mark. Serialises all writes to one thread; threads run concurrently.
+**Thread engine.** The core state machine. Starts each thread's agent in a PTY through its adapter, follows the agent's session file and appends what the adapter reads from it as events, keeps each thread's status from the file and the screen, and carries out switch and fork (see Cross-agent continuity). Serialises all writes to one thread; threads run concurrently.
 
-**Adapters.** One package per agent implementing a single interface: `start(thread, resume?) → session`, `send(session, turn) → stream<IR event>`, `interrupt(session)`, `answer(session, approval)`, `close(session)`, and `capabilities()` (supports resume, fork, model switch, compaction). Adapters are the only code that knows a native format. See Agent adapters.
+**Adapters.** One package per agent implementing a single interface: the command line that starts or resumes the agent's interface, a reader from its session file to IR events, a writer from IR events to a new session, and a status reader for its screen. Adapters are the only code that knows a native format. See Agent adapters.
 
-**Projector.** Pure function from an event range to a brief. Deterministic, no network. Produces structured text with fixed headings so the receiving agent can rely on its shape. See Cross-agent continuity.
+**Projector.** Pure function from an event range to a brief, the fallback when a copy cannot be written. Deterministic, no network. Produces structured text with fixed headings so the receiving agent can rely on its shape. See Cross-agent continuity.
 
 **Git service.** Wraps `git` for worktree create/list/remove, branch state, diff and PR creation (through `gh` when present). Emits `file_change` events by diffing the worktree before and after each agent turn, which makes handoffs accurate even when an agent's tool output is opaque.
 
-**PTY host.** For shell panes and raw agent panes. Based on the platform PTY library, with scrollback kept by the daemon so reattach restores it.
+**PTY host.** Every agent runs in a PTY the daemon owns. The host keeps each one's output (capped) so a client can show it, answers the terminal queries an agent sends while no client shows it (cursor position, device attributes, colours, keyboard protocol) the way the user's terminal answered them, and keeps a screen model (`vt100`) per PTY for status. Shell panes from phase 2 use the same host.
 
-**Approval broker.** Receives `approval_request` events from adapters, applies per-thread and per-project policy (`ask`, `allow-reads`, `allow-all-in-worktree`), surfaces what still needs a human, and routes the answer back to the right adapter.
+**Attention.** Receives the adapters' `waiting` readings, rings the bell once for a thread not on screen, updates the title and the thread list, and clears all of it when the thread moves on.
 
 **Event bus.** In-process pub/sub inside the daemon. Every store write publishes; clients, the status line, notifications and the `desl wait` command all subscribe. Nothing reads the store to find out what changed.
 
 ## Cross-agent continuity
 
-Switch and fork are both projections of the same event log into a different agent. Neither ever writes to an agent's native session files; everything goes through the agent's supported input path (a prompt or a resumed session).
+Switch and fork are both projections of the thread's event log into a different native session. desl never edits a session an agent wrote. It writes a new session in the receiving agent's own format, holding the conversation, and starts the agent's interface on it with the agent's supported resume path. The receiving agent then has the conversation as its own history: every prompt and reply, and every tool call written as one of its own tools with the output (each output capped). Thinking is not carried: Claude's is signed and Codex's reasoning is encrypted, so neither can read the other's.
 
-**Switch algorithm** (`/switch <agent>` on thread T):
+**Switch algorithm** (`prefix s` on thread T, from agent A to agent B):
 
-1. Set `T.active_agent = agent`. Append an `agent_switch` event.
-2. Look up `T.bindings[agent]`.
-3. No binding: build a **full brief** from events `0..head`, start a new native session with the brief as the first user turn, store the returned session id with `seen_up_to = head`.
-4. Binding exists and `seen_up_to < head`: build a **delta brief** from `seen_up_to+1..head`, resume the native session, prepend the delta to the user's next prompt, set `seen_up_to = head`.
-5. Binding exists and `seen_up_to == head`: resume with nothing extra.
-6. If resume fails (session purged, agent updated, cwd moved), log a recoverable `error`, drop the binding and fall back to step 3.
+1. Read A's session file through A's adapter and append the events it added since the thread's head.
+2. Ask B's adapter to write a new session holding events `1..head`. Record it as B's binding with `seen_up_to = head`. Append an `agent_switch` event and set `T.active_agent = B`.
+3. Start B's interface on that session in a hidden PTY, at the size of the client's terminal.
+4. When B has drawn and gone quiet (output, then 600 ms of none, at least 1.2 s after start; 15 s at most), replace the client's screen with B's output in one synchronized frame. Keys typed meanwhile go to B.
+5. End A's process. Its session stays in A's own resume list.
+6. If B's adapter cannot write a session (an agent version without fixtures, a failed write) or B quits before it is ready, fall back: start a new session of B with the **brief** for `1..head` pasted into its prompt, and say so on the strip. If that fails too, stay on A and say why.
 
-The brief is sent as part of the next user turn, not as a separate turn, so the agent answers the user's actual question in the same response. Before sending, the UI shows a one-line summary and the token estimate; `/brief` shows the full text.
+A switch is refused while A is `working`, with a line that says so and offers to wait; a half-finished turn is never copied.
 
-**Fork algorithm** (`/fork <agent> [@n] [--worktree]` on thread T):
+**Fork algorithm** (`prefix f` or `desl fork <thread> <agent> [--at n] [--worktree]` on thread T):
 
 1. Create thread F with `parent_id = T.id`, `fork_point = n` (default head), `project_id = T.project_id`, name `T.name` plus a `/k` suffix, empty bindings.
-2. Copy events `0..n` into F (by reference to the same content blobs, so forks are cheap).
+2. Copy events `1..n` into F (by reference to the same content blobs, so forks are cheap).
 3. If `--worktree`, create a git worktree from T's current commit and set `F.worktree`.
-4. If `agent == T.active_agent` and the adapter reports `fork` capability and `n == head`, fork the native session (`claude --fork-session`, `codex fork`) and bind it with `seen_up_to = n`.
-5. Otherwise treat it as a switch with no binding: full brief from `0..n`, new session.
-6. Open F in a new pane beside T.
+4. If `agent == T.active_agent` and `n == head`, fork the native session (`claude --resume <id> --fork-session`, `codex fork <id>`) and bind it.
+5. Otherwise write a new session from events `1..n` as in a switch.
+6. Show F.
 
-**Brief format.** Deterministic markdown with fixed headings, so agents learn its shape. Sections are omitted when empty.
+**Brief format** (the fallback). Deterministic markdown with fixed headings, so agents learn its shape. Sections are omitted when empty.
 
 ```
 # Handoff brief
@@ -388,11 +357,11 @@ Budget: 4k tokens by default, configurable per project. The projector fills sect
 
 **Agent-written brief (phase 3).** When the outgoing agent is still alive, desl can ask it for a summary with a fixed prompt and merge it into the Decisions and Next step sections. This is opt-in per project because it costs a turn.
 
-**What is not carried.** The receiving agent does not get the previous agent's tool-call ids, its system prompt, its permission state or its compaction summaries. The brief is the whole interface. Tests must assert that no native data crosses the boundary.
+**What is not carried.** The receiving agent does not get the previous agent's thinking, system prompt, permission state, compaction summaries or message ids; tool-call ids are rewritten into the receiver's shape. Only the IR crosses between adapters: tests must assert that a session one adapter writes holds nothing the other adapter's reader did not put into events.
 
 ## Agent adapters
 
-An adapter is the only code allowed to know an agent's native format. It runs the agent in headless mode, turns its event stream into IR events, and exposes a uniform permission hook. Two adapters ship in phase 1, one escape hatch in phase 2, and the contract is public so the community can add more.
+An adapter is the only code allowed to know an agent's native format. It knows how to start the agent's own interface, how to read the agent's session file into IR events, how to write IR events out as a new session the agent will resume, and how to tell from the screen that the agent is waiting. Two adapters ship in phase 1, and the contract is public so the community can add more.
 
 **Adapter interface.**
 
@@ -400,45 +369,42 @@ An adapter is the only code allowed to know an agent's native format. It runs th
 interface Adapter {
   id():            "claude" | "codex" | ...
   detect():        { installed: bool, version, logged_in: bool, binary_path }
-  capabilities():  { resume, fork, model_switch, compact, interrupt, approvals }
-  start(thread, opts: { resume_session_id?, model?, effort?, cwd, permission_mode }) → Session
-  send(session, turn: { text, attachments[], prefix? }) → AsyncStream<IREvent>
-  interrupt(session)
-  answer(session, approval: { call_id, decision })
-  compact(session)
-  close(session)
+  capabilities():  { copy_in, fork, model_choice, permission_modes }
+  launch(opts: { session: New(id?) | Resume(id) | Fork(id), model?, effort?, permission_mode, cwd }) → argv
+  session_file(cwd, session_id?, started_at) → path      // finds a session the agent named itself
+  read(path, from) → [IREvent]                           // events after the ones already read
+  write(events, cwd) → session_id                        // a new session holding exactly these events
+  status(screen, path) → working | waiting | idle        // from the session file first, the screen for waiting
 }
 ```
 
-Every adapter lives in `adapters/<id>/` with a `fixtures/` directory of real captured native output per supported agent version and a replay test that asserts the IR it produces. An adapter that fails its fixture tests cannot ship.
+Every adapter lives in `adapters/<id>/` with a `fixtures/` directory of real session files per supported agent version and replay tests that assert the IR read from each, plus round-trip tests: events written by `write` and read back by `read` are the same events, and a written session resumes in the real agent in the nightly end-to-end run. An adapter that fails its fixture tests cannot ship.
 
-**Claude Code adapter.** Spawns `claude -p --output-format stream-json --input-format stream-json` with `--permission-prompt-tool` style control so approvals come through the stream rather than a terminal prompt, plus `--resume <id>` or `--session-id <id>` for continuity and `--fork-session` for native forks. Reads the stream-json events (system, assistant, user, tool\_use, tool\_result, result) and maps them to IR. Uses `--append-system-prompt` for a short desl preamble that names the thread and worktree. Verify flag names against `claude --help` for the pinned version; they move. Where the Claude Agent SDK gives a cleaner interface than the raw subprocess, the adapter may wrap a small Node sidecar in later phases, but phase 1 is subprocess-only to keep the single binary.
+**Claude Code adapter.** Starts `claude --session-id <uuid>` for a new thread and `claude --resume <id>` for a written or existing session, with `--permission-mode` from the thread's mode and `--model`/`--effort` when chosen. Reads `~/.claude/projects/<cwd with every non-alphanumeric character as ->/<id>.jsonl`: user lines (prompts, tool results), assistant lines (text, tool use; thinking ignored), skipping subagent lines and Claude Code's own tagged records. Writes a new file of chained lines (`uuid`, `parentUuid`, `sessionId`, `cwd`), tool ids in the `toolu_` shape. Waiting: the permission dialog or a question on screen while a turn is open in the file. Verify flag names against `claude --help` for the pinned version; they move.
 
-**Codex adapter.** Spawns `codex exec --json` (and `codex exec resume <id>` for continuity) with sandbox and approval flags set from the thread's permission mode, working directory set with `--cd`. Reads the JSON event stream (thread started, turn started, item added/completed for messages, commands, file changes, approvals, turn completed, usage) and maps to IR. Uses `codex fork` for native forks. Verify flag names against `codex exec --help` for the pinned version.
+**Codex adapter.** Starts `codex --no-daemon` for a new thread and `codex --no-daemon resume <id>` for a written or existing session, with sandbox and approval flags from the thread's mode and `-m`/`-c model_reasoning_effort` when chosen; `--no-daemon` keeps the thread out of Codex's shared app-server, which would otherwise hold it after the interface quits. Finds a new thread's session as the newest rollout for the cwd begun after the start. Reads `~/.codex/sessions/YYYY/MM/DD/rollout-<time>-<id>.jsonl`: `response_item` messages, tool calls (`exec` scripts unpacked to their commands) and outputs. Writes a rollout with a `session_meta` header carrying `"history_mode": "paginated"`, one turn per user message bracketed by `task_started`/`task_complete`, `item_completed` events for messages and commands (what Codex's screen is built from), and no ids on assistant messages or tool calls (the API rejects ids it did not issue). Waiting: Codex's approval prompt on screen. Verify flag names against `codex --help` for the pinned version.
 
-**Raw PTY adapter (phase 2).** Runs any agent's interactive TUI, or a shell, in a pane without owning the conversation. The pane gets a status glyph from output heuristics (prompt detection, idle time) the way Herdr does, but no IR events, so switch and fork are disabled on it and the UI says why. This is the escape hatch for agents without a headless mode and for users who want an agent's native features. After the process exits, desl offers to import the agent's native session file into a thread on a best-effort basis.
+**Agents without an adapter (phase 2).** Any other agent's interface, or a shell, runs in a thread the same way, with status from output heuristics (prompt detection, idle time) as Herdr does, but no events: switch and fork are disabled on it and `prefix s` says why.
 
-**Permission modes.** Adapters receive one of `ask` (every edit and command needs a human; reads inside the project do not), `edits` (reads and edits allowed, commands ask), `worktree` (everything allowed inside the thread's worktree, nothing outside; from phase 2), `yolo` (everything allowed; the UI shows a persistent warning). Each adapter maps the mode to its agent's own flags and reports what it could not enforce: the report is a few words per mode, and the permissions list shows them in place of the mode's own meaning. Claude Code holds every mode as written. Codex in exec mode cannot ask before a call, so `ask` runs it in a read-only sandbox (it changes nothing rather than change something unasked) and `edits` runs it sandboxed to the project. In `yolo` Claude Code still sends its requests and the broker allows each one at once, so what was allowed is in the log.
+**Permission modes.** `ask` (every edit and command needs a human; reads inside the project do not), `edits` (reads and edits allowed, commands ask), `worktree` (everything allowed inside the thread's worktree, nothing outside; from phase 2), `yolo` (everything allowed). Each adapter maps the mode to its agent's own launch flags, and the agent enforces it and asks in its own interface; in their interactive interfaces both agents can hold every mode as written. Inside the agent, its own mode keys change it for that session.
 
-**Version pinning.** `desl doctor` reports each agent's version and whether the adapter has fixtures for it. A newer agent version than any fixture triggers a non-blocking warning. A CI job captures fresh fixtures from the latest agent releases weekly and opens a PR when the IR mapping changes.
+**Version pinning.** `desl doctor` reports each agent's version and whether the adapter has fixtures for it. A newer agent version than any fixture triggers a non-blocking warning, and switches into that agent use the brief until its fixtures exist. A CI job captures fresh fixtures from the latest agent releases weekly and opens a PR when the IR mapping changes.
 
 **Extensibility.** A third-party adapter is a binary on PATH named `desl-adapter-<id>` speaking the adapter interface over stdio as JSON. desl discovers it at startup. This keeps the core binary small and lets the community cover OpenCode, Gemini CLI, Cursor Agent and others without forking.
 
 ## Permissions and safety
 
-Headless agents cannot show their own approval prompts, so desl is the approval loop. The rule is simple: the agent proposes, the broker decides by policy, the human decides what policy left open, and every decision is an event in the log.
+The agent runs its own interface, so the agent is the approval loop: it asks in its own dialog and enforces its own mode. desl decides what mode an agent starts in, makes sure a question is never missed, and keeps a record of what was asked and answered.
 
-**Flow.** An adapter emits `approval_request` with the tool, its arguments and a risk class (`read`, `edit`, `command`, `network`, `destructive`). The broker checks the thread's permission mode and its `always` list. Allowed requests are answered at once and logged. Everything else sets the thread to `waiting`, fires the bell, raises the thread in the sidebar and shows the one-line strip. The answer (`y`, `n`, `a`, or `e` to edit the command first) becomes an `approval_response` event and goes back to the adapter.
+**Flow.** The adapter sees the agent's dialog or question on screen while a turn is open and reports `waiting`; desl appends an `approval_request`, rings the bell once if the thread is not on screen, adds it to the title count and the top of the thread list. When the agent records the answer in its session file, desl appends the `approval_response` and clears the mark.
 
-**Defaults.** New threads start in `edits` mode: reads and file edits inside the project are allowed, commands ask. A thread created with `--worktree` defaults to `worktree` mode. `yolo` is never a default and must be set explicitly per thread with `/permissions`; a fork does not inherit it, and the status bar shows `⚠ yolo` for as long as it is on. A mode change reaches the broker at once, also for a question already on screen, and reaches the agent's own flags with its next turn, so a running turn is never cut short.
+**Defaults.** New threads start in `edits` mode. A thread created with `--worktree` defaults to `worktree` mode. `yolo` is never a default and must be set explicitly per thread with `desl permissions`; a fork does not inherit it, and the title shows `⚠ yolo` for as long as a thread's agent was started with it. A mode chosen with `desl permissions` takes effect when desl next opens a session for the thread; inside the agent, its own mode keys change it at once.
 
-**Destructive classification.** Commands matching a built-in list (`rm -rf`, `git push --force`, `git reset --hard`, `drop table`, package publish commands, anything touching paths outside the worktree) are classed `destructive` and always ask, even in `worktree` mode. The list is extensible in `config.toml` and the agent is told, in the preamble, that these will prompt.
+**Worktree isolation.** When a thread has a worktree, its agent starts with the worktree as its working directory and, for Codex, its sandbox root. desl does not sit between the agent and its tools, so it cannot veto a single call; isolation is the agent's own sandbox and permission mode, and the permissions list says which of the two each agent gives.
 
-**Worktree isolation.** When a thread has a worktree, the broker rejects file edits and commands whose paths resolve outside it, regardless of mode. This is the main reason worktrees are one keystroke away: they make broad permissions safe.
+**Secrets.** desl never stores agent credentials; it relies on each agent's own login. Environment variables passed to agent processes are the user's shell environment minus a denylist (`AWS_SECRET_ACCESS_KEY`, `*_TOKEN`, `*_SECRET`, configurable). Conversations are scanned for strings that look like keys before they are copied into another agent's session, and the user is warned.
 
-**Secrets.** desl never stores agent credentials; it relies on each agent's own login. Environment variables passed to agent processes are the user's shell environment minus a denylist (`AWS_SECRET_ACCESS_KEY`, `*_TOKEN`, `*_SECRET`, configurable). Briefs are scanned for strings that look like keys before being sent to another agent and the user is warned.
-
-**Audit.** `desl log <thread>` prints every approval, who answered it and when. The export format includes them.
+**Audit.** `desl log <thread>` prints every approval the agents asked for and how it was answered, as read from their session files. The export format includes them.
 
 **Remote access.** When the daemon listens on TCP, it requires a token, binds to localhost unless `--host` is given, and prints the pairing URL and a QR code the way `t3 serve` does. Clients over TCP get the same permissions as local ones; there is no read-only mode in phase 1.
 
@@ -450,33 +416,34 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 | --- | --- |
 | Cold start to usable TUI, daemon already running | < 150 ms |
 | Cold start including daemon launch | < 1.5 s |
-| Frame redraw during token streaming | < 16 ms p99, no dropped tokens |
-| Thread switch in the sidebar (20 threads, 2k events each) | < 50 ms |
-| Prompt send to first token on screen (excluding agent latency) | < 30 ms |
-| Brief generation, 4k-token budget, 500-event thread | < 200 ms |
+| Delay desl adds between a key and the agent, and between the agent's output and the terminal | < 2 ms p99 |
+| Thread change to a live agent, key to new screen (20 threads, 2k events each) | < 100 ms, one frame |
+| Switch, key to the other agent's screen (excluding the agent's own start) | < 300 ms of desl's own time; < 3 s in total on the reference agents |
+| Copy of a 500-event thread into a new session | < 200 ms |
+| Brief generation (the fallback), 4k-token budget, 500-event thread | < 200 ms |
 | Client memory, 10 open threads | < 100 MB |
 | Daemon memory, 20 live agents idle | < 150 MB plus agent processes |
 | Daemon CPU at idle | < 0.5% |
 | Binary size, stripped | < 25 MB |
 | Store growth | < 1 KB per event excluding tool output blobs |
 
-**Rendering.** Token deltas are batched per animation frame; the transcript is a virtual list that renders only the visible window plus a margin; markdown is parsed incrementally and cached per message; diffs are rendered lazily on expand. Resize is debounced at 50 ms. No full-screen redraw on a single event.
+**Rendering.** The agent draws; desl forwards its bytes as they arrive and never rewrites them. Screen replacements are one synchronized-output frame. Overlays are drawn on the alternate screen and leave nothing behind. Resize goes to the agent's PTY at once and to hidden PTYs debounced at 50 ms.
 
 **Crash safety.** The store is written in WAL mode with one transaction per event, so nothing that reached the screen as an event is lost; a daemon crash mid-turn loses at most the in-flight assistant delta, and the thread says so and resumes its native session on the next prompt. Agent process crashes are detected within one second, marked `failed` with the exit reason, and offered a one-key restart that resumes the native session. Client crashes lose nothing. `desl doctor` checks store integrity and can rebuild indexes.
 
-**Process hygiene.** Every agent process is in its own process group; `desl daemon stop` and daemon restart send SIGTERM, wait 5 s, then SIGKILL, and never leave orphans. Idle agent processes are reaped after a configurable timeout (default 30 min) and transparently resumed on the next prompt. PTY scrollback is capped (default 10k lines) and persisted.
+**Process hygiene.** Every agent process is in its own process group; `desl daemon stop` and daemon restart send SIGTERM, wait 5 s, then SIGKILL, and never leave orphans. Idle agent processes are reaped after a configurable timeout (default 30 min) and resumed with their native session when the thread is next shown. Each PTY's kept output is capped (default 8 MB) and persisted; past the cap the oldest output is dropped and the screen is rebuilt from the agent's own resume on reattach.
 
-**Backpressure.** An agent that emits output faster than the client can render is buffered in the daemon, never blocked; the client shows `↓ n new` and catches up. Tool outputs over 1 MB are truncated in the IR with the full text in a blob.
+**Backpressure.** An agent that emits output faster than the client can write it is buffered in the daemon, never blocked. Tool outputs over 1 MB are truncated in the IR with the full text in a blob.
 
 **Upgrades.** `desl upgrade` replaces the binary atomically, restarts the daemon, and reconnects clients; running agent turns are allowed to finish first. Store migrations run on daemon start, forward-only, with a backup of the previous database kept for one version.
 
-**Observability.** `desl daemon logs` tails structured logs with per-thread and per-adapter filters. `DESL_DEBUG=1` adds native event dumps to the logs for adapter debugging. No telemetry leaves the machine unless the user opts in with `desl telemetry on`, which sends crash reports and anonymous performance counters only.
+**Observability.** `desl daemon logs` tails structured logs with per-thread and per-adapter filters. `DESL_DEBUG=1` adds native event dumps and raw key bytes to the logs for adapter and key debugging. No telemetry leaves the machine unless the user opts in with `desl telemetry on`, which sends crash reports and anonymous performance counters only.
 
 ## Distribution, install and configuration
 
 desl ships as one static binary per platform with no runtime dependencies, installed by a one-line script, and configured by files that are optional on day one.
 
-**Language and stack.** Rust, for the production build from phase 1 on. The product is judged on rendering (streaming without stutter, nothing moving under the reader's eyes, sub-16 ms frames with many threads live), and that is won with cell-level control of the terminal and no runtime pauses. Ratatui's immediate-mode model draws exactly the cells wanted each frame and emits the minimal diff, which is what "only the new tokens change" needs; the tools in this space whose feel is worth copying (Herdr, tutti, Codex CLI) are all Rust. Chosen crates: `ratatui` and `crossterm` (TUI), `rusqlite` with bundled SQLite (store), `clap` (CLI), `serde` and `serde_json` (protocol and adapters), `tracing` with `tracing-subscriber` (logs), `pulldown-cmark` (markdown in the transcript), `sha2` (content addresses for blobs), `chrono` (local clock time), `unicode-width` (column widths), `anyhow` (errors at the edges), `portable-pty` (raw panes, from phase 2), `cargo-dist` (signed releases, installer, Homebrew tap), `cargo-zigbuild` or `cross` (targets). The daemon runs on plain threads and channels: one engine thread owns all state, and each agent stream and each client has its own reader. `tokio` was the first choice and is not used; it comes back only if remote clients in phase 3 need it. Git is read through the `git` binary; `git2` is not used. Phase 0 prototypes are throwaway and may be written in whatever is fastest to tune by hand (Ink, Textual, Bubble Tea); nothing from them is kept except the measurements and the spec changes they produce. Go was considered for its iteration speed while adapter protocols are unstable; that argument is removed by settling the adapter contract in phase 0 before the Rust build starts.
+**Language and stack.** Rust, for the production build from phase 1 on. The product is judged on what it adds to the agent's own interface: nothing between a key and the agent, screens that change in one frame, many live agents with no runtime pauses. That is won with byte-level control of the terminal; the tools in this space whose feel is worth copying (Herdr, tutti, Codex CLI) are all Rust. Chosen crates: `ratatui` and `crossterm` (overlays, raw mode), `portable-pty` (every agent's PTY), `vt100` (a screen model per PTY, for status and splits), `rusqlite` with bundled SQLite (store), `clap` (CLI), `serde` and `serde_json` (protocol and adapters), `tracing` with `tracing-subscriber` (logs), `sha2` (content addresses for blobs), `chrono` (timestamps, local clock time), `unicode-width` (column widths), `anyhow` (errors at the edges), `cargo-dist` (signed releases, installer, Homebrew tap), `cargo-zigbuild` or `cross` (targets); `pulldown-cmark` left with desl's own transcript. The daemon runs on plain threads and channels: one engine thread owns all state, and each agent PTY, each session file and each client has its own reader. `tokio` was the first choice and is not used; it comes back only if remote clients in phase 3 need it. Git is read through the `git` binary; `git2` is not used. Phase 0 prototypes are throwaway and may be written in whatever is fastest to tune by hand (Ink, Textual, Bubble Tea); nothing from them is kept except the measurements and the spec changes they produce. Go was considered for its iteration speed while adapter protocols are unstable; that argument is removed by settling the adapter contract in phase 0 before the Rust build starts.
 
 **Targets.** macOS arm64 and amd64, Linux amd64 and arm64 (glibc and musl), Windows amd64 (phase 3, with named pipes and ConPTY). FreeBSD on a best-effort basis.
 
@@ -521,7 +488,7 @@ model = "gpt-5-codex"
 default_mode = "edits"
 destructive_patterns = ["rm -rf", "git push --force"]
 
-[brief]
+[brief]            # the fallback when a conversation cannot be copied
 token_budget = 4000
 agent_summary = false
 
@@ -542,13 +509,13 @@ Four phases, each shippable on its own, each gated by a test the previous phase 
 
 Each diamond is a gate: the phase after it does not start until the gate's test passes.
 
-**Phase 0, the experience prototype (weeks 1 to 3).** Two throwaway prototypes of the same experience, built for feel and not for reuse: a sidebar with a few threads, one transcript pane, the approval strip, `/switch` between Claude Code and Codex, and detach/reattach. Prototype A renders the conversation itself from headless adapters (`claude -p` stream-json, `codex exec --json`). Prototype B runs the agents' own TUIs in PTY panes and keeps continuity by tailing their transcript files, the way tandem does. The same ten target users (people who already use both agents and tmux or lazygit daily) try both in the hallway protocol, blind to which is which. Every pixel, keystroke, sound and timing in the walkthrough and the feel bar is tuned here, on whichever prototype is being tested, and the winning details are written back into this spec. Gate: one approach wins on the feel bar with a median of 4 or better on moments 1, 2, 3, 4 and 6, and the losing prototype is deleted. No daemon, no store, no adapter contract is built in this phase; anything reusable is a bonus, not a goal. **Outcome (2026-11-04):** Prototype A won. The author decided alone after using both prototypes, in place of the ten-user sessions; no scores were taken. Prototype B was deleted. Prototype A stays in `phase0/` as the reference the phase 1 client is rebuilt to match.
+**Phase 0, the experience prototype (weeks 1 to 3).** Two throwaway prototypes of the same experience, built for feel and not for reuse: a sidebar with a few threads, one transcript pane, the approval strip, `/switch` between Claude Code and Codex, and detach/reattach. Prototype A renders the conversation itself from headless adapters (`claude -p` stream-json, `codex exec --json`). Prototype B runs the agents' own TUIs in PTY panes and keeps continuity by tailing their transcript files, the way tandem does. The same ten target users (people who already use both agents and tmux or lazygit daily) try both in the hallway protocol, blind to which is which. Every pixel, keystroke, sound and timing in the walkthrough and the feel bar is tuned here, on whichever prototype is being tested, and the winning details are written back into this spec. Gate: one approach wins on the feel bar with a median of 4 or better on moments 1, 2, 3, 4 and 6, and the losing prototype is deleted. No daemon, no store, no adapter contract is built in this phase; anything reusable is a bonus, not a goal. **Outcome (2026-11-04):** Prototype A won. The author decided alone after using both prototypes, in place of the ten-user sessions; no scores were taken. Prototype B was deleted. **Reopened and reversed (2026-11-05):** headless `claude -p`, A's route, was measured to drain the five-hour limit about 2.4 times faster than Claude Code's own interface for the same work, and A had to rebuild every native feature (skills, MCP, plan mode, questions, approvals) through its adapters. What the author had disliked in B was the switch: it flickered and opened the other agent blank, with an empty terminal history. A third prototype, `phase0/proto-n`, fixed that by writing the conversation into a new session of the other agent and swapping the screen in one frame, and passes the agent straight through so the terminal's own scrollback stays. The author judged its switch seamless; the native route is the phase 1 approach. `phase0/proto-n` is the reference for the switch, Prototype A for the overlays' look.
 
-**Phase 1, the real thing (weeks 4 to 8).** The core built properly under the winning approach: daemon with socket protocol, SQLite store, event IR, Claude and Codex adapters with fixtures, projector, thread engine, approval broker; then the Ratatui client rebuilt to match the phase 0 winner pixel for pixel, with sidebar, transcript, input, approvals strip, status bar, help overlay, command palette, keymap and themes. Full CLI with `--json`. Detach and reattach. `desl doctor`, installer, cargo-dist pipeline. Gate: all five walkthrough scenarios pass on macOS and Linux; a 40-turn Claude thread switched to Codex continues correctly in three scripted scenarios and a fork from message 12 reproduces the parent's state, verified by an independent reviewer; every performance budget is met in CI; the author runs the hallway protocol on the build and every moment passes.
+**Phase 1, the real thing (weeks 4 to 8).** The core built properly under the native route: daemon with socket protocol, SQLite store, event IR, PTY host, Claude and Codex adapters that read and write session files with fixtures, projector for the fallback brief, thread engine, attention; then the client: pass-through of the shown thread, the switch of `phase0/proto-n`, the thread list, help and info overlays in Prototype A's visual language, keymap and themes. Full CLI with `--json`. Detach and reattach. `desl doctor`, installer, cargo-dist pipeline. Gate: all five walkthrough scenarios pass on macOS and Linux; a 40-turn Claude thread switched to Codex continues correctly in three scripted scenarios and a fork from message 12 reproduces the parent's state, verified by an independent reviewer; every performance budget is met in CI; the author runs the hallway protocol on the build and every moment passes.
 
-**Phase 2, panes and worktrees (weeks 9 to 11).** Pane splits, zoom, PTY host, raw agent and shell panes, worktree-per-thread with `/diff` and `/pr`, destructive-command classification, idle process reaping, the desl skill for agents. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
+**Phase 2, panes and worktrees (weeks 9 to 11).** Splits and zoom, threads for agents without an adapter, shell panes, worktree-per-thread with `desl diff` and `desl pr`, idle process reaping, the desl skill for agents. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
 
-**Phase 3, reach (weeks 12 to 15).** Remote TCP mode with pairing, Windows support, `desl export`/`import` for moving threads between machines, agent-written briefs, third-party adapter protocol with one community adapter (OpenCode) built against it, notifications (desktop and terminal). Gate: a thread started on a laptop is continued on a server from a phone browser's SSH client; an external contributor ships an adapter without touching core.
+**Phase 3, reach (weeks 12 to 15).** Remote TCP mode with pairing, Windows support, `desl export`/`import` for moving threads between machines, agent-written briefs for the fallback, third-party adapter protocol with one community adapter (OpenCode) built against it, notifications (desktop and terminal). Gate: a thread started on a laptop is continued on a server from a phone browser's SSH client; an external contributor ships an adapter without touching core.
 
 After phase 3: team features (shared briefs, thread links), a web client on the same protocol, and whatever the community asks for loudest.
 
@@ -558,12 +525,12 @@ desl is done when a demanding terminal user cannot tell which parts were written
 
 **Test strategy.**
 
-- Adapter replay tests: every adapter has fixtures of real native output per agent version; a test replays each fixture and asserts the exact IR. New agent versions add fixtures, never edit old ones.
+- Adapter replay tests: every adapter has fixtures of real session files per agent version; a test reads each fixture and asserts the exact IR, and a round-trip test writes IR out as a session and reads it back to the same events. New agent versions add fixtures, never edit old ones.
 - Projector golden tests: a set of event logs with expected briefs, byte for byte. Any change to extraction rules updates the goldens in the same PR with a reviewer's sign-off.
 - Thread engine property tests: random sequences of prompt, switch, fork and crash against a model of the expected high-water marks and bindings. Invariants: indices are dense, `seen_up_to ≤ head` always, a fork's events equal its parent's prefix, no event is ever lost.
-- Daemon integration tests: a fake agent binary that speaks each native protocol, so the full daemon runs in CI without API keys. Covers crash, restart, reap, resume, orphan detection and socket reconnect.
-- TUI snapshot tests: `Ratatui's TestBackend` renders each screen at 80×24 and 200×50 and compares against approved snapshots; keymap tests assert every documented key does what the table says.
-- End-to-end tests against the real `claude` and `codex` binaries, run nightly with real keys, executing the five walkthrough scenarios.
+- Daemon integration tests: a fake agent binary that draws a screen, asks the terminal what real agents ask and writes a session file in each native format, so the full daemon runs in CI without API keys. Covers crash, restart, reap, resume, orphan detection and socket reconnect.
+- TUI snapshot tests: `Ratatui's TestBackend` renders each overlay at 80×24 and 200×50 and compares against approved snapshots; key tests feed the prefix in every keyboard encoding and assert every documented key does what the table says and every other key reaches the agent byte for byte.
+- End-to-end tests against the real `claude` and `codex` binaries, run nightly with real keys, executing the five walkthrough scenarios, with the screen sampled during each switch to assert no blank or half-drawn frame.
 - Performance tests: the budgets table, run in CI on every PR, with results posted as a comment.
 
 **Code quality rules.** `cargo clippy` with `-D warnings` and the pedantic group enabled, `rustfmt`, `cargo deny` for licences and advisories, `cargo audit`, `#![forbid(unsafe_code)]` everywhere except the PTY crate boundary, and `cargo test` under Miri for the few crates that touch raw memory. No crate may depend on a native agent format except its own adapter. Public items have doc comments and `cargo doc` builds without warnings. Error messages are complete sentences that say what happened and what to do next. No `unwrap` outside tests; errors carry context with `anyhow` at the edges and typed errors inside. No TODOs in `main`.
@@ -590,11 +557,12 @@ Decisions the building agent should raise before phase 0 ends, with the current 
 - [ ] **Name collision check.** Confirm `desl` is free on npm, crates.io, Homebrew, GitHub and as a `.dev` domain; the first pass on 2026-11-04 found it clean. Fallback: segue, not `muster`.
 - [x] **Exact headless flags.** Pinned to Claude Code 2.1.312 and Codex CLI 0.165.0; the real flags are recorded in `docs/adapters.md`.
 - [x] **Approval transport for Claude Code.** Approvals arrive in the stream as `control_request` lines with `--permission-prompts host --permission-prompt-tool stdio`, and are answered on stdin. A plain subprocess drives it; no Node sidecar.
-- [x] **Codex approval policy.** `codex exec` has no per-call approvals; its sandbox decides. `ask` runs Codex read-only and `edits` runs it sandboxed to the project, and the permissions list says so. `codex app-server` is the route to per-call approvals and to streamed replies.
+- [x] **Codex approval policy.** Settled by the native route: Codex's own interface asks before calls, as in any Codex session. (Under the headless route, `codex exec` had no per-call approvals.)
 - [x] **Token estimation.** Bytes divided by four, always shown with `~`.
 - [ ] **Store sync.** Append-only event log makes later sync possible; decide whether phase 3 ships one-shot `export`/`import` only or a live sync over the remote protocol.
 - [ ] **Agent preamble wording.** The short system-prompt addition that tells an agent it is inside desl (thread name, worktree, what will prompt for approval); draft and test with both agents for unintended behaviour changes.
-- [ ] **Raw PTY import.** How far to go in importing a raw pane's native session file into a thread after the fact; proposal is best-effort, clearly labelled, never blocking.
+- [x] **Raw PTY import.** Settled by the native route: every thread is an agent in a PTY whose session file the adapter reads.
+- [ ] **Session formats move.** The copy depends on the agents' undocumented session files. Proposal: per-version fixtures, the weekly fixture job, and the brief as the fallback for any version without fixtures; decide whether to also ask Anthropic and OpenAI whether writing a session for resume is a supported path.
 - [ ] **Prefix inside tmux.** Default to `ctrl+a` when `$TMUX` is set, or always ask on first run?
 - [ ] **Default theme.** Terminal palette versus a shipped theme; proposal is terminal palette, with the accent colour taken from the terminal's blue.
 - [ ] **Windows timing.** Phase 3 as written, or earlier if the first users ask.

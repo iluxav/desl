@@ -346,6 +346,45 @@ Path: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl`. The 
 | `response_item` / `function_call` | A named tool with JSON `arguments`. |
 | `token_usage_record`, `turn_context`, `world_state` | Ignored. |
 
+## Copying a conversation into the other agent's session file (spike, 2026-11-05)
+
+Question: can a switch carry the whole conversation instead of a brief, by writing it into the
+receiving agent's own session file and resuming that? Tested on Claude Code 2.1.318 and Codex CLI
+0.166.0, both directions, with a real source session (one turn: a codename given in the prompt, a
+fact that appears only in a tool's output, a rejected approach, one edit) and a fresh target session
+of the receiving agent (one "ok" turn). The converter was a throwaway script; it is not in the repo.
+
+| | Claude reads a copied Codex conversation | Codex reads a copied Claude conversation |
+| --- | --- | --- |
+| Headless resume (`-p --resume`, `exec resume`) | 4 of 4 recalled, including the tool-output fact | 4 of 4 recalled, including the tool-output fact |
+| Native TUI resume | History shows as if native; Codex `cat`s are summarised as `Read 2 files, ran 1 shell command` | 4 of 4 recalled; the copied turn shows its prompt and reply, not its tool calls |
+
+What it takes:
+
+- **Thinking is dropped** both ways: Claude's is signed, Codex's reasoning is encrypted.
+- **Tool calls become the receiver's own tools.** Codex `exec_command` → Claude `Bash` with a
+  `tool_result`; Claude `Read`/`Bash` → Codex `exec` running `cat`/the command, `Edit` →
+  `apply_patch`. Outputs were capped at 4,000 bytes each.
+- **Claude**: lines spliced before the target's first prompt, each with its own `uuid`, chained
+  through `parentUuid`, and the target's first prompt re-parented onto the last copied line. Copied
+  `tool_use` ids need the `toolu_` shape. No other check bit.
+- **Codex**: copied `response_item`s must carry **no `id`** on assistant messages and tool calls; with
+  made-up ids the API answers 400 `This request does not support user-supplied input item IDs`. The
+  copy must be a whole turn appended at the end, `task_started` … `task_complete`, with
+  `item_completed` events (`UserMessage`, `AgentMessage`, carrying `thread_id` and timestamps) and
+  `ordinal` renumbered. Lines placed inside an existing turn reach the model but not the screen.
+- **Codex's screen comes from a cache**, `~/.codex/thread_history_1.sqlite`, projected from the
+  rollout up to a stored byte offset. Appending at the end is picked up; rewriting earlier lines is
+  not, until that thread's rows are cleared.
+- **The Codex TUI runs through a shared background daemon** (`codex app-server`, from
+  `~/.codex/packages/app-server-daemon/`). It keeps a resumed thread open after the TUI quits, holding
+  `~/.codex/thread-writer-locks/<id>.lock`; `codex exec resume` then fails with `thread already has an
+  active writer`, and a new `codex resume` forks the thread. desl must write a Codex file before the
+  daemon has the thread open, or go through the app-server itself.
+
+Not tested: long threads (context size), switching back and forth repeatedly, Codex's own
+`apply_patch` and MCP calls copied into Claude, and how either format moves in the next release.
+
 ## Prototype dependencies
 
 The crates the phase 0 prototype in `phase0/` uses. The crates of desl itself are named in the

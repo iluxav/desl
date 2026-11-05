@@ -205,7 +205,21 @@ fn each_permission_mode_has_its_sandbox_and_a_note_where_codex_cannot_ask() {
     assert_eq!(sandbox_flag(PermissionMode::Ask), "read-only");
     assert_eq!(sandbox_flag(PermissionMode::Edits), "workspace-write");
     assert_eq!(sandbox_flag(PermissionMode::Yolo), "danger-full-access");
-    assert_eq!(Codex.permission_note(PermissionMode::Ask).as_deref(), Some("reads only, because codex cannot ask"));
-    assert_eq!(Codex.permission_note(PermissionMode::Edits).as_deref(), Some("edits and commands inside this project only"));
+    assert_eq!(Codex.permission_note(PermissionMode::Ask).as_deref(), Some("read-only; codex asks to write only when it decides to"));
+    assert!(Codex.permission_note(PermissionMode::Edits).is_some_and(|n| n.starts_with("edits and commands inside this project")));
+    // Its own interface: the sandbox decides what needs a human, and 0.166 takes only on-request.
+    let launch = |mode| {
+        Codex
+            .launch(&LaunchOpts {
+                cwd: "/p".into(),
+                open: Open::New { session_id: None },
+                model: None,
+                effort: None,
+                permission_mode: mode,
+            })
+            .args
+    };
+    assert_eq!(launch(PermissionMode::Ask), ["--no-daemon", "-s", "read-only", "-a", "on-request"]);
+    assert_eq!(launch(PermissionMode::Edits), ["--no-daemon", "-s", "workspace-write", "-a", "on-request"]);
     assert_eq!(Codex.permission_note(PermissionMode::Yolo), None, "yolo holds as written");
 }

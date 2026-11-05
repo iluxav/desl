@@ -101,9 +101,9 @@ impl Adapter for Codex {
 
     fn permission_note(&self, mode: PermissionMode) -> Option<String> {
         match mode {
-            PermissionMode::Ask => Some("reads run; codex asks before anything that writes".into()),
+            PermissionMode::Ask => Some("read-only; codex asks to write only when it decides to".into()),
             PermissionMode::Edits | PermissionMode::Worktree => {
-                Some("edits and commands inside this project run without asking; codex asks before anything outside it".into())
+                Some("edits and commands inside this project run without asking; codex may ask to go outside it".into())
             }
             PermissionMode::Yolo => None,
         }

@@ -42,12 +42,21 @@ fn tagged(text: &str) -> bool {
 
 pub struct Reader {
     parser: Parser,
+    /// The model of the last reply, to report a change once.
+    model: Option<String>,
 }
 
 impl Reader {
     pub fn new(cwd: &Path) -> Reader {
-        Reader { parser: Parser::new(cwd) }
+        Reader { parser: Parser::new(cwd), model: None }
     }
+}
+
+/// `/effort` answers "Set effort level to high (saved as your default …)".
+fn effort_set(text: &str) -> Option<String> {
+    let rest = text.split("Set effort level to ").nth(1)?;
+    let level: String = rest.chars().take_while(char::is_ascii_alphanumeric).collect();
+    (!level.is_empty()).then_some(level)
 }
 
 impl SessionReader for Reader {
@@ -61,7 +70,9 @@ impl SessionReader for Reader {
                 let content = &v["message"]["content"];
                 if let Some(text) = content.as_str() {
                     if tagged(text) {
-                        return Vec::new();
+                        return effort_set(text)
+                            .map(|effort| vec![Reading::Settings { model: None, effort: Some(effort) }])
+                            .unwrap_or_default();
                     }
                     return vec![
                         Reading::Working,
@@ -86,18 +97,23 @@ impl SessionReader for Reader {
             Some("assistant") => {}
             _ => return Vec::new(),
         }
+        let mut out = Vec::new();
+        // Each reply names its model; a change made with /model shows here first.
+        if let Some(model) = v["message"]["model"].as_str().filter(|m| m.starts_with("claude-"))
+            && self.model.as_deref() != Some(model)
+        {
+            self.model = Some(model.to_string());
+            out.push(Reading::Settings { model: Some(model.to_string()), effort: None });
+        }
         // The session file names the structured result `toolUseResult`; the stream, `tool_use_result`.
         if let Some(r) = v.get("toolUseResult").cloned() {
             v["tool_use_result"] = r;
         }
-        self.parser
-            .line(&v)
-            .into_iter()
-            .filter_map(|e| match e {
-                AdapterEvent::Event { event } => Some(Reading::Event(event)),
-                _ => None,
-            })
-            .collect()
+        out.extend(self.parser.line(&v).into_iter().filter_map(|e| match e {
+            AdapterEvent::Event { event } => Some(Reading::Event(event)),
+            _ => None,
+        }));
+        out
     }
 }
 
@@ -223,11 +239,29 @@ mod tests {
                 Reading::Event(e) => e.name().to_string(),
                 Reading::Working => "working".into(),
                 Reading::Idle => "idle".into(),
+                Reading::Settings { .. } => "settings".into(),
             })
             .collect();
         assert_eq!(names, ["working", "user_message", "tool_call", "tool_result", "assistant_message", "idle"]);
         assert!(matches!(&got[2], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "read" && args["path"] == "notes.txt"));
         assert!(matches!(&got[3], Reading::Event(EventKind::ToolResult { output, .. }) if output.contains("deadline: Friday")));
+    }
+
+    #[test]
+    fn a_model_or_effort_chosen_in_claude_is_reported_once() {
+        let got = read(&[
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"a"}]}}"#,
+            r#"{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"b"}]}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"<local-command-stdout>Set effort level to high (saved as your default for new sessions): Complex tasks</local-command-stdout>"}}"#,
+        ]);
+        let settings: Vec<&Reading> = got.iter().filter(|r| matches!(r, Reading::Settings { .. })).collect();
+        assert_eq!(
+            settings,
+            [
+                &Reading::Settings { model: Some("claude-opus-5-5".into()), effort: None },
+                &Reading::Settings { model: None, effort: Some("high".into()) }
+            ]
+        );
     }
 
     #[test]
@@ -273,7 +307,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text.len() as u64, len);
         let mut r = Reader::new(Path::new("/tmp/demo"));
-        let back: Vec<Reading> = text.lines().flat_map(|l| r.line(l)).collect();
+        let back: Vec<Reading> = text.lines().flat_map(|l| r.line(l)).filter(|x| !matches!(x, Reading::Settings { .. })).collect();
         assert!(matches!(&back[1], Reading::Event(EventKind::UserMessage { text, .. }) if text == "Read notes.txt"));
         assert!(
             matches!(&back[2], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "read" && args["path"] == "notes.txt")

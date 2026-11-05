@@ -141,6 +141,7 @@ the end of the file. Verified 2026-11-05 on Claude Code 2.1.318 and Codex CLI 0.
 | Idle | `system` `turn_duration`; `[Request interrupted…]` | `task_complete`; `turn_aborted` |
 | Events | user, assistant and tool-result lines through the stream parser (`toolUseResult` is the stream's `tool_use_result`); `isSidechain` lines skipped | `response_item` messages, `custom_tool_call` (`exec` scripts unpacked to their command, `apply_patch` to an edit), `function_call`, outputs |
 | Waiting (bottom 14 rows, only mid-turn) | `Do you want to` with `1. Yes`; the trust question | `Would you like to run the following command?` (seen live), `Trust this folder` |
+| Model and effort chosen inside | each reply's `message.model`; `/effort`'s "Set effort level to …" (Claude Code also saves both as the user's default) | `event_msg` `thread_settings_applied` `{model, reasoning_effort}`; Codex's `/model` with `s` changes only the session, and its file holds nothing until the first turn |
 
 In `ask` mode (`-s read-only -a on-request`) Codex asks only when the model decides to request
 more: asked plainly to create a file it reported the sandbox refusal; asked to request

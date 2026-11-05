@@ -987,6 +987,18 @@ impl Engine {
                 }
                 Reading::Working => self.threads[i].status = Status::Working,
                 Reading::Idle => self.threads[i].status = Status::Idle,
+                // Chosen in the agent's own interface: the agent's next session starts the same.
+                Reading::Settings { model, effort } => {
+                    if let Some(b) = self.threads[i].bindings.get_mut(&agent) {
+                        if let Some(m) = model {
+                            b.model = Some(m.clone());
+                            b.model_choice = Some(m);
+                        }
+                        if effort.is_some() {
+                            b.effort_choice = effort;
+                        }
+                    }
+                }
             }
         }
         if changed {

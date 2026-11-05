@@ -137,6 +137,16 @@ impl SessionReader for Reader {
                 Some("task_started") => vec![Reading::Working],
                 Some("task_complete") => vec![Reading::Idle],
                 Some("turn_aborted") => vec![Reading::Event(EventKind::Interrupt), Reading::Idle],
+                // Codex's own /model changes only the running session; it records the choice here.
+                Some("thread_settings_applied") => {
+                    let s = &p["thread_settings"];
+                    let get = |k: &str| s.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string);
+                    let (model, effort) = (get("model"), get("reasoning_effort"));
+                    if model.is_none() && effort.is_none() {
+                        return Vec::new();
+                    }
+                    vec![Reading::Settings { model, effort }]
+                }
                 _ => Vec::new(),
             };
         }
@@ -346,6 +356,15 @@ mod tests {
         assert!(matches!(&got[4], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "edit" && args["path"] == "net.py"));
         assert!(matches!(&got[5], Reading::Event(EventKind::AssistantMessage { text, .. }) if text == "The owner is Ana."));
         assert_eq!(got[6], Reading::Idle);
+    }
+
+    #[test]
+    fn a_model_or_effort_chosen_in_codex_is_reported() {
+        let mut r = Reader::new(Path::new("/tmp/demo"));
+        let got = r.line(r#"{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-6-astra","reasoning_effort":"high"}}}"#);
+        assert_eq!(got, vec![Reading::Settings { model: Some("gpt-6-astra".into()), effort: Some("high".into()) }]);
+        let got = r.line(r#"{"type":"event_msg","payload":{"type":"thread_settings_applied","thread_settings":{"model":"gpt-6-luna"}}}"#);
+        assert_eq!(got, vec![Reading::Settings { model: Some("gpt-6-luna".into()), effort: None }]);
     }
 
     #[test]

@@ -89,6 +89,12 @@ pub enum Reading {
     Working,
     /// The turn is over, finished or stopped.
     Idle,
+    /// The model or reasoning effort the session now runs with, changed in the agent's own
+    /// interface. desl starts the agent's next session with the same.
+    Settings {
+        model: Option<String>,
+        effort: Option<String>,
+    },
 }
 
 /// Turns an agent's session file into events, one line at a time, as the agent appends them.

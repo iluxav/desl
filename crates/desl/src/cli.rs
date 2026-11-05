@@ -19,6 +19,8 @@ impl Out {
     }
 }
 
+/// Connects to the daemon. With `start`, a daemon that is not running is started: every thread
+/// is in the store, so any command can be answered from a cold start.
 fn connect(paths: &Paths, start: bool) -> Result<Conn> {
     match Conn::open(paths, start, "cli")? {
         Some(c) => Ok(c),
@@ -92,7 +94,7 @@ pub fn status(paths: &Paths, out: &Out) -> Result<()> {
 }
 
 pub fn thread_list(paths: &Paths, out: &Out) -> Result<()> {
-    let ws = workspace(&mut connect(paths, false)?)?;
+    let ws = workspace(&mut connect(paths, true)?)?;
     if out.json {
         out.value(&json!(ws.threads));
     } else {
@@ -123,7 +125,7 @@ fn event_line(e: &Event) -> Option<String> {
 }
 
 pub fn thread_show(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     let Reply::Events { events } = conn.call(Command::Events { thread_id: t.id.clone() })? else {
         bail!("The desl daemon did not return the events.")
@@ -156,7 +158,7 @@ fn done(out: &Out, v: Value, text: String) {
 }
 
 pub fn thread_rename(paths: &Paths, out: &Out, thread: &str, name: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     conn.call(Command::Rename { thread_id: t.id.clone(), name: name.to_string() })?;
     done(out, json!({ "thread_id": t.id }), format!("Renamed {}.", t.id));
@@ -164,7 +166,7 @@ pub fn thread_rename(paths: &Paths, out: &Out, thread: &str, name: &str) -> Resu
 }
 
 pub fn thread_rm(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     conn.call(Command::RemoveThread { thread_id: t.id.clone() })?;
     done(out, json!({ "thread_id": t.id }), format!("Removed {} and its history.", t.id));
@@ -266,7 +268,7 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
 }
 
 pub fn switch(paths: &Paths, out: &Out, thread: &str, agent: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     conn.call(Command::Switch { thread_id: t.id.clone(), agent: agent.to_string() })?;
     done(out, json!({ "thread_id": t.id, "agent": agent }), format!("{} is on {agent}. Its next prompt carries the brief.", t.id));
@@ -274,7 +276,7 @@ pub fn switch(paths: &Paths, out: &Out, thread: &str, agent: &str) -> Result<()>
 }
 
 pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: Option<u64>) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     let Reply::Created { thread_id } = conn.call(Command::Fork { thread_id: t.id, agent, at })? else {
         bail!("The desl daemon did not create the fork.")
@@ -283,8 +285,46 @@ pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: O
     Ok(())
 }
 
+/// `desl model <thread>` lists the models of the thread's agent with the current one marked;
+/// `desl model <thread> <name>` picks one.
+pub fn model(paths: &Paths, out: &Out, thread: &str, name: Option<String>) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let t = resolve(&mut conn, thread)?;
+    match name {
+        None => {
+            let Reply::Models { agent, models, current } = conn.call(Command::Models { thread_id: t.id.clone() })? else {
+                bail!("The desl daemon did not list the models.")
+            };
+            if out.json {
+                out.value(&json!({ "thread_id": t.id, "agent": agent, "current": current, "models": models }));
+                return Ok(());
+            }
+            let id_w = models.iter().map(|m| m.id.len()).max().unwrap_or(0);
+            let name_w = models.iter().map(|m| m.name.chars().count()).max().unwrap_or(0);
+            println!("{} · {agent}", t.id);
+            for m in &models {
+                let mark = if Some(&m.id) == current.as_ref() { "✓" } else { " " };
+                println!("{mark} {:<id_w$}  {:<name_w$}  {}", m.id, m.name, m.description);
+            }
+        }
+        Some(name) => {
+            // The list makes a name checkable; ask for it first so a typo is caught here.
+            conn.call(Command::Models { thread_id: t.id.clone() })?;
+            let Reply::ModelSet { agent, model } = conn.call(Command::SetModel { thread_id: t.id.clone(), model: Some(name) })? else {
+                bail!("The desl daemon did not set the model.")
+            };
+            let text = match &model {
+                Some(m) if !m.default => format!("{agent} will use {} in {} from its next prompt.", m.name, t.id),
+                _ => format!("{agent} is back on its default model in {}.", t.id),
+            };
+            done(out, json!({ "thread_id": t.id, "agent": agent, "model": model }), text);
+        }
+    }
+    Ok(())
+}
+
 pub fn brief(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     let Reply::Brief(b) = conn.call(Command::Brief { thread_id: t.id, to: None })? else {
         bail!("The desl daemon did not return the brief.")
@@ -298,7 +338,7 @@ pub fn brief(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
 }
 
 pub fn wait(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     let Reply::Waited { status } = conn.call(Command::Wait { thread_id: t.id.clone() })? else {
         bail!("The desl daemon did not answer the wait.")
@@ -311,7 +351,7 @@ pub fn wait(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
 }
 
 pub fn answer(paths: &Paths, out: &Out, thread: &str, decision: Decision) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     conn.call(Command::Answer { thread_id: t.id.clone(), call_id: None, decision })?;
     let word = if decision.allows() { "Allowed" } else { "Denied" };
@@ -321,7 +361,7 @@ pub fn answer(paths: &Paths, out: &Out, thread: &str, decision: Decision) -> Res
 
 /// `desl log <thread>`: every approval, who answered it and when.
 pub fn log(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
-    let mut conn = connect(paths, false)?;
+    let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     let Reply::Events { events } = conn.call(Command::Events { thread_id: t.id.clone() })? else {
         bail!("The desl daemon did not return the events.")

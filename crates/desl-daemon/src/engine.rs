@@ -10,7 +10,9 @@
 use crate::store::Store;
 use crate::{git, projector};
 use desl_ir::adapter::{Adapter, AdapterEvent, Session, Sink, StartOpts, Turn};
-use desl_ir::{Binding, Decision, Event, EventKind, MAX_NAME, PendingApproval, PermissionMode, Project, Status, Thread, derive_name};
+use desl_ir::{
+    Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, Status, Thread, derive_name,
+};
 use desl_proto::{AgentInfo, BriefPreview, Change, Check, Command, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -39,6 +41,14 @@ pub enum Msg {
         agent: String,
         generation: u64,
         event: AdapterEvent,
+    },
+    /// An agent's model list arrived; `client` and `id` are the request waiting for it.
+    Models {
+        client: ClientId,
+        id: u64,
+        thread_id: String,
+        agent: String,
+        result: Result<Vec<ModelInfo>, String>,
     },
     /// Once a second.
     Tick,
@@ -87,6 +97,8 @@ pub struct Engine {
     clients: HashMap<ClientId, Client>,
     /// `desl wait`: (client, request id, thread).
     waiters: Vec<(ClientId, u64, String)>,
+    /// Each agent's model list, asked for once and kept while the daemon runs.
+    models: HashMap<String, Vec<ModelInfo>>,
     tx: Sender<Msg>,
     generation: u64,
     ticks: u64,
@@ -117,6 +129,7 @@ impl Engine {
             live: HashMap::new(),
             clients: HashMap::new(),
             waiters: Vec::new(),
+            models: HashMap::new(),
             tx,
             generation: 0,
             ticks: 0,
@@ -444,7 +457,7 @@ impl Engine {
                 thread_name: t.name.clone(),
                 cwd: t.cwd.clone().into(),
                 resume_session_id: session_id,
-                model: None,
+                model: t.bindings.get(&agent).and_then(|b| b.model_choice.clone()),
                 permission_mode: t.permission_mode,
             };
             match adapter.start(opts, self.sink(thread_id, &agent, generation)) {
@@ -666,6 +679,13 @@ impl Engine {
                 }
             }
             Msg::Adapter { thread_id, agent, generation, event } => self.on_adapter(&thread_id, &agent, generation, event),
+            Msg::Models { client, id, thread_id, agent, result } => {
+                let outcome = result.and_then(|models| {
+                    self.models.insert(agent.clone(), models);
+                    self.models_reply(&thread_id, &agent)
+                });
+                self.reply(client, id, outcome);
+            }
             Msg::Tick => self.tick(),
         }
     }
@@ -804,6 +824,27 @@ impl Engine {
                 self.persist(&thread_id);
                 Ok(Reply::Done)
             }),
+            Command::Models { thread_id } => match self.idx(&thread_id) {
+                Ok(i) => {
+                    let agent = self.threads[i].active_agent.clone();
+                    if self.models.contains_key(&agent) {
+                        self.models_reply(&thread_id, &agent)
+                    } else {
+                        // Asking may start the agent; that never happens on this thread.
+                        let Some(adapter) = self.adapter(&agent) else {
+                            return Some(Err(format!("desl has no adapter for {agent}.")));
+                        };
+                        let (tx, cwd) = (self.tx.clone(), self.threads[i].cwd.clone());
+                        std::thread::spawn(move || {
+                            let result = adapter.models(Path::new(&cwd)).map_err(|e| e.0);
+                            let _ = tx.send(Msg::Models { client, id, thread_id, agent, result });
+                        });
+                        return None;
+                    }
+                }
+                Err(e) => Err(e),
+            },
+            Command::SetModel { thread_id, model } => self.set_model(&thread_id, model.as_deref()),
             Command::Wait { thread_id } => match self.idx(&thread_id) {
                 Ok(i) if self.threads[i].status != Status::Working => Ok(Reply::Waited { status: self.threads[i].status }),
                 Ok(_) => {
@@ -814,6 +855,7 @@ impl Engine {
             },
             Command::Agents { refresh } => {
                 if refresh {
+                    self.models.clear();
                     self.agents = detect(&self.adapters);
                     self.broadcast(Change::Agents { agents: self.agents.clone() });
                 }
@@ -843,6 +885,45 @@ impl Engine {
                 Ok(Reply::Done)
             }
         })
+    }
+
+    fn models_reply(&self, thread_id: &str, agent: &str) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let models = self.models.get(agent).cloned().unwrap_or_default();
+        let choice = self.threads[i].bindings.get(agent).and_then(|b| b.model_choice.clone());
+        let current = choice.or_else(|| models.iter().find(|m| m.default).map(|m| m.id.clone()));
+        Ok(Reply::Models { agent: agent.to_string(), models, current })
+    }
+
+    /// `/model`: the pick is kept in the thread's binding and reaches the agent with its next
+    /// turn, which starts a process with that model and resumes the native session.
+    fn set_model(&mut self, thread_id: &str, model: Option<&str>) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let agent = self.threads[i].active_agent.clone();
+        if self.threads[i].status.busy() {
+            return Err(format!("{agent} is still working. Wait for it to finish or press ctrl+c, then change the model."));
+        }
+        let picked = match model.map(str::trim).filter(|m| !m.is_empty()) {
+            None => None,
+            Some(wanted) => match self.models.get(&agent) {
+                // The list is known: the name has to be on it.
+                Some(list) => match list.iter().find(|m| m.id.eq_ignore_ascii_case(wanted) || m.name.eq_ignore_ascii_case(wanted)) {
+                    Some(m) => Some(m.clone()),
+                    None => {
+                        let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
+                        return Err(format!("{agent} has no model named {wanted}. It offers {}.", ids.join(", ")));
+                    }
+                },
+                None => Some(ModelInfo { id: wanted.to_string(), name: wanted.to_string(), description: String::new(), default: false }),
+            },
+        };
+        let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding { agent: agent.clone(), ..Binding::default() });
+        // Picking the agent's default is the same as not picking.
+        b.model_choice = picked.as_ref().filter(|m| !m.default).map(|m| m.id.clone());
+        // The live process keeps its model; ending it makes the next turn start one with the new model.
+        self.live(thread_id).sessions.remove(&agent);
+        self.persist(thread_id);
+        Ok(Reply::ModelSet { agent, model: picked })
     }
 
     fn subscribe(&mut self, client: ClientId, cwd: Option<&str>) -> Outcome {

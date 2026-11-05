@@ -8,7 +8,7 @@
 pub mod paths;
 
 use desl_ir::adapter::{Capabilities, Detection};
-use desl_ir::{Decision, Event, Project, Status, Thread};
+use desl_ir::{Decision, Event, ModelInfo, Project, Status, Thread};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -128,6 +128,16 @@ pub enum Command {
     Clear {
         thread_id: String,
     },
+    /// The models the thread's active agent offers, and which one this thread uses.
+    Models {
+        thread_id: String,
+    },
+    /// Picks a model for the thread's active agent, by `ModelInfo::id` or by name. `None` goes
+    /// back to the agent's default. Takes effect with the next prompt.
+    SetModel {
+        thread_id: String,
+        model: Option<String>,
+    },
     /// Replies when the thread is waiting, idle or failed.
     Wait {
         thread_id: String,
@@ -213,6 +223,17 @@ pub enum Reply {
         thread_id: String,
     },
     Brief(BriefPreview),
+    /// `current` is the id of the model this thread uses: the user's pick, else the default.
+    Models {
+        agent: String,
+        models: Vec<ModelInfo>,
+        current: Option<String>,
+    },
+    /// The pick as the agent names it; None when the thread went back to the default.
+    ModelSet {
+        agent: String,
+        model: Option<ModelInfo>,
+    },
     Waited {
         status: Status,
     },

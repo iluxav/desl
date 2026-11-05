@@ -6,7 +6,7 @@
 use crate::app::{App, Focus, Msg, Overlay};
 use crate::conn::Link;
 use desl_ir::adapter::{Capabilities, Detection};
-use desl_ir::{Binding, ChangeKind, Event, EventKind, GitState, PendingApproval, PermissionMode, Project, Risk, Status, Thread};
+use desl_ir::{Binding, ChangeKind, Event, EventKind, GitState, ModelInfo, PendingApproval, PermissionMode, Project, Risk, Status, Thread};
 use desl_proto::{AgentInfo, Reply, ServerFrame, StreamDelta, Workspace};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -31,7 +31,14 @@ fn thread(id: &str, project: &str, name: &str, agent: &str, status: Status, crea
         head: 0,
         bindings: [(
             agent.to_string(),
-            Binding { agent: agent.into(), session_id: Some("s".into()), seen_up_to: 0, model: Some("m".into()), last_used_at: 0 },
+            Binding {
+                agent: agent.into(),
+                session_id: Some("s".into()),
+                seen_up_to: 0,
+                model: Some("m".into()),
+                model_choice: None,
+                last_used_at: 0,
+            },
         )]
         .into(),
         queued: vec![],
@@ -228,4 +235,120 @@ fn streamed_text_appears_as_it_arrives() {
     }));
     let done = screen(&mut app, 80, 30);
     assert!(done.contains("On it, done.") && !done.contains('▍'), "the final text replaces the stream");
+}
+
+fn press(app: &mut App, code: ratatui::crossterm::event::KeyCode) {
+    use ratatui::crossterm::event::{Event, KeyEvent, KeyModifiers};
+    app.handle(Msg::Term(Event::Key(KeyEvent::new(code, KeyModifiers::NONE))));
+}
+
+fn type_line(app: &mut App, text: &str) {
+    use ratatui::crossterm::event::KeyCode;
+    for c in text.chars() {
+        press(app, KeyCode::Char(c));
+    }
+    press(app, KeyCode::Enter);
+}
+
+/// What the client sent last, read from the other end of its socket.
+fn last_request(peer: &mut UnixStream) -> serde_json::Value {
+    peer.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+    let mut last = serde_json::Value::Null;
+    while let Ok(Some(v)) = desl_proto::read_frame::<_, serde_json::Value>(peer) {
+        last = v;
+    }
+    last
+}
+
+#[test]
+fn snapshot_switch_alone_lists_the_agents_with_the_current_one_marked() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    app.agents[1].detection.version = Some("0.165.0".into());
+    type_line(&mut app, "/switch");
+    let got = screen(&mut app, 80, 24);
+    snapshot("switch-picker-80x24", &got);
+    assert!(got.contains("✓ current") && got.contains("codex") && got.contains("ready · 0.165.0"), "{got}");
+    // The row it starts on is the agent one would switch to; enter asks the daemon what a handoff would carry.
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["to"].as_str()), (Some("brief"), Some("codex")));
+}
+
+#[test]
+fn an_agent_that_is_not_ready_says_why_instead_of_switching() {
+    let (mut app, _peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    app.agents[1].detection.installed = false;
+    app.agents[1].detection.install_hint = "Install Codex with `npm install -g @openai/codex`, then run `codex login`.".into();
+    type_line(&mut app, "/switch");
+    assert!(screen(&mut app, 80, 24).contains("not installed"));
+    press(&mut app, ratatui::crossterm::event::KeyCode::Down);
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let got = screen(&mut app, 100, 24);
+    assert!(got.contains("codex is not installed. Install Codex with"), "{got}");
+}
+
+#[test]
+fn snapshot_model_alone_lists_the_agents_models_with_the_current_one_marked() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/model");
+    let asked = last_request(&mut peer);
+    assert_eq!(asked["command"].as_str(), Some("models"));
+    let model = |id: &str, name: &str, description: &str, default: bool| ModelInfo {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        default,
+    };
+    let models = vec![
+        model("default", "Default (recommended)", "Opus 5.5 · Best for everyday, complex tasks", true),
+        model("opus", "Opus 5.5", "For complex work and everyday tasks", false),
+        model("fable", "Fable 5.1", "For your toughest challenges", false),
+        model("sonnet", "Sonnet 5.5", "Most efficient for simpler tasks", false),
+        model("haiku", "Haiku 5.5", "Fastest for quick answers", false),
+    ];
+    let id = asked["id"].as_u64().unwrap();
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id,
+        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("sonnet".into()) }),
+        error: None,
+    }));
+    let got = screen(&mut app, 80, 24);
+    snapshot("model-picker-80x24", &got);
+    assert!(got.contains("claude models") && got.contains("✓ current · Most efficient for simpler tasks"), "{got}");
+
+    // Up one row and enter: the pick goes to the daemon by id.
+    press(&mut app, ratatui::crossterm::event::KeyCode::Up);
+    press(&mut app, ratatui::crossterm::event::KeyCode::Enter);
+    let sent = last_request(&mut peer);
+    assert_eq!((sent["command"].as_str(), sent["model"].as_str()), (Some("set_model"), Some("fable")));
+    let id = sent["id"].as_u64().unwrap();
+    let picked = model("fable", "Fable 5.1", "For your toughest challenges", false);
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id,
+        ok: Some(Reply::ModelSet { agent: "claude".into(), model: Some(picked) }),
+        error: None,
+    }));
+    assert!(screen(&mut app, 80, 24).contains("claude will use Fable 5.1 from your next prompt."));
+}
+
+#[test]
+fn a_long_list_scrolls_with_the_selection() {
+    let (mut app, mut peer) = attached(workspace_threads(thread("t-7f3a", "api", "auth", "claude", Status::Idle, 1)), conversation(), None);
+    type_line(&mut app, "/model");
+    let id = last_request(&mut peer)["id"].as_u64().unwrap();
+    let models: Vec<ModelInfo> = (1..=13)
+        .map(|n| ModelInfo { id: format!("m{n}"), name: format!("Model {n}"), description: String::new(), default: n == 1 })
+        .collect();
+    app.handle(Msg::Daemon(ServerFrame::Reply {
+        id,
+        ok: Some(Reply::Models { agent: "claude".into(), models, current: Some("m1".into()) }),
+        error: None,
+    }));
+    let top = screen(&mut app, 80, 24);
+    assert!(top.contains("Model 10") && !top.contains("Model 11") && top.contains("↓ 3 more"), "{top}");
+    for _ in 0..12 {
+        press(&mut app, ratatui::crossterm::event::KeyCode::Down);
+    }
+    let bottom = screen(&mut app, 80, 24);
+    assert!(bottom.contains("▸ Model 13") && !bottom.contains("Model 3 ") && !bottom.contains("more"), "{bottom}");
 }

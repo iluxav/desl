@@ -41,6 +41,8 @@ pub enum PickerKind {
     Commands,
     Files,
     History,
+    Agents,
+    Models,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -79,6 +81,10 @@ enum Pending {
     Created,
     Files,
     History,
+    /// The active agent's models, to choose from.
+    ModelPicker,
+    /// A model was picked: say what the agent will use.
+    ModelSet,
     /// On success, say this.
     Say(String),
     /// Nothing to do on success. An error becomes a notice either way.
@@ -373,6 +379,28 @@ impl App {
                     self.overlay = Overlay::Picker(Picker::new("history", entries), PickerKind::History);
                 }
             }
+            (Pending::ModelPicker, Reply::Models { agent, models, current }) => {
+                let at = models.iter().position(|m| Some(&m.id) == current.as_ref()).unwrap_or(0);
+                let entries: Vec<PickEntry> = models
+                    .into_iter()
+                    .map(|m| {
+                        let now = Some(&m.id) == current.as_ref();
+                        PickEntry {
+                            hint: if now { format!("✓ current · {}", m.description) } else { m.description },
+                            label: m.name,
+                            key: m.id,
+                        }
+                    })
+                    .collect();
+                let picker = Picker::new(format!("{agent} models"), entries)
+                    .starting_at(at)
+                    .with_note("enter picks · it takes effect with your next prompt");
+                self.overlay = Overlay::Picker(picker, PickerKind::Models);
+            }
+            (Pending::ModelSet, Reply::ModelSet { agent, model }) => match model {
+                Some(m) if !m.default => self.info(format!("{agent} will use {} from your next prompt.", m.name)),
+                _ => self.info(format!("{agent} is back on its default model from your next prompt.")),
+            },
             (Pending::Say(text), _) => self.info(text),
             _ => {}
         }
@@ -664,7 +692,7 @@ impl App {
                     self.focus = Focus::Input;
                 }
             }
-            Action::Switch => self.switch_to(None),
+            Action::Switch => self.open_agent_picker(),
             Action::Fork => self.fork(""),
             Action::Detach => self.detach(),
             Action::Approve => {
@@ -855,6 +883,11 @@ impl App {
                     self.focus = Focus::Input;
                 }
             }
+            PickerKind::Agents => self.switch_to(key),
+            PickerKind::Models => {
+                let thread_id = self.thread().id().to_string();
+                self.request(Command::SetModel { thread_id, model: Some(key.to_string()) }, Pending::ModelSet);
+            }
             PickerKind::Commands => {
                 // A full command typed into the palette runs as typed; a bare name runs or waits for its argument.
                 if key.starts_with('/') && key.contains(' ') {
@@ -923,30 +956,57 @@ impl App {
         self.agents.iter().map(|a| a.id.as_str()).collect::<Vec<_>>().join(" and ")
     }
 
-    /// The agent `/switch` means when none is named: the only other one that is ready.
-    fn other_agent(&self) -> Option<String> {
-        let active = self.thread().agent();
-        let mut others = self.agents.iter().filter(|a| a.id != active && a.usable());
-        match (others.next(), others.next()) {
-            (Some(a), None) => Some(a.id.clone()),
-            _ => None,
-        }
+    /// `/switch` with no name: every agent desl drives, the current one marked, and why an
+    /// agent cannot be chosen when it cannot. Nobody has to remember what is installed.
+    fn open_agent_picker(&mut self) {
+        let t = self.thread();
+        let mut likely = None;
+        let entries: Vec<PickEntry> = self
+            .agents
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let d = &a.detection;
+                let model = t.meta.bindings.get(&a.id).and_then(|b| b.model_choice.clone().or_else(|| b.model.clone()));
+                let hint = if a.id == t.agent() {
+                    match model {
+                        Some(m) => format!("✓ current · {m}"),
+                        None => "✓ current".to_string(),
+                    }
+                } else if !d.installed {
+                    "not installed".to_string()
+                } else if d.logged_in == Some(false) {
+                    "not logged in".to_string()
+                } else {
+                    likely.get_or_insert(i);
+                    match (model, &d.version) {
+                        (Some(m), _) => m,
+                        (None, Some(v)) => format!("ready · {v}"),
+                        (None, None) => "ready".to_string(),
+                    }
+                };
+                PickEntry { key: a.id.clone(), label: a.id.clone(), hint }
+            })
+            .collect();
+        let picker =
+            Picker::new("agents", entries).starting_at(likely.unwrap_or(0)).with_note("enter continues this thread with that agent");
+        self.overlay = Overlay::Picker(picker, PickerKind::Agents);
     }
 
-    fn switch_to(&mut self, to: Option<&str>) {
-        let to = match to {
-            Some(to) => to.to_string(),
-            None => match self.other_agent() {
-                Some(to) => to,
-                None => return self.info(format!("Say which agent: /switch <agent>. desl drives {}.", self.agent_names())),
-            },
-        };
+    fn switch_to(&mut self, to: &str) {
+        let to = to.trim().to_string();
         let t = self.thread();
         if t.agent() == to {
             return self.info(format!("This thread is already on {to}."));
         }
-        if !self.agents.iter().any(|a| a.id == to) {
-            return self.info(format!("desl drives {}. /switch codex or /switch claude, not {to}.", self.agent_names()));
+        let Some(agent) = self.agents.iter().find(|a| a.id == to) else {
+            return self.info(format!("desl drives {}, not {to}. /switch alone lists them.", self.agent_names()));
+        };
+        if !agent.detection.installed {
+            return self.info(format!("{to} is not installed. {}", agent.detection.install_hint));
+        }
+        if agent.detection.logged_in == Some(false) {
+            return self.info(format!("{to} is not logged in. {}", agent.detection.login_hint));
         }
         if t.busy() {
             return self.info(format!("{} is still working. Wait for it to finish or press ctrl+c, then switch.", t.agent()));
@@ -1055,7 +1115,9 @@ impl App {
                 t.items.push(Item::Note(text));
                 t.follow = true;
             }
-            "/switch" => self.switch_to(Some(arg.as_str()).filter(|a| !a.is_empty())),
+            // Named, it switches; bare, it shows what there is to switch to.
+            "/switch" if arg.is_empty() => self.open_agent_picker(),
+            "/switch" => self.switch_to(&arg),
             "/fork" => self.fork(&arg),
             "/brief" => self.request(Command::Brief { thread_id: thread_id.clone(), to: None }, Pending::ShowBrief { thread_id }),
             "/new" => self.new_thread(),
@@ -1074,11 +1136,9 @@ impl App {
                     Pending::Say(format!("Fresh context. The history stays here; {agent} starts clean.")),
                 );
             }
-            "/model" => {
-                let t = self.thread();
-                let model = t.meta.model().unwrap_or("its default model").to_string();
-                self.info(format!("{} is on {model}. Changing the model from desl is not built yet.", t.agent()));
-            }
+            // Named, it sets the model; bare, it shows the agent's models with the current one marked.
+            "/model" if arg.is_empty() => self.request(Command::Models { thread_id }, Pending::ModelPicker),
+            "/model" => self.request(Command::SetModel { thread_id, model: Some(arg) }, Pending::ModelSet),
             "/export" => self.export(&arg),
             "/compact" | "/diff" | "/pr" | "/worktree" => {
                 self.info(format!("{cmd} is not built yet. It arrives with panes and worktrees."));

@@ -191,3 +191,17 @@ fn a_failed_turn_ends_with_a_sentence() {
         Some(&AdapterEvent::TurnEnd { error: Some("claude stopped: Reached the turn limit. Send your prompt again to retry.".into()) })
     );
 }
+
+#[test]
+fn the_initialize_reply_lists_the_models_of_claudes_own_picker() {
+    let text = std::fs::read_to_string(fixtures().join("2.1.312-initialize-models.json")).unwrap();
+    let models = parse::models(&serde_json::from_str::<Value>(&text).unwrap()).expect("a model list");
+    assert_eq!(models.len(), 13);
+    let first = &models[0];
+    assert_eq!((first.id.as_str(), first.name.as_str(), first.default), ("default", "Default (recommended)", true));
+    assert_eq!(models.iter().filter(|m| m.default).count(), 1);
+    let sonnet = models.iter().find(|m| m.id == "sonnet").unwrap();
+    assert_eq!((sonnet.name.as_str(), sonnet.description.as_str()), ("Sonnet 5.5", "Most efficient for simpler tasks"));
+    // Any other line of the stream is not a model list.
+    assert_eq!(parse::models(&json!({ "type": "system", "subtype": "hook_started" })), None);
+}

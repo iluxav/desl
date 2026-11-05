@@ -145,3 +145,38 @@ fn a_failed_turn_ends_with_a_sentence() {
         vec![AdapterEvent::TurnEnd { error: Some("codex stopped: stream disconnected. Send your prompt again to retry.".into()) }]
     );
 }
+
+#[test]
+fn the_catalog_lists_the_models_codex_shows_and_marks_the_configured_one() {
+    let text = std::fs::read_to_string(fixtures().join("0.165.0-debug-models.json")).unwrap();
+    let catalog: Value = serde_json::from_str(&text).unwrap();
+    let models = parse::models(&catalog, Some("gpt-6-astra"));
+    let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"],
+        "hidden entries are left out"
+    );
+    let default: Vec<&str> = models.iter().filter(|m| m.default).map(|m| m.id.as_str()).collect();
+    assert_eq!(default, ["gpt-6-astra"]);
+    assert_eq!(models[1].name, "GPT-6-Astra");
+    // With nothing configured, Codex's first entry is what a turn would use.
+    let unset = parse::models(&catalog, None);
+    assert_eq!(unset.iter().find(|m| m.default).map(|m| m.id.as_str()), Some("gpt-6.1-sol"));
+    // A configured model Codex does not list changes nothing in the list.
+    assert_eq!(parse::models(&catalog, Some("my-own-model")).iter().filter(|m| m.default).count(), 1);
+}
+
+#[test]
+fn the_notice_about_resuming_on_another_model_is_not_an_error() {
+    let item = |message: &str| json!({ "type": "item.completed", "item": { "id": "item_0", "type": "error", "message": message } });
+    let mut p = Parser::new(Path::new("/p"), "t", None);
+    assert!(p.line(&item("This session was recorded with model `gpt-6-astra` but is resuming with `gpt-6-luna`. Consider switching back to `gpt-6-astra` as it may affect Codex performance.")).is_empty());
+    let other = p.line(&item("stream disconnected before completion"));
+    assert_eq!(
+        other,
+        vec![AdapterEvent::Event {
+            event: EventKind::Error { message: "codex reported: stream disconnected before completion.".into(), recoverable: true }
+        }]
+    );
+}

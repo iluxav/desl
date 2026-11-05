@@ -2,7 +2,7 @@
 //! an agent's native format: it runs the agent headless, turns its stream into [`AdapterEvent`]s
 //! and answers approvals. The daemon talks to every agent through these two traits.
 
-use crate::{Decision, EventKind, PermissionMode};
+use crate::{Decision, EventKind, ModelInfo, PermissionMode};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -42,6 +42,7 @@ pub struct StartOpts {
     pub thread_name: String,
     pub cwd: PathBuf,
     pub resume_session_id: Option<String>,
+    /// The user's pick, by `ModelInfo::id`; None lets the agent use its default.
     pub model: Option<String>,
     pub permission_mode: PermissionMode,
 }
@@ -103,6 +104,9 @@ pub trait Adapter: Send + Sync {
     fn id(&self) -> &'static str;
     fn detect(&self) -> Detection;
     fn capabilities(&self) -> Capabilities;
+    /// The models the agent offers, in the order its own picker shows them. May start the
+    /// agent to ask, so it can take a second or two: never call it on the engine's thread.
+    fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError>;
     /// Prepares a native session. Nothing is sent to the agent until the first `send`.
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError>;
 }

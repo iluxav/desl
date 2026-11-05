@@ -31,12 +31,26 @@ Phase 1, "the real thing", in progress. Nothing has been released.
   `fork`, `brief`, `wait`, `approve`, `deny`, `log`, `agents`, `doctor`,
   `daemon start|stop|restart|logs`.
 - `docs/keys.md`, generated from the keymap and kept current by a test.
+- `/switch` alone opens a list of the agents with the current one marked, and says why an
+  agent cannot be chosen when it is not installed or not logged in.
+- `/model` alone opens the active agent's own list of models with the current one marked;
+  `/model <name>` and `desl model <thread> [name]` pick one. The pick takes effect with the next
+  prompt and keeps the native session. Each agent of a thread keeps its own model.
+- The store migrates forward on start and keeps a backup of the previous version beside it.
+
+### Fixed
+
+- Typing a command's name in the palette now finds that command. `/model` used to select
+  `/info`, whose description mentions the word.
+- A long list in a picker scrolls with the selection instead of leaving it off screen.
+- CLI commands that read or change threads start the daemon when it is not running.
+- Codex's notice about resuming a session on another model is no longer shown as an error.
 
 ### Not built yet
 
 - Panes, worktrees, `/diff`, `/pr`, raw agent panes, idle process reaping and destructive-command
   classification (phase 2).
-- `config.toml`, `keys.toml`, themes, `/compact`, changing the model from desl, native session
-  forks, the installer and the release pipeline (the rest of phase 1).
+- `config.toml`, `keys.toml`, themes, `/compact`, reasoning effort, native session forks, the
+  installer and the release pipeline (the rest of phase 1).
 - Remote access, Windows, `export` and `import`, agent-written briefs, third-party adapters
   (phase 3).

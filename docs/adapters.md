@@ -90,7 +90,22 @@ like code.
 | Claude Code | `claude --version` prints `2.1.312 (Claude Code)` | `claude auth status --json` prints an object with `loggedIn` (verified; it also holds the account's email, which desl does not read) |
 | Codex | `codex --version` prints `codex-cli 0.165.0` | `codex login status` prints `Logged in using ChatGPT` and exits 0 (verified; the logged-out output was not observed) |
 
-Model flags, verified to exist and not yet used: `claude --model <model>`, `codex exec -m <MODEL>`.
+### Models
+
+`Adapter::models` returns what the agent's own `/model` picker shows, so desl's picker is the same list.
+
+| Agent | How the list is read | Notes |
+| --- | --- | --- |
+| Claude Code | Start `claude -p --output-format stream-json --input-format stream-json --verbose`, write `{"type":"control_request","request_id":"…","request":{"subtype":"initialize"}}`, read the `control_response`. `response.response.models[]` has `value`, `displayName`, `description`, `resolvedModel` and effort levels. | Verified: answers in about 0.2 s, no prompt is sent, nothing is billed. The same reply carries `account` (email, organization); desl does not read it and the fixture leaves it out. The entry with `value: "default"` is "whatever Claude Code would use"; desl passes no flag for it. |
+| Codex | `codex debug models` prints `{"models":[…]}` with `slug`, `display_name`, `description`, `visibility` (`list` or `hide`) and `priority`. | Verified: 22 ms. Hidden entries are left out. The default is the `model` in `~/.codex/config.toml` when it is on the list, else the first entry. `codex app-server` answers `model/list` with the same models and an `isDefault` flag; not used. |
+
+The pick reaches the agent as a flag on its next process: `claude --resume <id> --model sonnet`
+and `codex exec -s … -m gpt-6-luna resume <id> …`. Both verified: the native session is kept and
+answers on the new model. Codex then emits an `error` item, "This session was recorded with model
+… but is resuming with …"; the adapter drops it, because the user asked for exactly that.
+
+The model fixtures (`2.1.312-initialize-models.json`, `0.165.0-debug-models.json`) are real
+output cut down to the fields above. Reasoning effort is in both lists and is not offered yet.
 
 ## Agent notes
 

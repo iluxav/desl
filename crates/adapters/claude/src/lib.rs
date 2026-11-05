@@ -8,8 +8,8 @@ use desl_ir::adapter::{
     Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Session, Sink, StartOpts, Turn, last_words, scrub_env, terminate_group,
     which,
 };
-use desl_ir::{Decision, PermissionMode};
-pub use parse::{NativeRequest, Parser};
+use desl_ir::{Decision, ModelInfo, PermissionMode};
+pub use parse::{DEFAULT_MODEL, NativeRequest, Parser};
 use serde_json::{Value, json};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::process::CommandExt;
@@ -85,6 +85,44 @@ impl Adapter for Claude {
         Capabilities { resume: true, fork: true, model_switch: true, compact: true, interrupt: true, approvals: true, streaming: true }
     }
 
+    /// Starts Claude Code, asks it to describe itself with an `initialize` control request, and
+    /// stops it again. No prompt is sent and nothing is billed; it answers in a fraction of a second.
+    fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError> {
+        let failed =
+            |why: String| AdapterError(format!("Could not ask claude for its models ({why}). Type /model <name> to set one by name."));
+        let mut cmd = Command::new("claude");
+        cmd.args(["-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose"]);
+        for var in PARENT_SESSION_VARS {
+            cmd.env_remove(var);
+        }
+        scrub_env(&mut cmd, LOGIN_VARS);
+        cmd.current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).process_group(0);
+        let mut child = cmd.spawn().map_err(|e| failed(e.to_string()))?;
+        let (mut stdin, stdout) = match (child.stdin.take(), child.stdout.take()) {
+            (Some(i), Some(o)) => (i, o),
+            _ => return Err(failed("its pipes did not open".into())),
+        };
+        let request = json!({ "type": "control_request", "request_id": "desl-models", "request": { "subtype": "initialize" } });
+        let asked = stdin.write_all(format!("{request}\n").as_bytes()).and_then(|()| stdin.flush());
+        let (tx, rx) = std::sync::mpsc::channel::<Vec<ModelInfo>>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines() {
+                let Ok(line) = line else { break };
+                if let Some(models) = serde_json::from_str::<Value>(&line).ok().and_then(|v| parse::models(&v)) {
+                    let _ = tx.send(models);
+                    break;
+                }
+            }
+        });
+        let answer = match asked {
+            Ok(()) => rx.recv_timeout(Duration::from_secs(15)).map_err(|_| failed("it did not answer within fifteen seconds".into())),
+            Err(e) => Err(failed(e.to_string())),
+        };
+        drop(stdin);
+        terminate_group(&mut child, Duration::from_secs(2));
+        answer.and_then(|models| if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) })
+    }
+
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {
         Ok(Box::new(ClaudeSession {
             session_id: Arc::new(Mutex::new(opts.resume_session_id.clone())),
@@ -143,7 +181,8 @@ impl ClaudeSession {
         if let Some(id) = self.session_id.lock().ok().and_then(|s| s.clone()) {
             cmd.args(["--resume", &id]);
         }
-        if let Some(model) = &self.opts.model {
+        // "default" is Claude Code's own name for not choosing; it needs no flag.
+        if let Some(model) = self.opts.model.as_deref().filter(|m| *m != DEFAULT_MODEL) {
             cmd.args(["--model", model]);
         }
         for var in PARENT_SESSION_VARS {

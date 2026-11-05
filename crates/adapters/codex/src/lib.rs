@@ -8,7 +8,7 @@ use desl_ir::adapter::{
     Adapter, AdapterError, AdapterEvent, Capabilities, Detection, Session, Sink, StartOpts, Turn, last_words, scrub_env, terminate_group,
     which,
 };
-use desl_ir::{Decision, PermissionMode};
+use desl_ir::{Decision, ModelInfo, PermissionMode};
 pub use parse::Parser;
 use serde_json::Value;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -78,6 +78,25 @@ impl Adapter for Codex {
 
     fn capabilities(&self) -> Capabilities {
         Capabilities { resume: true, fork: true, model_switch: true, compact: false, interrupt: true, approvals: false, streaming: false }
+    }
+
+    /// `codex debug models` prints the catalog as JSON at once; nothing is sent to a model.
+    fn models(&self, cwd: &std::path::Path) -> Result<Vec<ModelInfo>, AdapterError> {
+        let failed =
+            |why: String| AdapterError(format!("Could not ask codex for its models ({why}). Type /model <name> to set one by name."));
+        let out = Command::new("codex")
+            .args(["debug", "models"])
+            .current_dir(cwd)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|e| failed(e.to_string()))?;
+        if !out.status.success() {
+            return Err(failed("`codex debug models` failed".into()));
+        }
+        let catalog: Value = serde_json::from_slice(&out.stdout).map_err(|_| failed("its answer was not JSON".into()))?;
+        let models = parse::models(&catalog, configured_model().as_deref());
+        if models.is_empty() { Err(failed("it listed none".into())) } else { Ok(models) }
     }
 
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {

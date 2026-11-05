@@ -276,8 +276,23 @@ pub struct Binding {
     pub session_id: Option<String>,
     /// Index of the last event this agent has in context; 0 when it has seen nothing.
     pub seen_up_to: u64,
+    /// The model the agent reported for its session.
     pub model: Option<String>,
+    /// The model the user picked with `/model`; None follows the agent's own default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_choice: Option<String>,
     pub last_used_at: i64,
+}
+
+/// One model an agent offers, as its own picker would show it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct ModelInfo {
+    /// What the agent takes as the model's name on its command line.
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// The one the agent uses when the user has not picked.
+    pub default: bool,
 }
 
 /// Branch state for the status bar, read by the daemon's git service.

@@ -78,14 +78,14 @@ Generated from the keymap and the command registry in `crates/desl/src`; do not 
 
 | Command | Action |
 | --- | --- |
-| `/switch <agent>` | Continue this thread with another agent |
+| `/switch [agent]` | Continue this thread with another agent; alone, pick from a list |
 | `/fork [agent] [@n]` | New thread from here or from message n |
 | `/brief` | Show the handoff brief desl would send right now |
 | `/new` | New thread in this project |
 | `/threads` | Fuzzy thread picker |
 | `/resume` | Pick a past thread to reopen |
 | `/rename <name>` | Rename this thread |
-| `/model [name]` | Show or change the model for this agent |
+| `/model [name]` | Change the model for this agent; alone, pick from a list |
 | `/clear` | Start a fresh context on the same thread |
 | `/compact` | Ask the agent to compact its context (not built yet) |
 | `/export [file]` | Write the thread as markdown |

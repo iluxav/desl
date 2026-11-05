@@ -40,7 +40,8 @@ Type a prompt and press enter. That is all there is to set up.
 
 | Do this | And this happens |
 | --- | --- |
-| `/switch codex` | Codex continues the thread. desl hands it a brief of what happened; `/switch claude` later sends Claude only what it missed. |
+| `/switch` | Shows the agents, with the one you are on marked. Pick Codex and it continues the thread: desl hands it a brief of what happened, and switching back later sends Claude only what it missed. `/switch codex` skips the list. |
+| `/model` | Shows the current agent's own models, with the one in use marked. The pick takes effect with your next prompt and keeps the conversation. |
 | `/fork` | A new thread with this one's history, to try another way. `/fork codex @4` forks from message 4 to Codex. |
 | `ctrl+n` | A new thread. `ctrl+t` jumps to any thread; `ctrl+1` to `ctrl+9` jump by position. |
 | `y`, `n`, `a` | Answer when an agent asks before running something. `a` allows that tool for the rest of the thread. |
@@ -61,6 +62,7 @@ desl new -m "Fix the flaky test" # a new thread with a first prompt; prints its 
 desl send t-7f3a "And the docs"  # send a prompt, stream the reply to stdout
 desl wait t-7f3a                 # block until the thread needs you or is done
 desl switch t-7f3a codex
+desl model t-7f3a                # the agent's models; add a name to pick one
 desl fork t-7f3a claude --at 12
 desl approve t-7f3a              # or: desl deny t-7f3a
 desl brief t-7f3a                # the handoff brief desl would send now

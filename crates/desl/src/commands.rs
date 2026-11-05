@@ -9,14 +9,19 @@ pub struct SlashCommand {
 }
 
 pub static COMMANDS: &[SlashCommand] = &[
-    SlashCommand { name: "/switch", args: "<agent>", desc: "Continue this thread with another agent", built: true },
+    SlashCommand {
+        name: "/switch",
+        args: "[agent]",
+        desc: "Continue this thread with another agent; alone, pick from a list",
+        built: true,
+    },
     SlashCommand { name: "/fork", args: "[agent] [@n]", desc: "New thread from here or from message n", built: true },
     SlashCommand { name: "/brief", args: "", desc: "Show the handoff brief desl would send right now", built: true },
     SlashCommand { name: "/new", args: "", desc: "New thread in this project", built: true },
     SlashCommand { name: "/threads", args: "", desc: "Fuzzy thread picker", built: true },
     SlashCommand { name: "/resume", args: "", desc: "Pick a past thread to reopen", built: true },
     SlashCommand { name: "/rename", args: "<name>", desc: "Rename this thread", built: true },
-    SlashCommand { name: "/model", args: "[name]", desc: "Show or change the model for this agent", built: true },
+    SlashCommand { name: "/model", args: "[name]", desc: "Change the model for this agent; alone, pick from a list", built: true },
     SlashCommand { name: "/clear", args: "", desc: "Start a fresh context on the same thread", built: true },
     SlashCommand { name: "/compact", args: "", desc: "Ask the agent to compact its context", built: false },
     SlashCommand { name: "/export", args: "[file]", desc: "Write the thread as markdown", built: true },

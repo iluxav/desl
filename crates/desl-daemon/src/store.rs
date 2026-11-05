@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -44,8 +44,32 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         let store = Store { conn, blobs: blobs.to_path_buf() };
+        store.backup_before_migration(db)?;
         store.migrate()?;
         Ok(store)
+    }
+
+    /// A store about to be migrated is copied first, as `workspace.db.v<old>.bak`, and kept
+    /// until the next migration replaces it (SPEC.md "Upgrades").
+    fn backup_before_migration(&self, db: &Path) -> Result<()> {
+        let version: i64 = self.conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if version == 0 || version >= SCHEMA_VERSION {
+            return Ok(());
+        }
+        // Fold the write-ahead log into the file so the copy is whole.
+        let _: (i64, i64, i64) = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let name = db.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "workspace.db".into());
+        if let Some(dir) = db.parent() {
+            for old in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let file = old.file_name().to_string_lossy().to_string();
+                if file.starts_with(&format!("{name}.v")) && file.ends_with(".bak") {
+                    let _ = std::fs::remove_file(old.path());
+                }
+            }
+            let backup = dir.join(format!("{name}.v{version}.bak"));
+            std::fs::copy(db, &backup).with_context(|| format!("backing up the store to {}", backup.display()))?;
+        }
+        Ok(())
     }
 
     /// An in-memory store for tests.
@@ -92,6 +116,10 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 2 {
+            // The model the user picked with /model, per thread and agent.
+            self.conn.execute_batch("BEGIN; ALTER TABLE bindings ADD COLUMN model_choice TEXT; PRAGMA user_version = 2; COMMIT;")?;
+        }
         Ok(())
     }
 
@@ -117,11 +145,19 @@ impl Store {
     pub fn threads(&self) -> Result<Vec<Thread>> {
         let mut bindings: BTreeMap<String, BTreeMap<String, Binding>> = BTreeMap::new();
         {
-            let mut st = self.conn.prepare("SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at FROM bindings")?;
+            let mut st =
+                self.conn.prepare("SELECT thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice FROM bindings")?;
             let rows = st.query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
-                    Binding { agent: r.get(1)?, session_id: r.get(2)?, seen_up_to: r.get(3)?, model: r.get(4)?, last_used_at: r.get(5)? },
+                    Binding {
+                        agent: r.get(1)?,
+                        session_id: r.get(2)?,
+                        seen_up_to: r.get(3)?,
+                        model: r.get(4)?,
+                        last_used_at: r.get(5)?,
+                        model_choice: r.get(6)?,
+                    },
                 ))
             })?;
             for row in rows {
@@ -190,8 +226,8 @@ impl Store {
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
         for b in t.bindings.values() {
             self.conn.execute(
-                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at],
+                "INSERT INTO bindings (thread_id, agent, session_id, seen_up_to, model, last_used_at, model_choice) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![t.id, b.agent, b.session_id, b.seen_up_to, b.model, b.last_used_at, b.model_choice],
             )?;
         }
         Ok(())
@@ -396,7 +432,14 @@ mod tests {
         let mut t = thread("t-1");
         t.bindings.insert(
             "claude".into(),
-            Binding { agent: "claude".into(), session_id: Some("s1".into()), seen_up_to: 2, model: Some("m".into()), last_used_at: 5 },
+            Binding {
+                agent: "claude".into(),
+                session_id: Some("s1".into()),
+                seen_up_to: 2,
+                model: Some("m".into()),
+                model_choice: Some("sonnet".into()),
+                last_used_at: 5,
+            },
         );
         s.put_thread(&t).unwrap();
         s.append(&event("t-1", 1, EventKind::UserMessage { text: "hi".into(), attachments: vec![] })).unwrap();
@@ -407,6 +450,7 @@ mod tests {
         assert_eq!(back[0].head, 2);
         assert_eq!(back[0].queued, vec!["next".to_string()]);
         assert_eq!(back[0].bindings["claude"].session_id.as_deref(), Some("s1"));
+        assert_eq!(back[0].bindings["claude"].model_choice.as_deref(), Some("sonnet"));
         assert_eq!(s.queue_pop("t-1").unwrap().as_deref(), Some("next"));
         assert_eq!(s.queue_pop("t-1").unwrap(), None);
         let _ = std::fs::remove_dir_all(dir);
@@ -471,6 +515,37 @@ mod tests {
         s.append(&event("t-2", 2, EventKind::UserMessage { text: "new".into(), attachments: vec![] })).unwrap();
         let p = s.recent_prompts(10).unwrap();
         assert_eq!(p.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), vec!["new", "old"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_store_from_schema_one_is_backed_up_and_migrated_in_place() {
+        let dir = std::env::temp_dir().join(format!("desl-store-migrate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("workspace.db");
+        {
+            // The schema as the first build created it, with one binding in it.
+            let conn = Connection::open(&db).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, default_agent TEXT, created_at INTEGER NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, cwd TEXT NOT NULL, worktree TEXT, parent_id TEXT, fork_point INTEGER, active_agent TEXT NOT NULL, status TEXT NOT NULL, permission_mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE bindings (thread_id TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT, seen_up_to INTEGER NOT NULL, model TEXT, last_used_at INTEGER NOT NULL, PRIMARY KEY (thread_id, agent)) WITHOUT ROWID;
+                 CREATE TABLE events (thread_id TEXT NOT NULL, idx INTEGER NOT NULL, ts INTEGER NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (thread_id, idx)) WITHOUT ROWID;
+                 CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+                 INSERT INTO threads VALUES ('t-1', 'api', 'auth', '/p/api', NULL, NULL, NULL, 'claude', 'idle', 'edits', 1, 1);
+                 INSERT INTO bindings VALUES ('t-1', 'claude', 's1', 0, 'claude-opus-5-5', 1);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&db, &dir.join("blobs")).unwrap();
+        let t = &s.threads().unwrap()[0];
+        assert_eq!((t.bindings["claude"].session_id.as_deref(), t.bindings["claude"].model_choice.as_deref()), (Some("s1"), None));
+        assert!(dir.join("workspace.db.v1.bak").exists(), "the store as it was is kept beside the migrated one");
+        let version: i64 = s.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -5,7 +5,7 @@
 //! the file but never says what changed, and item ids start again at `item_0` in every turn.
 
 use desl_ir::adapter::AdapterEvent;
-use desl_ir::{ChangeKind, EventKind, diff, tool};
+use desl_ir::{ChangeKind, EventKind, ModelInfo, diff, tool};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -88,6 +88,31 @@ fn unwrap_shell(command: &str) -> String {
         }
     }
     c.to_string()
+}
+
+/// `codex debug models`: the catalog behind Codex's own `/model` picker. Entries Codex hides
+/// are left out; the rest keep its order. `configured` is the model in the user's config, which
+/// is the one a turn uses when nothing else is said; without it, Codex's first entry is.
+pub fn models(v: &Value, configured: Option<&str>) -> Vec<ModelInfo> {
+    let mut listed: Vec<&Value> =
+        v.get("models").and_then(Value::as_array).into_iter().flatten().filter(|m| str_of(m, "visibility") != "hide").collect();
+    listed.sort_by_key(|m| m.get("priority").and_then(Value::as_i64).unwrap_or(i64::MAX));
+    let default = configured
+        .filter(|c| listed.iter().any(|m| str_of(m, "slug") == *c))
+        .map(str::to_string)
+        .or_else(|| listed.first().map(|m| str_of(m, "slug")));
+    listed
+        .into_iter()
+        .filter_map(|m| {
+            let id = str_of(m, "slug");
+            (!id.is_empty()).then(|| ModelInfo {
+                name: Some(str_of(m, "display_name")).filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone()),
+                description: str_of(m, "description"),
+                default: Some(&id) == default.as_ref(),
+                id,
+            })
+        })
+        .collect()
 }
 
 impl Parser {
@@ -179,6 +204,11 @@ impl Parser {
             }
             "error" if completed => {
                 let said = str_of(item, "message");
+                // Codex notes a model change on resume as an error item. The user picked the model
+                // with /model; the turn runs, and nothing went wrong.
+                if said.contains("is resuming with") {
+                    return;
+                }
                 out.push(event(EventKind::Error {
                     message: format!("codex reported: {}.", said.trim().trim_end_matches('.')),
                     recoverable: true,

@@ -56,6 +56,8 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
 | `brief` | `thread_id`, `to?` | `brief {to, text, token_estimate, turns, delta, needed}` | What a switch to `to` would send now. `needed` is false when `to` has seen everything. |
 | `clear` | `thread_id` | `done` | A fresh native session on the same thread; the history stays. |
+| `models` | `thread_id` | `models {agent, models, current}` | The models the thread's active agent offers, each with `id`, `name`, `description`, `default`. `current` is the id this thread uses. The first ask per agent may take a second: the daemon asks the agent, then remembers. |
+| `set_model` | `thread_id`, `model?` | `model_set {agent, model}` | Picks a model by id or name; absent goes back to the agent's default. It reaches the agent with the next prompt and keeps the native session. |
 | `wait` | `thread_id` | `waited {status}` | Replies when the thread is waiting, idle or failed. The only reply that can take long. |
 | `agents` | `refresh` | `agents {agents}` | Detection results and capabilities. |
 | `history` | `limit` | `history {prompts}` | Recent prompts across threads, newest first. |

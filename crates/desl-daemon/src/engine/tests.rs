@@ -2,7 +2,7 @@
 
 use super::*;
 use desl_ir::adapter::{AdapterError, Capabilities, Detection};
-use desl_ir::{Risk, tool};
+use desl_ir::{ModelInfo, Risk, tool};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -16,6 +16,10 @@ struct FakeState {
     payloads: Vec<String>,
     /// The resume id each `start` was given.
     starts: Vec<Option<String>>,
+    /// The model each `start` was given.
+    models: Vec<Option<String>>,
+    /// How many times the model list was asked for.
+    listed: usize,
     answers: Vec<(String, Decision)>,
     interrupts: usize,
     sink: Option<Sink>,
@@ -55,9 +59,20 @@ impl Adapter for Fake {
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
+    fn models(&self, _cwd: &Path) -> Result<Vec<ModelInfo>, AdapterError> {
+        self.state.lock().unwrap().listed += 1;
+        let model = |id: &str, name: &str, default: bool| ModelInfo {
+            id: id.into(),
+            name: name.into(),
+            description: format!("{name} of {}", self.id),
+            default,
+        };
+        Ok(vec![model("default", "Default", true), model("fast", "Fast One", false), model("deep", "Deep One", false)])
+    }
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {
         let mut s = self.state.lock().unwrap();
         s.starts.push(opts.resume_session_id.clone());
+        s.models.push(opts.model.clone());
         s.sink = Some(sink.clone());
         Ok(Box::new(FakeSession {
             id: self.id,
@@ -551,4 +566,80 @@ fn random_sequences_keep_indices_dense_and_marks_behind_the_head() {
         r.check_invariants();
     }
     assert!(r.engine.threads.len() > 1, "some forks happened");
+}
+
+impl Rig {
+    /// A command whose reply arrives later, from another thread.
+    fn cmd_async(&mut self, command: Command) -> Outcome {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.engine.handle(Msg::Request { client: 1, request: Request { id, command } });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(msg) = self.rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                self.engine.handle(msg);
+            }
+            while let Ok(bytes) = self.out.try_recv() {
+                let frame: ServerFrame = desl_proto::read_frame(&mut &bytes[..]).unwrap().unwrap();
+                if let ServerFrame::Reply { id: got, ok, error } = frame
+                    && got == id
+                {
+                    return ok.ok_or_else(|| error.unwrap_or_default());
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "no reply");
+        }
+    }
+}
+
+#[test]
+fn the_model_list_is_asked_once_and_marks_what_the_thread_uses() {
+    let mut r = rig("models");
+    let t = r.t.clone();
+    let Reply::Models { agent, models, current } = r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
+    assert_eq!((agent.as_str(), models.len(), current.as_deref()), ("claude", 3, Some("default")));
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("Fast One".into()) }).unwrap();
+    let Reply::Models { current, .. } = r.cmd(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
+    assert_eq!(current.as_deref(), Some("fast"), "a name is as good as an id");
+    assert_eq!(r.claude.lock().unwrap().listed, 1, "the second answer came from the daemon's memory");
+}
+
+#[test]
+fn a_new_model_reaches_the_agent_with_the_next_prompt_and_keeps_the_session() {
+    let mut r = rig("set-model");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap();
+    let Reply::ModelSet { agent, model } = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("deep".into()) }).unwrap() else {
+        panic!()
+    };
+    assert_eq!((agent.as_str(), model.map(|m| m.name)), ("claude", Some("Deep One".to_string())));
+    r.prompt(&t, "second");
+    let s = r.claude.lock().unwrap();
+    assert_eq!(s.models, vec![None, Some("deep".to_string())]);
+    assert_eq!(s.starts, vec![None, Some("claude-s1".to_string())], "the same native session, resumed on the new model");
+    assert_eq!(s.payloads[1], "second", "a model change is not a handoff: no brief");
+    drop(s);
+    assert_eq!(r.thread(&t).bindings["claude"].model_choice.as_deref(), Some("deep"));
+
+    // Back to the default: the choice is cleared, not pinned.
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("default".into()) }).unwrap();
+    assert_eq!(r.thread(&t).bindings["claude"].model_choice, None);
+    let unknown = r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("gpt-9".into()) }).unwrap_err();
+    assert_eq!(unknown, "claude has no model named gpt-9. It offers default, fast, deep.");
+}
+
+#[test]
+fn each_agent_of_a_thread_keeps_its_own_model() {
+    let mut r = rig("model-per-agent");
+    let t = r.t.clone();
+    r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap();
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("fast".into()) }).unwrap();
+    r.prompt(&t, "one");
+    r.cmd(Command::Switch { thread_id: t.clone(), agent: "codex".into() }).unwrap();
+    let Reply::Models { agent, current, .. } = r.cmd_async(Command::Models { thread_id: t.clone() }).unwrap() else { panic!() };
+    assert_eq!((agent.as_str(), current.as_deref()), ("codex", Some("default")), "codex was never told to use claude's pick");
+    r.prompt(&t, "two");
+    assert_eq!(r.codex.lock().unwrap().models, vec![None]);
+    assert_eq!(r.claude.lock().unwrap().models, vec![Some("fast".to_string())]);
 }

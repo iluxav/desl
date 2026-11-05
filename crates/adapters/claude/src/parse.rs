@@ -2,7 +2,7 @@
 //! Shapes verified against Claude Code 2.1.312; see docs/adapters.md.
 
 use desl_ir::adapter::AdapterEvent;
-use desl_ir::{ChangeKind, EventKind, Risk, diff, tool};
+use desl_ir::{ChangeKind, EventKind, ModelInfo, Risk, diff, tool};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -75,6 +75,31 @@ fn result_file(r: &Value) -> Option<String> {
     let w = (start + lines.len().saturating_sub(1)).to_string().len();
     Some(lines.iter().enumerate().map(|(i, l)| format!("{:>w$}  {l}", start + i)).collect::<Vec<_>>().join("\n"))
 }
+
+/// The model list in the reply to an `initialize` control request: the same entries Claude
+/// Code's own `/model` picker shows. The reply also describes the account; that is not read.
+pub fn models(v: &Value) -> Option<Vec<ModelInfo>> {
+    if v.get("type").and_then(Value::as_str) != Some("control_response") {
+        return None;
+    }
+    let list = v["response"]["response"].get("models")?.as_array()?;
+    Some(
+        list.iter()
+            .filter_map(|m| {
+                let id = str_of(m, "value");
+                (!id.is_empty()).then(|| ModelInfo {
+                    name: Some(str_of(m, "displayName")).filter(|n| !n.is_empty()).unwrap_or_else(|| id.clone()),
+                    description: str_of(m, "description"),
+                    default: id == DEFAULT_MODEL,
+                    id,
+                })
+            })
+            .collect(),
+    )
+}
+
+/// The entry that means "whatever Claude Code would use on its own".
+pub const DEFAULT_MODEL: &str = "default";
 
 impl Parser {
     pub fn new(cwd: &Path) -> Parser {

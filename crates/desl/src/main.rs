@@ -76,6 +76,8 @@ enum Cmd {
         #[arg(long)]
         worktree: bool,
     },
+    /// List the models of a thread's agent, or pick one
+    Model { thread: String, name: Option<String> },
     /// Print the handoff brief desl would send now
     Brief { thread: String },
     /// Block until the thread is waiting, idle or failed
@@ -176,6 +178,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             no_worktree(worktree)?;
             cli::fork(paths, &out, &thread, agent, at)
         }
+        Cmd::Model { thread, name } => cli::model(paths, &out, &thread, name),
         Cmd::Brief { thread } => cli::brief(paths, &out, &thread),
         Cmd::Wait { thread } => cli::wait(paths, &out, &thread),
         Cmd::Approve { thread, always } => cli::answer(paths, &out, &thread, if always { Decision::Always } else { Decision::Allow }),

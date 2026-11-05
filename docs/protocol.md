@@ -141,6 +141,17 @@ On the native route a client that attached to a thread gets every byte its agent
 in order, after the `attached` reply. `pty_ended` says the agent's interface quit; the next
 `attach` starts it again on the same session.
 
+```json
+{"type": "pty_replace", "thread_id": "t-7f3a", "agent": "codex", "data": "G1s/MjAyNmg…"}
+{"type": "notice", "thread_id": "t-7f3a", "text": "codex quit before it was ready, so the thread stays on claude. Press ctrl+b s to try again."}
+```
+
+`switch` on a thread whose agent runs in a PTY replies `done` at once and works out of sight:
+the daemon copies the conversation into a new session of the other agent and starts it hidden.
+When it has drawn, every client showing the thread gets `pty_replace` with its whole output, to
+put on screen in one frame; `pty` frames after it are the new agent's. A switch that fails after
+the reply ends in a `notice`. A switch is refused while the agent is working or waiting.
+
 ## A first exchange
 
 ```

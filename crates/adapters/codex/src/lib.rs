@@ -145,6 +145,14 @@ impl Adapter for Codex {
         session::waiting(screen_tail)
     }
 
+    fn write_session(
+        &self,
+        cwd: &std::path::Path,
+        events: &[desl_ir::EventKind],
+    ) -> Result<(String, std::path::PathBuf, u64), AdapterError> {
+        session::write(cwd, events).map_err(|e| AdapterError(format!("{e}, so the conversation could not be copied into codex.")))
+    }
+
     fn launch(&self, opts: &LaunchOpts) -> Launch {
         // The shared app-server daemon would keep the thread open after the interface quits.
         let mut args: Vec<String> = vec!["--no-daemon".into()];

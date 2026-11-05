@@ -8,6 +8,7 @@ description = "desl: the Codex adapter. The only code that knows Codex's native 
 [dependencies]
 desl-ir = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
 
 [lints]
 workspace = true

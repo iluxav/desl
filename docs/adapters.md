@@ -146,6 +146,28 @@ In `ask` mode (`-s read-only -a on-request`) Codex asks only when the model deci
 more: asked plainly to create a file it reported the sandbox refusal; asked to request
 permission, it showed the approval above.
 
+### Writing a copied session (the switch)
+
+`write_session(cwd, events)` writes the thread's conversation as a new session of the
+receiving agent and returns its id, file and length; the daemon starts reading the file at that
+length, so the copy is never read back into the log. Built on the `phase0/proto-n` findings
+(see "Copying a conversation into the other agent's session file"); both writers have
+round-trip tests (written, then read back by the same adapter's reader).
+
+| Neutral call | Claude Code gets | Codex gets |
+| --- | --- | --- |
+| `bash` | `Bash {command}` with its `tool_result` | `exec_command` with a `CommandExecution` item |
+| `read` | `Read {file_path}` (absolute) | `cat <path>` |
+| `search` | `Grep {pattern}` or `WebSearch {query}` | `rg <pattern>` |
+| `fetch` | `WebFetch {url}` | told as a comment, with its output |
+| `edit` and anything else | told in the assistant's words, an edit with its diff | a commented `exec` call whose output is the diff |
+
+Outputs are cut at 4,000 bytes. Driven 2026-11-05 on a thread of two Claude turns (a `cat`, a
+`touch`): Codex opened on both, showed the commands with their output, and answered from memory;
+switched back, Claude showed Codex's turn as its own. Measured in tmux every 200 ms, the screen
+went from one agent to the other with no blank frame, 1.4 to 2 seconds after the key, plus
+Codex's folder-trust question the first time it sees a directory.
+
 ### Permission modes
 
 `StartOpts.permission_mode` is the thread's mode. Each adapter maps it to its agent's flags.

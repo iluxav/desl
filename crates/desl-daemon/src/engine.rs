@@ -64,7 +64,7 @@ pub enum Msg {
         thread_id: String,
         generation: u64,
     },
-    /// Once a second.
+    /// Every [`TICK_MS`]: switches check their hidden agent; every second, session files.
     Tick,
 }
 
@@ -107,6 +107,35 @@ struct Tail {
     last_poll: Instant,
 }
 
+/// How often the engine ticks, in milliseconds. A switch is ready within one tick of its
+/// hidden agent going quiet.
+pub const TICK_MS: u64 = 100;
+const TICKS_PER_SECOND: u64 = 1000 / TICK_MS;
+
+/// A switch in progress: the receiving agent drawing out of sight until it is ready.
+struct Pending {
+    to: String,
+    generation: u64,
+    pty: Pty,
+    started: Instant,
+    started_at: SystemTime,
+    last_output: Instant,
+    saw_output: bool,
+    /// The copied session, or None when the copy failed and the brief goes instead.
+    copied: Option<(String, u64)>,
+    brief: Option<String>,
+}
+
+impl Pending {
+    /// Drawn and then quiet; never longer than 15 seconds.
+    fn ready(&self) -> bool {
+        (self.saw_output
+            && self.last_output.elapsed() >= Duration::from_millis(600)
+            && self.started.elapsed() >= Duration::from_millis(1200))
+            || self.started.elapsed() >= Duration::from_secs(15)
+    }
+}
+
 /// The lines of the screen's bottom that are checked for a question from the agent.
 const ASKING_ROWS: usize = 14;
 
@@ -145,24 +174,10 @@ pub struct Engine {
     answers: term::Answers,
     /// The session file of each thread's running agent.
     tails: HashMap<String, Tail>,
+    /// Switches in progress, by thread.
+    pending: HashMap<String, Pending>,
     ticks: u64,
     pub stopping: bool,
-}
-
-/// A random v4 UUID, for a native session id desl hands to an agent.
-fn new_uuid() -> String {
-    if let Ok(s) = std::fs::read_to_string("/proc/sys/kernel/random/uuid") {
-        return s.trim().to_string();
-    }
-    let mut b = [0u8; 16];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        use std::io::Read;
-        let _ = f.read_exact(&mut b);
-    }
-    b[6] = (b[6] & 0x0f) | 0x40;
-    b[8] = (b[8] & 0x3f) | 0x80;
-    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
 pub fn now() -> i64 {
@@ -206,6 +221,7 @@ impl Engine {
             ptys: HashMap::new(),
             answers: term::Answers::default(),
             tails: HashMap::new(),
+            pending: HashMap::new(),
             ticks: 0,
             stopping: false,
         };
@@ -787,7 +803,7 @@ impl Engine {
         let binding = t.bindings.get(&agent);
         let open = match binding.and_then(|b| b.session_id.clone()) {
             Some(session_id) => Open::Resume { session_id },
-            None => Open::New { session_id: Some(new_uuid()) },
+            None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
         };
         let launch = adapter.launch(&LaunchOpts {
             cwd: t.cwd.clone().into(),
@@ -866,6 +882,17 @@ impl Engine {
     }
 
     fn pty_output(&mut self, thread_id: &str, generation: u64, data: &[u8]) {
+        if let Some(p) = self.pending.get_mut(thread_id).filter(|p| p.generation == generation) {
+            // Out of sight: kept for the swap, and its questions to the terminal answered here.
+            p.pty.took(data);
+            p.last_output = Instant::now();
+            p.saw_output = true;
+            let replies = term::replies(data, &self.answers, p.pty.cursor());
+            if !replies.is_empty() {
+                p.pty.write(&replies);
+            }
+            return;
+        }
         let Some((g, pty)) = self.ptys.get_mut(thread_id) else { return };
         if *g != generation {
             return;
@@ -991,7 +1018,155 @@ impl Engine {
         }
     }
 
+    /// SPEC.md switch algorithm on the native route: copy the conversation into a new session of
+    /// `to`, start `to` out of sight, and swap when it has drawn (see `finish_switch`).
+    fn switch_native(&mut self, thread_id: &str, to: &str) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let from = self.threads[i].active_agent.clone();
+        if from == to {
+            return Err(format!("This thread is already on {to}."));
+        }
+        if let Some(p) = self.pending.get(thread_id) {
+            return Err(format!("desl is already switching this thread to {}. It takes a few seconds.", p.to));
+        }
+        self.usable(to)?;
+        let adapter = self.adapter(to).ok_or_else(|| format!("desl has no adapter for {to}."))?;
+        // The last of what the agent wrote, so the copy is whole.
+        self.poll_tail(thread_id);
+        if self.threads[i].status.busy() {
+            return Err(format!(
+                "{from} is still working, and a half-finished turn is never copied. Wait for it to finish, then press ctrl+b s again."
+            ));
+        }
+        let t = &self.threads[i];
+        let cwd = t.cwd.clone();
+        let kinds: Vec<EventKind> = self.store.all_events(thread_id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
+        let (open, copied, brief) = match adapter.write_session(Path::new(&cwd), &kinds) {
+            Ok((session_id, _, len)) => (Open::Resume { session_id: session_id.clone() }, Some((session_id, len)), None),
+            Err(e) => {
+                tracing::warn!(thread = %thread_id, to, "could not copy the conversation, sending the brief: {e}");
+                let brief = self.brief_for(i, to);
+                (Open::New { session_id: Some(desl_ir::adapter::new_uuid()) }, None, brief.needed.then_some(brief.text))
+            }
+        };
+        let t = &self.threads[i];
+        let binding = t.bindings.get(to);
+        let launch = adapter.launch(&LaunchOpts {
+            cwd: cwd.clone().into(),
+            open,
+            model: binding.and_then(|b| b.model_choice.clone()),
+            effort: binding.and_then(|b| b.effort_choice.clone()),
+            permission_mode: t.permission_mode,
+        });
+        let (rows, cols) = self.ptys.get(thread_id).map_or((24, 80), |(_, p)| p.size());
+        self.generation += 1;
+        let generation = self.generation;
+        let (out_tx, exit_tx) = (self.tx.clone(), self.tx.clone());
+        let (out_id, exit_id) = (thread_id.to_string(), thread_id.to_string());
+        let pty = Pty::spawn(
+            to,
+            &launch,
+            Path::new(&cwd),
+            rows,
+            cols,
+            move |data| {
+                let _ = out_tx.send(Msg::PtyOutput { thread_id: out_id.clone(), generation, data });
+            },
+            move || {
+                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id, generation });
+            },
+        )?;
+        tracing::info!(thread = %thread_id, from = %from, to, args = ?launch.args, "switching");
+        let copied = copied.or_else(|| launch.session_id.clone().map(|id| (id, 0)));
+        let now = Instant::now();
+        self.pending.insert(
+            thread_id.to_string(),
+            Pending {
+                to: to.to_string(),
+                generation,
+                pty,
+                started: now,
+                started_at: SystemTime::now(),
+                last_output: now,
+                saw_output: false,
+                copied,
+                brief,
+            },
+        );
+        Ok(Reply::Done)
+    }
+
+    /// The receiving agent has drawn the conversation: it becomes the thread's agent and every
+    /// client showing the thread gets its screen in one frame. The old agent ends; its session
+    /// stays in its own resume list.
+    fn finish_switch(&mut self, thread_id: &str) {
+        let Some(mut p) = self.pending.remove(thread_id) else { return };
+        let Ok(i) = self.idx(thread_id) else { return };
+        self.poll_tail(thread_id);
+        self.tails.remove(thread_id);
+        self.ptys.remove(thread_id);
+        let from = std::mem::replace(&mut self.threads[i].active_agent, p.to.clone());
+        let head = self.threads[i].head;
+        let ts = now();
+        let b = self.threads[i].bindings.entry(p.to.clone()).or_insert_with(|| Binding { agent: p.to.clone(), ..Binding::default() });
+        b.session_id = p.copied.as_ref().map(|(id, _)| id.clone());
+        b.file_offset = p.copied.as_ref().map_or(0, |(_, len)| *len);
+        b.seen_up_to = head;
+        b.last_used_at = ts;
+        self.threads[i].status = Status::Idle;
+        let brief_event_id = p.brief.as_ref().and_then(|text| {
+            let token_estimate = projector::estimate_tokens(text);
+            self.append(thread_id, EventKind::Brief { text: text.clone(), token_estimate, covers_range: (1, head), delta: false })
+                .map(|e| e.index)
+        });
+        self.append(thread_id, EventKind::AgentSwitch { from, to: p.to.clone(), brief_event_id });
+        if let Some(text) = &p.brief {
+            // Into the prompt, as a paste; the user adds their question and sends both.
+            p.pty.write(format!("\x1b[200~{text}\x1b[201~").as_bytes());
+        }
+        let replay = b64::encode(p.pty.log());
+        if let Some(adapter) = self.adapter(&p.to)
+            && let Some(reader) = adapter.session_reader(Path::new(&self.threads[i].cwd))
+        {
+            self.tails.insert(
+                thread_id.to_string(),
+                Tail {
+                    agent: p.to.clone(),
+                    reader,
+                    path: None,
+                    since: p.started_at,
+                    skip_existing: false,
+                    partial: Vec::new(),
+                    last_poll: Instant::now(),
+                },
+            );
+        }
+        self.ptys.insert(thread_id.to_string(), (p.generation, p.pty));
+        self.persist(thread_id);
+        let frame = ServerFrame::PtyReplace { thread_id: thread_id.to_string(), agent: p.to.clone(), data: replay };
+        for client in self.showing(thread_id) {
+            self.send(client, &frame);
+        }
+        tracing::info!(thread = %thread_id, to = %p.to, "switched");
+    }
+
+    fn showing(&self, thread_id: &str) -> Vec<ClientId> {
+        self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect()
+    }
+
     fn pty_exit(&mut self, thread_id: &str, generation: u64) {
+        if self.pending.get(thread_id).is_some_and(|p| p.generation == generation) {
+            let to = self.pending.remove(thread_id).map(|p| p.to).unwrap_or_default();
+            let from = self.idx(thread_id).map(|i| self.threads[i].active_agent.clone()).unwrap_or_default();
+            let frame = ServerFrame::Notice {
+                thread_id: thread_id.to_string(),
+                text: format!("{to} quit before it was ready, so the thread stays on {from}. Press ctrl+b s to try again."),
+            };
+            for client in self.showing(thread_id) {
+                self.send(client, &frame);
+            }
+            return;
+        }
         if self.ptys.get(thread_id).is_none_or(|(g, _)| *g != generation) {
             return;
         }
@@ -1019,12 +1194,19 @@ impl Engine {
 
     /// Branch state changes behind desl's back; the threads on screen are checked every few seconds.
     fn tick(&mut self) {
+        let ready: Vec<String> = self.pending.iter().filter(|(_, p)| p.ready()).map(|(id, _)| id.clone()).collect();
+        for id in ready {
+            self.finish_switch(&id);
+        }
+        self.ticks += 1;
+        if !self.ticks.is_multiple_of(TICKS_PER_SECOND) {
+            return;
+        }
         let tailed: Vec<String> = self.tails.keys().cloned().collect();
         for id in tailed {
             self.poll_tail(&id);
         }
-        self.ticks += 1;
-        if !self.ticks.is_multiple_of(5) {
+        if !self.ticks.is_multiple_of(5 * TICKS_PER_SECOND) {
             return;
         }
         let viewed: HashSet<String> = self.clients.values().filter_map(|c| c.viewing.clone()).collect();
@@ -1123,6 +1305,7 @@ impl Engine {
                 self.live.remove(&thread_id);
                 self.ptys.remove(&thread_id);
                 self.tails.remove(&thread_id);
+                self.pending.remove(&thread_id);
                 if let Err(e) = self.store.delete_thread(&thread_id) {
                     tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
                 }
@@ -1450,6 +1633,9 @@ impl Engine {
 
     /// SPEC.md switch algorithm, step 1. The brief goes out with the next prompt (steps 3 to 5).
     fn switch(&mut self, thread_id: &str, to: &str) -> Outcome {
+        if self.ptys.contains_key(thread_id) {
+            return self.switch_native(thread_id, to);
+        }
         let i = self.idx(thread_id)?;
         let from = self.threads[i].active_agent.clone();
         if from == to {
@@ -1594,6 +1780,7 @@ impl Engine {
         self.live.clear();
         self.ptys.clear();
         self.tails.clear();
+        self.pending.clear();
         self.broadcast(Change::Bye);
     }
 }

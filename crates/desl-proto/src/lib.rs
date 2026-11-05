@@ -237,6 +237,18 @@ pub enum ServerFrame {
         thread_id: String,
         code: Option<u32>,
     },
+    /// The thread moved to another agent, which has drawn the conversation: replace the whole
+    /// screen with `data` (base64) in one frame. `pty` frames that follow are the new agent's.
+    PtyReplace {
+        thread_id: String,
+        agent: String,
+        data: String,
+    },
+    /// A sentence for the user about the shown thread, such as why a switch did not happen.
+    Notice {
+        thread_id: String,
+        text: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

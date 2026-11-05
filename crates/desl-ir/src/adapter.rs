@@ -175,6 +175,13 @@ pub trait Adapter: Send + Sync {
         let _ = cwd;
         None
     }
+    /// A new session of this agent holding `events` as its own history, written in its own
+    /// format (SPEC.md "Cross-agent continuity"). Returns the session's id, its file and the
+    /// file's length, which is where reading it starts. An agent that cannot take a copy says so.
+    fn write_session(&self, cwd: &std::path::Path, events: &[EventKind]) -> Result<(String, PathBuf, u64), AdapterError> {
+        let _ = (cwd, events);
+        Err(AdapterError(format!("{} cannot take a copied conversation.", self.id())))
+    }
     /// Whether the bottom of the agent's screen shows it asking the user something: its
     /// approval dialog or a question it waits on.
     fn waiting(&self, screen_tail: &str) -> bool {
@@ -258,4 +265,89 @@ pub fn last_words(stderr: &str) -> String {
         .or_else(|| lines.iter().rev().find(|l| !l.contains("--help")))
         .map(|l| l.trim_start_matches("error:").trim_start_matches("Error:").trim().trim_end_matches('.').to_string())
         .unwrap_or_default()
+}
+
+/// One step of a conversation as a writer of a copied session needs it: a tool call comes with
+/// its result and the change it made already paired.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CopyItem {
+    User(String),
+    Assistant(String),
+    Call {
+        id: String,
+        /// Neutral name and arguments, as in the IR.
+        name: String,
+        args: serde_json::Value,
+        output: String,
+        is_error: bool,
+        /// The unified diff of an edit, when the log has one.
+        diff: Option<String>,
+    },
+}
+
+/// How much of each tool output a copy carries (SPEC.md "Cross-agent continuity").
+pub const COPY_OUTPUT_CAP: usize = 4000;
+
+fn capped(s: &str) -> String {
+    if s.len() <= COPY_OUTPUT_CAP {
+        return s.to_string();
+    }
+    let mut end = COPY_OUTPUT_CAP;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[cut]", &s[..end])
+}
+
+/// The conversation in `events`, in order, for a writer: prompts, replies and tool calls with
+/// their results. Everything else (usage, approvals, switches, errors) stays out.
+pub fn copy_items(events: &[EventKind]) -> Vec<CopyItem> {
+    let mut out: Vec<CopyItem> = Vec::new();
+    for e in events {
+        match e {
+            EventKind::UserMessage { text, .. } if !text.trim().is_empty() => out.push(CopyItem::User(text.clone())),
+            EventKind::AssistantMessage { text, .. } if !text.trim().is_empty() => out.push(CopyItem::Assistant(text.clone())),
+            EventKind::ToolCall { id, name, args } => out.push(CopyItem::Call {
+                id: id.clone(),
+                name: name.clone(),
+                args: args.clone(),
+                output: String::new(),
+                is_error: false,
+                diff: None,
+            }),
+            EventKind::ToolResult { call_id, output, is_error, .. } => {
+                if let Some(CopyItem::Call { output: o, is_error: err, .. }) =
+                    out.iter_mut().rev().find(|i| matches!(i, CopyItem::Call { id, .. } if id == call_id))
+                {
+                    *o = capped(output);
+                    *err = *is_error;
+                }
+            }
+            EventKind::FileChange { diff: Some(d), call_id: Some(call_id), .. } => {
+                if let Some(CopyItem::Call { diff, .. }) =
+                    out.iter_mut().rev().find(|i| matches!(i, CopyItem::Call { id, .. } if id == call_id))
+                {
+                    *diff = Some(capped(d));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A random v4 UUID, for a native session id desl makes.
+pub fn new_uuid() -> String {
+    if let Ok(s) = std::fs::read_to_string("/proc/sys/kernel/random/uuid") {
+        return s.trim().to_string();
+    }
+    let mut b = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut b);
+    }
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }

@@ -105,6 +105,12 @@ impl Pty {
         lines[lines.len().saturating_sub(rows)..].join("\n")
     }
 
+    /// The agent's terminal size, (rows, columns).
+    pub fn size(&self) -> (u16, u16) {
+        let (r, c) = self.screen.screen().size();
+        (r.get(), c.get())
+    }
+
     /// The agent's cursor on its own screen, (row, column) from 0.
     pub fn cursor(&self) -> (u16, u16) {
         self.screen.screen().cursor_position()

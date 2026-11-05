@@ -88,7 +88,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
     }
     let (answers, _) = probe(&rx);
     let (mut cols, mut rows) = terminal::size().unwrap_or((80, 24));
-    let agent = match conn.call(Command::Attach { thread_id: thread_id.clone(), rows, cols, answers }) {
+    let mut agent = match conn.call(Command::Attach { thread_id: thread_id.clone(), rows, cols, answers }) {
         Ok(Reply::Attached { agent, replay, .. }) => {
             out(&term::replace_screen(&b64::decode(&replay).unwrap_or_default()));
             agent
@@ -117,6 +117,11 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
     }
 
     let mut armed: Option<Vec<u8>> = None;
+    // A switch in flight: its request id, and the keys typed meanwhile, for the agent that wins.
+    let mut switching: Option<u64> = None;
+    let mut held: Vec<u8> = Vec::new();
+    // A sentence shown in the title until the next key.
+    let mut notice = false;
     let mut swallow = false;
     let farewell = loop {
         let msg = match rx.recv_timeout(Duration::from_millis(50)) {
@@ -126,8 +131,13 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         };
         match msg {
             Some(Msg::Stdin(b)) => {
+                if notice {
+                    notice = false;
+                    title(&agent, &thread_id);
+                }
                 let mut to_agent: Vec<u8> = Vec::new();
                 let mut detach = false;
+                let mut switch = false;
                 let mut at = 0;
                 while at < b.len() {
                     let Some((k, n)) = rawkeys::next(&b[at..]) else {
@@ -145,6 +155,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
                         match k.code {
                             _ if rawkeys::is_prefix(&k) => to_agent.extend_from_slice(raw_key),
                             Some(c) if c == u32::from(b'd') => detach = true,
+                            Some(c) if c == u32::from(b's') => switch = true,
                             _ => {
                                 swallow = false;
                                 to_agent.extend_from_slice(&prefix);
@@ -163,8 +174,15 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
                     }
                     to_agent.extend_from_slice(raw_key);
                 }
-                if !to_agent.is_empty() {
+                if switching.is_some() {
+                    held.extend_from_slice(&to_agent);
+                } else if !to_agent.is_empty() {
                     link.request(Command::Input { thread_id: thread_id.clone(), data: b64::encode(&to_agent) });
+                }
+                if switch && switching.is_none() {
+                    let to = if agent == "claude" { "codex" } else { "claude" };
+                    out(format!("\x1b]0;desl · switching to {to}…\x07").as_bytes());
+                    switching = Some(link.request(Command::Switch { thread_id: thread_id.clone(), agent: to.to_string() }));
                 }
                 if detach {
                     break Some("Detached. The agents keep working; run desl to come back.".to_string());
@@ -184,6 +202,31 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
             }
             Some(Msg::Frame(ServerFrame::Event { change: Change::Bye })) => {
                 break Some("The desl daemon was stopped. Run desl to start it again; the thread resumes where it was.".to_string());
+            }
+            Some(Msg::Frame(ServerFrame::PtyReplace { thread_id: t, agent: to, data })) if t == thread_id => {
+                out(&term::replace_screen(&b64::decode(&data).unwrap_or_default()));
+                agent = to;
+                title(&agent, &thread_id);
+                switching = None;
+                if !held.is_empty() {
+                    link.request(Command::Input { thread_id: thread_id.clone(), data: b64::encode(&std::mem::take(&mut held)) });
+                }
+            }
+            Some(Msg::Frame(ServerFrame::Reply { id, error: Some(sentence), .. })) if Some(id) == switching => {
+                switching = None;
+                out(format!("\x1b]0;desl · {agent} · {sentence}\x07").as_bytes());
+                notice = true;
+                if !held.is_empty() {
+                    link.request(Command::Input { thread_id: thread_id.clone(), data: b64::encode(&std::mem::take(&mut held)) });
+                }
+            }
+            Some(Msg::Frame(ServerFrame::Notice { thread_id: t, text })) if t == thread_id => {
+                switching = None;
+                out(format!("\x1b]0;desl · {agent} · {text}\x07").as_bytes());
+                notice = true;
+                if !held.is_empty() {
+                    link.request(Command::Input { thread_id: thread_id.clone(), data: b64::encode(&std::mem::take(&mut held)) });
+                }
             }
             Some(Msg::Frame(_)) => {}
             Some(Msg::DaemonGone) => {

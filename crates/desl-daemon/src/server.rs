@@ -108,7 +108,7 @@ pub fn serve(paths: &Paths) -> Result<()> {
         let tx = tx.clone();
         std::thread::spawn(move || {
             while tx.send(Msg::Tick).is_ok() {
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(Duration::from_millis(crate::engine::TICK_MS));
             }
         });
     }

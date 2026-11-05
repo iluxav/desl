@@ -3,7 +3,7 @@
 //! Shapes verified against Codex CLI 0.166.0; see docs/adapters.md.
 
 use crate::parse::unwrap_shell;
-use desl_ir::adapter::{Reading, SessionReader};
+use desl_ir::adapter::{CopyItem, Reading, SessionReader, copy_items};
 use desl_ir::{EventKind, tool};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -190,6 +190,133 @@ pub fn waiting(tail: &str) -> bool {
     tail.contains("Would you like to") || tail.contains("Trust this folder") || tail.contains("Allow") && tail.contains("1. Yes")
 }
 
+/// The shell command Codex would have run for a neutral call; None when there is none.
+fn shell_for(name: &str, args: &Value) -> Option<String> {
+    let s = |k: &str| args.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    match name {
+        tool::BASH => Some(s("command")),
+        tool::READ => Some(format!("cat {}", s("path"))),
+        tool::SEARCH if !s("pattern").is_empty() => Some(format!("rg {}", s("pattern"))),
+        _ => None,
+    }
+}
+
+/// A new rollout holding `events`, written the way Codex writes its own: a `session_meta` header
+/// with `history_mode: paginated` (without it Codex's screen shows none of the history), one
+/// turn per user message, and no ids on assistant messages or tool calls (Codex's API refuses
+/// ids it did not issue).
+pub fn write(cwd: &Path, events: &[EventKind]) -> Result<(String, PathBuf, u64), String> {
+    write_in(&home(), cwd, events)
+}
+
+fn write_in(home: &Path, cwd: &Path, events: &[EventKind]) -> Result<(String, PathBuf, u64), String> {
+    let id = desl_ir::adapter::new_uuid();
+    let t = chrono::Utc::now();
+    let dir = home.join(".codex/sessions").join(t.format("%Y/%m/%d").to_string());
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {} ({e})", dir.display()))?;
+    let path = dir.join(format!("rollout-{}-{id}.jsonl", t.format("%Y-%m-%dT%H-%M-%S")));
+    let cwd_s = cwd.to_string_lossy().into_owned();
+    let now = || chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let ms = t.timestamp_millis();
+    let mut lines: Vec<Value> = vec![json!({ "timestamp": now(), "type": "session_meta", "payload": {
+        "session_id": id, "id": id, "timestamp": now(), "cwd": cwd_s, "originator": "codex-tui",
+        "cli_version": "0.166.0", "source": "cli", "thread_source": "user", "model_provider": "openai",
+        "history_mode": "paginated" } })];
+    let item = |turn: &str, item: Value| {
+        json!({ "timestamp": now(), "type": "event_msg", "payload": { "type": "item_completed", "thread_id": id,
+                "turn_id": turn, "item": item, "started_at_ms": ms, "completed_at_ms": ms } })
+    };
+    let response = |turn: &str, mut p: Value| {
+        p["internal_chat_message_metadata_passthrough"] = json!({ "turn_id": turn });
+        json!({ "timestamp": now(), "type": "response_item", "payload": p })
+    };
+    let start = |turn: &str| {
+        json!({ "timestamp": now(), "type": "event_msg", "payload": { "type": "task_started",
+            "turn_attribution": { "turn_id": turn, "turn_trigger": "user", "parent_turn_id": null,
+                                  "initiating_agent_path": null, "root_turn_id": turn },
+            "turn_id": turn, "root_turn_id": turn, "started_at": ms / 1000, "model_context_window": 258400,
+            "collaboration_mode_kind": "default" } })
+    };
+    let end = |turn: &str, last: &str| {
+        json!({ "timestamp": now(), "type": "event_msg", "payload": { "type": "task_complete", "root_turn_id": turn,
+            "turn_id": turn, "last_agent_message": last, "started_at": ms / 1000, "completed_at": ms / 1000,
+            "duration_ms": 0, "time_to_first_token_ms": 0 } })
+    };
+    let mut turn: Option<(String, String)> = None;
+    for it in copy_items(events) {
+        if matches!(it, CopyItem::User(_)) || turn.is_none() {
+            if let Some((t, last)) = &turn {
+                lines.push(end(t, last));
+            }
+            let t = desl_ir::adapter::new_uuid();
+            lines.push(start(&t));
+            turn = Some((t, String::new()));
+        }
+        let Some((tid, last)) = turn.as_mut() else { continue };
+        match it {
+            CopyItem::User(text) => {
+                lines.push(response(
+                    tid,
+                    json!({ "type": "message", "id": format!("msg_{}", desl_ir::adapter::new_uuid()),
+                    "role": "user", "content": [{ "type": "input_text", "text": text }] }),
+                ));
+                lines.push(item(
+                    tid,
+                    json!({ "type": "UserMessage", "id": desl_ir::adapter::new_uuid(),
+                    "content": [{ "type": "text", "text": text, "text_elements": [] }] }),
+                ));
+            }
+            CopyItem::Assistant(text) => {
+                lines.push(response(
+                    tid,
+                    json!({ "type": "message", "status": "completed", "role": "assistant",
+                    "content": [{ "type": "output_text", "text": text, "annotations": [], "logprobs": [] }], "phase": "final_answer" }),
+                ));
+                lines.push(item(
+                    tid,
+                    json!({ "type": "AgentMessage", "id": format!("msg_{}", desl_ir::adapter::new_uuid().replace('-', "")),
+                    "content": [{ "type": "Text", "text": text }], "phase": "final_answer" }),
+                ));
+                last.clone_from(&text);
+            }
+            CopyItem::Call { id: call_id, name, args, output, diff, .. } => {
+                let shell = shell_for(&name, &args);
+                let script = match &shell {
+                    Some(cmd) => format!("const r = await tools.exec_command({{cmd:{}}});\ntext(r.output);\n", json!(cmd)),
+                    None => format!("// {name} {}\n", desl_ir::tool_target(&name, &args)),
+                };
+                let shown = diff.unwrap_or(output);
+                lines.push(response(
+                    tid,
+                    json!({ "type": "custom_tool_call", "status": "completed", "call_id": call_id, "name": "exec", "input": script }),
+                ));
+                if let Some(cmd) = shell {
+                    lines.push(item(
+                        tid,
+                        json!({ "type": "CommandExecution", "id": format!("exec-{}", desl_ir::adapter::new_uuid()),
+                        "command": ["/usr/bin/bash", "-lc", cmd], "cwd": format!("file://{cwd_s}"),
+                        "parsed_cmd": [{ "type": "unknown", "cmd": cmd }], "source": "unified_exec_startup",
+                        "status": "completed", "aggregated_output": shown, "exit_code": 0, "duration": { "secs": 0, "nanos": 0 } }),
+                    ));
+                }
+                lines.push(response(tid, json!({ "type": "custom_tool_call_output", "id": format!("ctco_{}", desl_ir::adapter::new_uuid()),
+                    "call_id": call_id, "output": [{ "type": "input_text", "text": "Script completed\nOutput:\n" }, { "type": "input_text", "text": shown }] })));
+            }
+        }
+    }
+    if let Some((t, last)) = &turn {
+        lines.push(end(t, last));
+    }
+    let mut out = String::new();
+    for (n, mut l) in lines.into_iter().enumerate() {
+        l["ordinal"] = json!(n);
+        out.push_str(&l.to_string());
+        out.push('\n');
+    }
+    std::fs::write(&path, &out).map_err(|e| format!("Could not write {} ({e})", path.display()))?;
+    Ok((id, path, out.len() as u64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +346,46 @@ mod tests {
         assert!(matches!(&got[4], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "edit" && args["path"] == "net.py"));
         assert!(matches!(&got[5], Reading::Event(EventKind::AssistantMessage { text, .. }) if text == "The owner is Ana."));
         assert_eq!(got[6], Reading::Idle);
+    }
+
+    #[test]
+    fn a_written_rollout_reads_back_as_the_same_conversation() {
+        let home = std::env::temp_dir().join(format!("desl-codex-write-{}", std::process::id()));
+        let events = vec![
+            EventKind::UserMessage { text: "Read team.txt".into(), attachments: vec![] },
+            EventKind::ToolCall { id: "toolu_1".into(), name: "read".into(), args: json!({ "path": "team.txt" }) },
+            EventKind::ToolResult {
+                call_id: "toolu_1".into(),
+                output: "owner: Ana".into(),
+                exit_code: None,
+                is_error: false,
+                truncated: false,
+                blob: None,
+            },
+            EventKind::AssistantMessage { text: "The owner is Ana.".into(), model: None },
+            EventKind::UserMessage { text: "Thanks".into(), attachments: vec![] },
+            EventKind::AssistantMessage { text: "Any time.".into(), model: None },
+        ];
+        let (id, path, len) = write_in(&home, Path::new("/tmp/demo"), &events).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text.len() as u64, len);
+        assert_eq!(meta(&path), Some((id, "/tmp/demo".to_string())));
+        assert!(text.contains("\"history_mode\":\"paginated\""));
+        let mut r = Reader::new(Path::new("/tmp/demo"));
+        let back: Vec<Reading> = text.lines().flat_map(|l| r.line(l)).collect();
+        let events_back: Vec<&EventKind> = back.iter().filter_map(|x| if let Reading::Event(e) = x { Some(e) } else { None }).collect();
+        assert_eq!(events_back.len(), 6);
+        assert!(matches!(events_back[1], EventKind::ToolCall { name, args, .. } if name == "bash" && args["command"] == "cat team.txt"));
+        assert!(matches!(events_back[2], EventKind::ToolResult { output, .. } if output.contains("owner: Ana")));
+        assert_eq!(back.iter().filter(|x| **x == Reading::Idle).count(), 2, "one turn per prompt");
+        // Codex refuses ids it did not issue on assistant messages and tool calls.
+        for l in text.lines() {
+            let v: Value = serde_json::from_str(l).unwrap();
+            let p = &v["payload"];
+            if p["type"] == "custom_tool_call" || (p["type"] == "message" && p["role"] == "assistant") {
+                assert!(p.get("id").is_none(), "{l}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

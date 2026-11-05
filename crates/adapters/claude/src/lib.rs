@@ -150,6 +150,10 @@ impl Adapter for Claude {
         session::waiting(screen_tail)
     }
 
+    fn write_session(&self, cwd: &Path, events: &[desl_ir::EventKind]) -> Result<(String, PathBuf, u64), AdapterError> {
+        session::write(cwd, events).map_err(|e| AdapterError(format!("{e}, so the conversation could not be copied into claude.")))
+    }
+
     fn launch(&self, opts: &LaunchOpts) -> Launch {
         let mut args: Vec<String> = Vec::new();
         match &opts.open {

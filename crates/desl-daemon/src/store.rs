@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -130,6 +130,12 @@ impl Store {
                 "BEGIN; ALTER TABLE bindings ADD COLUMN file_offset INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 4; COMMIT;",
             )?;
         }
+        if version < 5 {
+            // The helpers a thread's agents started, as JSON: kept across switches and restarts.
+            self.conn.execute_batch(
+                "BEGIN; ALTER TABLE threads ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 5; COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -195,7 +201,7 @@ impl Store {
             }
         }
         let mut st = self.conn.prepare(
-            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at
+            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents
              FROM threads ORDER BY created_at, id",
         )?;
         let rows = st.query_map([], |r| {
@@ -218,7 +224,7 @@ impl Store {
                 bindings: bindings.remove(&id).unwrap_or_default(),
                 queued: queued.remove(&id).unwrap_or_default(),
                 pending_approval: None,
-                subagents: Vec::new(),
+                subagents: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
                 git: GitState::default(),
                 id,
             })
@@ -229,12 +235,13 @@ impl Store {
     /// Writes a thread's row and its bindings. The queue and the events have their own writes.
     pub fn put_thread(&self, t: &Thread) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12",
+            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12, subagents = ?13",
             params![
                 t.id, t.project_id, t.name, t.cwd, t.worktree, t.parent_id, t.fork_point, t.active_agent,
-                t.status.word(), t.permission_mode.word(), t.created_at, t.updated_at
+                t.status.word(), t.permission_mode.word(), t.created_at, t.updated_at,
+                serde_json::to_string(&t.subagents).unwrap_or_else(|_| "[]".into())
             ],
         )?;
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
@@ -473,6 +480,27 @@ mod tests {
         assert_eq!(s.queue_pop("t-1").unwrap().as_deref(), Some("next"));
         assert_eq!(s.queue_pop("t-1").unwrap(), None);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn subagents_are_kept_with_their_thread() {
+        let (s, dir) = store();
+        let mut t = thread("t-1");
+        t.subagents = vec![desl_ir::Subagent {
+            id: "a1".into(),
+            kind: "Explore".into(),
+            description: "find auth".into(),
+            finished: true,
+            started_at: 5,
+            agent: "claude".into(),
+            session_id: "s-1".into(),
+        }];
+        s.put_thread(&t).unwrap();
+        assert_eq!(s.threads().unwrap()[0].subagents, t.subagents);
+        t.subagents.clear();
+        s.put_thread(&t).unwrap();
+        assert!(s.threads().unwrap()[0].subagents.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

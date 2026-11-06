@@ -262,6 +262,7 @@ fn subagents_in(dir: &Path) -> Vec<desl_ir::Subagent> {
                 description: meta.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
                 finished: meta.get("finished").and_then(|v| v.as_bool()).unwrap_or(false),
                 started_at,
+                ..Default::default()
             })
         })
         .collect();

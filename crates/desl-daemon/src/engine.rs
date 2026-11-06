@@ -1060,15 +1060,26 @@ impl Engine {
         self.check_asking(thread_id);
     }
 
-    /// The helpers the thread's agent started in its current session, from the agent's files.
+    /// The helpers the thread's agent started in its current session, from the agent's files,
+    /// added to those its agents started before: a switch keeps the thread's subagents.
     fn refresh_subagents(&mut self, thread_id: &str) {
         let Ok(i) = self.idx(thread_id) else { return };
         let t = &self.threads[i];
-        let Some(session) = t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone()) else { return };
-        let Some(adapter) = self.adapter(&t.active_agent) else { return };
+        let agent = t.active_agent.clone();
+        let Some(session) = t.bindings.get(&agent).and_then(|b| b.session_id.clone()) else { return };
+        let Some(adapter) = self.adapter(&agent) else { return };
         let found = adapter.subagents(Path::new(&t.cwd), &session);
-        if found != self.threads[i].subagents {
-            self.threads[i].subagents = found;
+        let mut all = self.threads[i].subagents.clone();
+        for mut s in found {
+            s.agent = agent.clone();
+            s.session_id = session.clone();
+            match all.iter_mut().find(|o| o.id == s.id) {
+                Some(o) => *o = s,
+                None => all.push(s),
+            }
+        }
+        if all != self.threads[i].subagents {
+            self.threads[i].subagents = all;
             self.persist(thread_id);
         }
     }
@@ -1497,21 +1508,19 @@ impl Engine {
             }
             Command::Subagent { thread_id, subagent_id } => self.idx(&thread_id).map(|i| {
                 let t = &self.threads[i];
-                let session = t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone());
-                let kinds = match (self.adapter(&t.active_agent), session) {
+                // Read from the session that started it, which may be another agent's now.
+                let (agent, session) = match t.subagents.iter().find(|s| s.id == subagent_id).filter(|s| !s.agent.is_empty()) {
+                    Some(s) => (s.agent.clone(), Some(s.session_id.clone())),
+                    None => (t.active_agent.clone(), t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone())),
+                };
+                let kinds = match (self.adapter(&agent), session) {
                     (Some(a), Some(s)) => a.subagent_events(Path::new(&t.cwd), &s, &subagent_id),
                     _ => Vec::new(),
                 };
                 let events = kinds
                     .into_iter()
                     .enumerate()
-                    .map(|(n, kind)| Event {
-                        index: n as u64 + 1,
-                        thread_id: thread_id.clone(),
-                        timestamp: 0,
-                        agent: t.active_agent.clone(),
-                        kind,
-                    })
+                    .map(|(n, kind)| Event { index: n as u64 + 1, thread_id: thread_id.clone(), timestamp: 0, agent: agent.clone(), kind })
                     .collect();
                 Reply::Events { events }
             }),

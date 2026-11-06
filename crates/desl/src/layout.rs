@@ -792,6 +792,7 @@ mod tests {
                 description: "look".into(),
                 finished: k < 5,
                 started_at: k,
+                ..Default::default()
             })
             .collect();
         let r = rows(&projects, &threads);
@@ -866,8 +867,14 @@ mod tests {
         assert_eq!(b[(20, 5)].bg, Color::Reset, "{s}");
         // A subagent in the pane takes the tint from its thread.
         let mut with_sub = threads.clone();
-        with_sub[0].subagents =
-            vec![desl_ir::Subagent { id: "s1".into(), kind: "Explore".into(), description: "look".into(), finished: true, started_at: 0 }];
+        with_sub[0].subagents = vec![desl_ir::Subagent {
+            id: "s1".into(),
+            kind: "Explore".into(),
+            description: "look".into(),
+            finished: true,
+            started_at: 0,
+            ..Default::default()
+        }];
         let mut t2 = Terminal::new(TestBackend::new(120, 30)).unwrap();
         let v2 = View {
             projects: &projects,

@@ -365,6 +365,7 @@ fn spawned(line: &str) -> Vec<desl_ir::Subagent> {
                 description: prompt.clone(),
                 finished: false,
                 started_at: when,
+                ..Default::default()
             })
         })
         .collect()

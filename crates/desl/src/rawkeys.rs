@@ -73,8 +73,13 @@ pub fn next(b: &[u8]) -> Option<(Key, usize)> {
     }
 }
 
-pub fn is_prefix(k: &Key) -> bool {
-    k.ctrl && k.code == Some(u32::from(b'b')) && !k.noise
+/// The prefix in any encoding: ctrl+letter as a control byte or a report, ctrl+space as NUL
+/// (what a plain terminal sends for it) or a report.
+pub fn is_prefix(k: &Key, prefix: desl_proto::config::Prefix) -> bool {
+    if k.noise {
+        return false;
+    }
+    (k.ctrl && k.code == Some(prefix.code)) || (prefix.code == 32 && k.code == Some(0))
 }
 
 /// A mouse report in SGR encoding (`CSI < b ; x ; y M|m`), which desl asks the terminal for.
@@ -137,11 +142,21 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_b_is_found_in_every_encoding() {
+    fn the_prefix_is_found_in_every_encoding() {
+        use desl_proto::config::Prefix;
+        let ctrl_b = Prefix::parse("ctrl+b").unwrap();
         for b in [&b"\x02"[..], b"\x1b[98;5u", b"\x1b[98;5:1u", b"\x1b[98:66;5u", b"\x1b[98;5:1;98u", b"\x1b[27;5;98~"] {
             let k = keys(b);
-            assert!(is_prefix(&k[0]), "{:?}", String::from_utf8_lossy(b));
+            assert!(is_prefix(&k[0], ctrl_b), "{:?}", String::from_utf8_lossy(b));
         }
+        let space = Prefix::parse("ctrl+space").unwrap();
+        for b in [&b"\x00"[..], b"\x1b[32;5u", b"\x1b[32;5:1u", b"\x1b[27;5;32~"] {
+            let k = keys(b);
+            assert!(is_prefix(&k[0], space), "{:?}", String::from_utf8_lossy(b));
+            assert!(!is_prefix(&k[0], ctrl_b));
+        }
+        assert!(!is_prefix(&keys(b" ")[0], space), "a plain space is not the prefix");
+        assert!(!is_prefix(&keys(b"\x1b[32;5:3u")[0], space), "nor its release");
     }
 
     #[test]

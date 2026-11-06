@@ -571,3 +571,43 @@ pub fn daemon_logs(paths: &Paths, lines: usize) -> Result<()> {
     }
     Ok(())
 }
+
+/// `desl config show`: every setting in effect in this directory, and which file set it.
+pub fn config_show(paths: &Paths, out: &Out) -> Result<()> {
+    use desl_proto::config;
+    let cwd = std::env::current_dir()?;
+    let project = config::find_project(&cwd);
+    let c = config::load(&paths.config, project.as_deref());
+    let source = |key: &str| c.set.iter().find(|(k, _, _)| k == key).map_or("default".to_string(), |(_, _, s)| s.clone());
+    let rows = [
+        ("general.prefix", c.prefix.label()),
+        ("general.default_agent", c.default_agent.clone().unwrap_or_else(|| "(the first agent that is ready)".into())),
+        ("permissions.default_mode", c.default_mode.clone().unwrap_or_else(|| "edits".into())),
+        ("worktrees.dir", c.worktree_dir.clone()),
+        ("worktrees.branch_prefix", c.branch_prefix.clone()),
+    ];
+    if out.json {
+        out.value(&json!({
+            "settings": rows.iter().map(|(k, v)| json!({ "key": k, "value": v, "source": source(k) })).collect::<Vec<_>>(),
+            "user_file": paths.config,
+            "project_file": project.as_deref().map(config::project_file),
+            "problems": c.problems,
+        }));
+        return Ok(());
+    }
+    let w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (k, v) in &rows {
+        println!("{k:<w$}  {v:<32}  {}", source(k));
+    }
+    let state = |p: &std::path::Path| if p.is_file() { "" } else { " (none yet)" };
+    println!();
+    println!("user file     {}{}", paths.config.display(), state(&paths.config));
+    match project.as_deref().map(config::project_file) {
+        Some(p) => println!("project file  {}", p.display()),
+        None => println!("project file  none here (a project's goes in <repo>/.desl/config.toml)"),
+    }
+    for p in &c.problems {
+        println!("problem       {p}");
+    }
+    Ok(())
+}

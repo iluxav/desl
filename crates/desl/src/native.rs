@@ -166,6 +166,9 @@ struct Client {
     menu_worktree: bool,
     /// The close request in flight, whose answer may say what became of a worktree.
     removing: Option<u64>,
+    prefix: desl_proto::config::Prefix,
+    /// The prefix as the interface writes it: `ctrl+space`.
+    prefix_label: String,
 }
 
 struct Sub {
@@ -299,7 +302,7 @@ impl Client {
                 }
                 self.swallow = true;
                 self.dirty = true;
-                if rawkeys::is_prefix(&k) {
+                if rawkeys::is_prefix(&k, self.prefix) {
                     to_agent.extend_from_slice(&raw);
                     continue;
                 }
@@ -324,7 +327,7 @@ impl Client {
                 continue;
             }
             self.swallow = false;
-            if rawkeys::is_prefix(&k) {
+            if rawkeys::is_prefix(&k, self.prefix) {
                 self.armed = Some(raw);
                 self.dirty = true;
                 continue;
@@ -486,7 +489,10 @@ impl Client {
                 self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
             }
             Action::Switch if self.agent == SHELL => {
-                self.notice("A shell has no conversation to switch. Press ctrl+b c to start an agent where it is.");
+                self.notice(&format!(
+                    "A shell has no conversation to switch. Press {} c to start an agent where it is.",
+                    self.prefix_label
+                ));
             }
             Action::Open => {
                 // From beside the current project, the usual place to find another one.
@@ -502,7 +508,7 @@ impl Client {
                 };
                 let id = self.link.request(command);
                 self.busy = Some(Busy::Create(id));
-                self.notice("cd to the directory, then press ctrl+b c to start an agent there.");
+                self.notice(&format!("cd to the directory, then press {} c to start an agent there.", self.prefix_label));
             }
             Action::Switch => {
                 self.side = None;
@@ -547,7 +553,7 @@ impl Client {
             Action::Next | Action::Prev => {
                 let ids = self.ordered();
                 if ids.len() < 2 {
-                    self.notice("This is the only thread. Press ctrl+b c for a new one.");
+                    self.notice(&format!("This is the only thread. Press {} c for a new one.", self.prefix_label));
                 } else {
                     let here = ids.iter().position(|id| *id == self.thread_id).unwrap_or(0);
                     let to = if a == Action::Next { (here + 1) % ids.len() } else { (here + ids.len() - 1) % ids.len() };
@@ -858,6 +864,7 @@ impl Client {
             renaming: self.renaming.as_deref(),
             info: self.info.as_deref(),
             pulse: pulse(),
+            prefix: &self.prefix_label,
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
@@ -1073,7 +1080,7 @@ impl Client {
 
 /// Shows the workspace's thread for `cwd` until the user detaches. Returns the line to print
 /// once the terminal is back to normal.
-pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
+pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -> Result<Option<String>> {
     let ws = match conn.call(Command::Subscribe { cwd: Some(cwd.to_string_lossy().into_owned()) })? {
         Reply::Workspace(ws) => ws,
         other => bail!("The desl daemon answered with {other:?}. Run `desl daemon restart`"),
@@ -1156,7 +1163,12 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         info: None,
         menu_worktree: false,
         removing: None,
+        prefix: settings.prefix,
+        prefix_label: settings.prefix.label(),
     };
+    if let Some(problem) = settings.problems.first() {
+        c.notice(&format!("{problem} `desl config show` lists every setting."));
+    }
     c.screen_from(&replay);
     c.title();
     c.paint();

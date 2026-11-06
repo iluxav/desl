@@ -15,7 +15,8 @@ use desl_ir::{
     Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status, Thread, derive_name,
 };
 use desl_proto::{
-    AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, term,
+    AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
+    term,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -193,6 +194,8 @@ pub struct Engine {
     typing: HashMap<String, Typing>,
     /// Prompts typed into an agent whose turn has not shown in its files yet, by thread.
     awaiting_turn: HashMap<String, Instant>,
+    /// The user's settings file; none in tests, which run on the defaults.
+    config_file: Option<PathBuf>,
     ticks: u64,
     pub stopping: bool,
 }
@@ -282,6 +285,7 @@ impl Engine {
             entered: HashMap::new(),
             typing: HashMap::new(),
             awaiting_turn: HashMap::new(),
+            config_file: None,
             ticks: 0,
             stopping: false,
         };
@@ -351,8 +355,31 @@ impl Engine {
         format!("desl drives {}, and neither is ready on this machine. {}", self.agent_names(), hints.join(" "))
     }
 
+    /// Reads desl's settings from `file` (SPEC.md "Configuration") from now on.
+    pub fn set_config_file(&mut self, file: PathBuf) {
+        for problem in config::load(&file, None).problems {
+            tracing::warn!("{problem}");
+        }
+        self.config_file = Some(file);
+    }
+
+    /// The settings in effect for `project` (its own file over the user's), read afresh.
+    fn settings(&self, project: Option<&Path>) -> config::Config {
+        match &self.config_file {
+            Some(f) => config::load(f, project),
+            None => config::Config::default(),
+        }
+    }
+
+    /// How sentences name desl's prefix: `ctrl+space`.
+    fn prefix(&self) -> String {
+        self.settings(None).prefix.label()
+    }
+
     fn default_agent(&self, project_id: &str) -> Result<String, String> {
-        let preferred = self.projects.iter().find(|p| p.id == project_id).and_then(|p| p.default_agent.clone());
+        let project = self.projects.iter().find(|p| p.id == project_id);
+        let configured = self.settings(project.map(|p| Path::new(&p.path))).default_agent;
+        let preferred = project.and_then(|p| p.default_agent.clone()).or(configured);
         preferred
             .into_iter()
             .chain(self.agents.iter().map(|a| a.id.clone()))
@@ -531,13 +558,18 @@ impl Engine {
             project_id: project.id,
             name: String::new(),
             git: git::state(Path::new(&project.path)),
-            cwd: project.path,
+            cwd: project.path.clone(),
             worktree: None,
             parent_id: None,
             fork_point: None,
             active_agent: agent.to_string(),
             status: Status::Idle,
-            permission_mode: PermissionMode::default(),
+            permission_mode: self
+                .settings(Some(Path::new(&project.path)))
+                .default_mode
+                .and_then(|m| PermissionMode::parse(&m))
+                .filter(|m| *m != PermissionMode::Worktree)
+                .unwrap_or_default(),
             created_at: ts,
             updated_at: ts,
             head: 0,
@@ -1225,7 +1257,8 @@ impl Engine {
         let just_sent = self.entered.get(thread_id).is_some_and(|t| t.elapsed() < Duration::from_secs(3));
         if self.threads[i].status.busy() || just_sent {
             return Err(format!(
-                "{from} is still working, and a half-finished turn is never copied. Wait for it to finish, then press ctrl+b s again."
+                "{from} is still working, and a half-finished turn is never copied. Wait for it to finish, then press {} s again.",
+                self.prefix()
             ));
         }
         let t = &self.threads[i];
@@ -1364,7 +1397,7 @@ impl Engine {
             let from = self.idx(thread_id).map(|i| self.threads[i].active_agent.clone()).unwrap_or_default();
             let frame = ServerFrame::Notice {
                 thread_id: thread_id.to_string(),
-                text: format!("{to} quit before it was ready, so the thread stays on {from}. Press ctrl+b s to try again."),
+                text: format!("{to} quit before it was ready, so the thread stays on {from}. Press {} s to try again.", self.prefix()),
             };
             for client in self.showing(thread_id) {
                 self.send(client, &frame);
@@ -1528,11 +1561,12 @@ impl Engine {
                 Ok(Reply::Done)
             }),
             Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
-                let wt = self.threads[i].worktree.clone().map(|name| (name, self.threads[i].cwd.clone()));
+                let t = &self.threads[i];
+                let wt = t.worktree.clone().map(|name| (t.git.branch.clone().unwrap_or(name), t.cwd.clone()));
                 self.remove_thread(&thread_id);
                 // Its worktree goes only when nothing in it would be lost; its branch always stays.
-                let note = wt.map(|(name, path)| match git::worktree_remove(Path::new(&path)) {
-                    Ok(()) => format!("Removed its worktree; the branch {}{name} keeps its commits.", git::BRANCH_PREFIX),
+                let note = wt.map(|(branch, path)| match git::worktree_remove(Path::new(&path)) {
+                    Ok(()) => format!("Removed its worktree; the branch {branch} keeps its commits."),
                     Err(_) => format!("Its worktree {} has uncommitted changes, so it stays.", tilde(&path)),
                 });
                 Reply::Removed { note }
@@ -1782,7 +1816,7 @@ impl Engine {
         }
         let agent = self.threads[i].active_agent.clone();
         if agent == SHELL {
-            return Err("A shell thread has no agent to prompt. Start one with ctrl+b c, or desl new.".to_string());
+            return Err(format!("A shell thread has no agent to prompt. Start one with {} c, or desl new.", self.prefix()));
         }
         // An agent desl runs in its own interface gets the prompt typed there; the headless
         // turn is left for agents without one.
@@ -1893,7 +1927,7 @@ impl Engine {
     /// SPEC.md switch algorithm, step 1. The brief goes out with the next prompt (steps 3 to 5).
     fn switch(&mut self, thread_id: &str, to: &str) -> Outcome {
         if self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL) {
-            return Err("A shell has no conversation to switch. Press ctrl+b c to start an agent in its directory.".into());
+            return Err(format!("A shell has no conversation to switch. Press {} c to start an agent in its directory.", self.prefix()));
         }
         if self.ptys.contains_key(thread_id) {
             return self.switch_native(thread_id, to);
@@ -1929,7 +1963,8 @@ impl Engine {
             .map(|p| PathBuf::from(&p.path))
             .ok_or("The thread has no project.")?;
         let name = id.replace('/', "-");
-        let path = git::worktree_add(&root, &name, from)?;
+        let cfg = self.settings(Some(&root));
+        let path = git::worktree_add(&root, &name, from, &cfg.worktree_dir, &cfg.branch_prefix)?;
         let t = &mut self.threads[i];
         t.worktree = Some(name);
         t.cwd = path.to_string_lossy().into_owned();

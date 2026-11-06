@@ -34,6 +34,12 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print every setting in effect here, with its source
+    Show,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Attach to the workspace; starts the daemon if needed (the default)
     Attach,
@@ -105,6 +111,11 @@ enum Cmd {
     Log { thread: String },
     /// Detected agents and login state
     Agents,
+    /// desl's settings: what is in effect and where each value comes from
+    Config {
+        #[command(subcommand)]
+        command: Option<ConfigCmd>,
+    },
     /// Check binaries, logins, the daemon and the store
     Doctor,
     /// Start, stop or restart the daemon, or read its log
@@ -152,8 +163,9 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
         Some(c) => c,
         None => anyhow::bail!("The desl daemon could not be started. Its log is {}.", paths.log.display()),
     };
+    let settings = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref());
     // Leaving the client is never a failure: detaching, or the last agent quitting.
-    if let Some(line) = native::run(conn, cwd)? {
+    if let Some(line) = native::run(conn, cwd, settings)? {
         println!("{line}");
     }
     Ok(())
@@ -182,6 +194,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Deny { thread } => cli::answer(paths, &out, &thread, Decision::Deny),
         Cmd::Log { thread } => cli::log(paths, &out, &thread),
         Cmd::Agents => cli::agents(paths, &out),
+        Cmd::Config { command: None | Some(ConfigCmd::Show) } => cli::config_show(paths, &out),
         Cmd::Doctor => cli::doctor(paths, &out),
         Cmd::Daemon { command } => match command {
             DaemonCmd::Start => cli::daemon_start(paths, &out),

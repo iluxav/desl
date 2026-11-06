@@ -165,7 +165,7 @@ The workspace screen, in the style of Herdr and T3 Code in a terminal: projects 
 
 Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of its own; a `/` command typed into the agent goes to the agent, so its own commands, skills and MCP prompts work unchanged. Every prefixed key has a CLI equivalent, and the help overlay and `desl --help` are generated from the same registry.
 
-**Keys.** The prefix is `ctrl+b` by default (`ctrl+a` and `ctrl+space` offered on first run); pressed twice it sends `ctrl+b` to the agent. desl recognises the prefix in every encoding an agent may switch the terminal into: the plain control byte, the kitty keyboard protocol and xterm's modifyOtherKeys. Every key without the prefix belongs to the agent.
+**Keys.** The prefix is `ctrl+space` by default (the author's choice on 2026-11-06: free in Claude Code, Codex and shells, unlike `ctrl+b`, which also clashes with tmux), and any `ctrl+<letter>` can be set with `prefix` in `config.toml`; pressed twice it sends the prefix key to the agent. Every sentence and the key line name the prefix in effect. desl recognises the prefix in every encoding an agent may switch the terminal into: the plain control byte (NUL for `ctrl+space`), the kitty keyboard protocol and xterm's modifyOtherKeys. Every key without the prefix belongs to the agent.
 
 | Key | Action | Source |
 | --- | --- | --- |
@@ -472,12 +472,12 @@ The install script never needs sudo, prints what it will do before doing it, and
 | `$XDG_RUNTIME_DIR/desl.sock` | Daemon socket |
 | `<repo>/.desl/config.toml` | Per-project settings, safe to commit |
 
-**Configuration.** TOML, every key optional, every default sane. Project config overrides user config. `desl config show` prints the effective configuration with the source of each value.
+**Configuration.** TOML, every key optional, every default sane. Read today: `general.prefix`, `general.default_agent`, `permissions.default_mode`, `worktrees.dir` and `worktrees.branch_prefix`; the other keys below are accepted and reported by `desl config show` as not used yet, and an unknown key or a line desl cannot read is reported there and in the key line at start, never guessed at. `keys.toml` remaps come later. Project config overrides user config. `desl config show` prints the effective configuration with the source of each value.
 
 ```
 [general]
 default_agent = "claude"
-prefix = "ctrl+b"
+prefix = "ctrl+space"
 theme = "default"
 
 [agents.claude]

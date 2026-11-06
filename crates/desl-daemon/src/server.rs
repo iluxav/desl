@@ -98,6 +98,7 @@ pub fn serve(paths: &Paths) -> Result<()> {
     let store = Store::open(&paths.db, &paths.blobs)?;
     let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(Claude), Arc::new(Codex)];
     let mut engine = Engine::new(store, adapters, tx.clone())?;
+    engine.set_config_file(paths.config.clone());
     tracing::info!(socket = %paths.socket.display(), store = %paths.db.display(), pid = std::process::id(), "desl daemon {} started", env!("CARGO_PKG_VERSION"));
 
     {

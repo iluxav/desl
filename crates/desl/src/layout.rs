@@ -51,7 +51,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("desl", "b", "Hide or show the sidebar"),
     ("desl", "d", "Detach; the agents keep working"),
     ("desl", "?", "This help"),
-    ("desl", "ctrl+b", "Send ctrl+b to the agent"),
+    ("desl", "prefix", "Send the prefix key itself to the agent"),
 ];
 
 /// The action for the key pressed after the prefix.
@@ -243,6 +243,8 @@ pub struct View<'a> {
     pub info: Option<&'a [(String, String)]>,
     /// Where a working thread's logo is in its slow pulse: 0 faint to 1 full.
     pub pulse: f32,
+    /// The prefix as the interface writes it: `ctrl+space`.
+    pub prefix: &'a str,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -528,7 +530,10 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
     } else {
         let mut spans = vec![
             Span::raw("  "),
-            Span::styled(" ctrl+b ", if v.prefix_armed { theme::pill() } else { theme::accent().add_modifier(Modifier::BOLD) }),
+            Span::styled(
+                format!(" {} ", v.prefix),
+                if v.prefix_armed { theme::pill() } else { theme::accent().add_modifier(Modifier::BOLD) },
+            ),
             Span::raw("  "),
         ];
         for (k, what) in [
@@ -550,7 +555,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn help(f: &mut Frame, area: Rect) {
+fn help(f: &mut Frame, v: &View, area: Rect) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut group = "";
     for (g, key, what) in KEYS {
@@ -569,7 +574,7 @@ fn help(f: &mut Frame, area: Rect) {
     let h = (lines.len() as u16 + 3).min(area.height);
     let w = 64.min(area.width);
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
-    let block = panel(true).title(Line::from(Span::styled(" Keys, after ctrl+b ", theme::bold())));
+    let block = panel(true).title(Line::from(Span::styled(format!(" Keys, after {} ", v.prefix), theme::bold())));
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
@@ -701,7 +706,7 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
         info(f, rows, a.pane);
     }
     if v.help {
-        help(f, a.pane);
+        help(f, v, a.pane);
     }
 }
 
@@ -828,7 +833,7 @@ mod tests {
     #[test]
     fn every_documented_key_has_an_action_and_digits_jump() {
         for (_, key, _) in KEYS {
-            if *key != "ctrl+b" {
+            if *key != "prefix" {
                 assert!(action(key.chars().next().unwrap()).is_some(), "{key} does nothing");
             }
         }
@@ -911,6 +916,7 @@ mod tests {
             renaming: None,
             info: None,
             pulse: 1.0,
+            prefix: "ctrl+space",
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
@@ -958,13 +964,14 @@ mod tests {
             renaming: None,
             info: None,
             pulse: 1.0,
+            prefix: "ctrl+space",
         };
         t2.draw(|f| draw(f, &v2, &a, vt.screen())).unwrap();
         let b2 = t2.backend().buffer();
         assert_eq!(b2[(20, 3)].bg, Color::Reset, "the thread gives up the tint");
         assert_ne!(b2[(20, 4)].bg, Color::Reset, "the subagent's row has it");
         assert!(lines[28].starts_with("╰"), "{s}");
-        assert!(lines[29].contains(" ctrl+b   s switch agent"), "{s}");
+        assert!(lines[29].contains(" ctrl+space   s switch agent"), "{s}");
         let before = t.backend().buffer().clone();
         let full = String::from_utf8(paint(None, &before)).unwrap();
         assert!(full.contains("\x1b[2J") && full.contains("hello"), "{full:?}");

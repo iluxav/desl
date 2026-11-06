@@ -23,14 +23,10 @@ fn git_or_why(cwd: &Path, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Where worktrees go inside a project, and the prefix of their branches (SPEC.md "Configuration").
-pub const WORKTREE_DIR: &str = ".worktrees";
-pub const BRANCH_PREFIX: &str = "desl/";
-
-/// A new worktree `name` of the repository at `root`, on a new branch `desl/<name>` from the
-/// commit `from` is on. `.worktrees/` goes into the repository's `info/exclude`, so the user's
-/// tracked files never change.
-pub fn worktree_add(root: &Path, name: &str, from: &Path) -> Result<PathBuf, String> {
+/// A new worktree `name` of the repository at `root`, in `<root>/<dir>/<name>` on a new branch
+/// `<prefix><name>` from the commit `from` is on (SPEC.md "Configuration", `[worktrees]`).
+/// `<dir>/` goes into the repository's `info/exclude`, so the user's tracked files never change.
+pub fn worktree_add(root: &Path, name: &str, from: &Path, dir: &str, prefix: &str) -> Result<PathBuf, String> {
     let top = git(root, &["rev-parse", "--show-toplevel"])
         .ok_or_else(|| format!("Worktrees need a git repository, and {} is not one.", root.display()))?;
     let base = git(from, &["rev-parse", "HEAD"])
@@ -39,7 +35,7 @@ pub fn worktree_add(root: &Path, name: &str, from: &Path) -> Result<PathBuf, Str
     if let Some(common) = git(&top, &["rev-parse", "--git-common-dir"]) {
         let common = if Path::new(&common).is_absolute() { PathBuf::from(common) } else { top.join(common) };
         let exclude = common.join("info").join("exclude");
-        let line = format!("/{WORKTREE_DIR}/");
+        let line = format!("/{}/", dir.trim_matches('/'));
         let now = std::fs::read_to_string(&exclude).unwrap_or_default();
         if !now.lines().any(|l| l.trim() == line) {
             let _ = std::fs::create_dir_all(common.join("info"));
@@ -47,8 +43,8 @@ pub fn worktree_add(root: &Path, name: &str, from: &Path) -> Result<PathBuf, Str
             let _ = std::fs::write(&exclude, format!("{now}{sep}{line}\n"));
         }
     }
-    let path = top.join(WORKTREE_DIR).join(name);
-    let branch = format!("{BRANCH_PREFIX}{name}");
+    let path = top.join(dir).join(name);
+    let branch = format!("{prefix}{name}");
     let p = path.to_string_lossy().into_owned();
     git_or_why(&top, &["worktree", "add", "-b", &branch, &p, &base]).map_err(|why| format!("Could not make the worktree {p}: {why}."))?;
     Ok(path)
@@ -113,11 +109,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         run(&dir, &["init", "-q", "-b", "main"]);
-        assert!(worktree_add(&dir, "t-1", &dir).unwrap_err().contains("first commit"));
+        assert!(worktree_add(&dir, "t-1", &dir, ".worktrees", "desl/").unwrap_err().contains("first commit"));
         std::fs::write(dir.join("a.txt"), "a").unwrap();
         run(&dir, &["add", "."]);
         run(&dir, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
-        let wt = worktree_add(&dir, "t-1", &dir).unwrap();
+        let wt = worktree_add(&dir, "t-1", &dir, ".worktrees", "desl/").unwrap();
         assert!(wt.join("a.txt").exists());
         assert_eq!(state(&wt).branch.as_deref(), Some("desl/t-1"));
         assert_eq!(git(&dir, &["status", "--porcelain"]).unwrap(), "", "the main tree stays clean");
@@ -129,7 +125,7 @@ mod tests {
         assert!(git(&dir, &["rev-parse", "--verify", "desl/t-1"]).is_some(), "the branch stays");
         let plain = std::env::temp_dir().join(format!("desl-git-plain-{}", std::process::id()));
         std::fs::create_dir_all(&plain).unwrap();
-        assert!(worktree_add(&plain, "t-2", &plain).unwrap_err().contains("git repository"));
+        assert!(worktree_add(&plain, "t-2", &plain, ".worktrees", "desl/").unwrap_err().contains("git repository"));
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_dir_all(&plain);
     }

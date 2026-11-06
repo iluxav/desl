@@ -7,6 +7,7 @@
 //! `pty` frame the raw terminal output of the thread a client shows (the native route).
 
 pub mod b64;
+pub mod config;
 pub mod paths;
 pub mod term;
 

@@ -872,10 +872,10 @@ impl Client {
         // A subagent's conversation, laid out by the transcript renderer.
         let width = a.pane.width as usize;
         let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
-            (Some(sub), Some((t, _))) => {
-                let mut m = crate::model::Thread::new(t.clone());
-                m.load(&sub.events, None);
-                crate::ui::transcript::layout(&m.items, &[], width, None, None).lines
+            (Some(sub), Some(_)) => {
+                let mut m = crate::model::Thread::new();
+                m.load(&sub.events);
+                crate::ui::transcript::layout(&m.items, width)
             }
             _ => Vec::new(),
         };

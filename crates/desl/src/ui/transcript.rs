@@ -3,15 +3,11 @@
 
 use super::markdown;
 use super::text::{code_wrap, expand_tabs, truncate_end, truncate_middle, wrap};
-use crate::app::{App, Focus};
-use crate::model::{Item, Open, PREVIEW_LINES, Status, Thread};
+use crate::model::{Item, Open, PREVIEW_LINES};
 use crate::theme;
 use desl_ir::diff::{self, Kind};
-use ratatui::Frame;
-use ratatui::layout::Rect;
 use ratatui::style::Modifier;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::Paragraph;
 use unicode_width::UnicodeWidthStr;
 
 const INDENT: &str = "  ";
@@ -19,16 +15,8 @@ const INDENT: &str = "  ";
 const MAX_TEXT_WIDTH: usize = 100;
 /// Expanded tool output shows at most this many lines before `… n more lines`.
 const MAX_DETAIL_LINES: usize = 40;
-/// A fully opened diff shows at most this many rows.
-const MAX_DIFF_LINES: usize = 400;
 /// Columns kept free at the right edge, so text never touches the pane border.
 const RIGHT_MARGIN: usize = 1;
-
-pub struct Laid {
-    pub lines: Vec<Line<'static>>,
-    /// First line of each item, by item index.
-    pub starts: Vec<usize>,
-}
 
 fn detail_lines(text: &str, body: usize, lines: &mut Vec<Line<'static>>) {
     let all: Vec<&str> = text.lines().collect();
@@ -87,22 +75,18 @@ fn diff_lines(unified: &str, body: usize, cap: usize, lines: &mut Vec<Line<'stat
     }
 }
 
-/// `spin` is the current spinner frame while the thread's agent is working: a tool call still
-/// waiting for its result shows it where the outcome will land.
-/// `queued` are prompts waiting for the current turn to end; they follow the last item.
-pub fn layout(items: &[Item], queued: &[String], width: usize, selected: Option<usize>, spin: Option<&'static str>) -> Laid {
+/// A conversation's items as lines at most `width` columns wide.
+pub fn layout(items: &[Item], width: usize) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut starts: Vec<usize> = Vec::with_capacity(items.len());
     let width = width.min(MAX_TEXT_WIDTH);
     let width = width.saturating_sub(RIGHT_MARGIN);
     let body = width.saturating_sub(1 + INDENT.len()).max(8);
-    if items.is_empty() && queued.is_empty() {
+    if items.is_empty() {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![Span::styled(format!(" {INDENT}Type a prompt and press enter. ? shows every key."), theme::muted())]));
-        return Laid { lines, starts };
+        lines.push(Line::from(vec![Span::styled(format!(" {INDENT}Nothing yet."), theme::muted())]));
+        return lines;
     }
-    for (idx, item) in items.iter().enumerate() {
-        let first = lines.len();
+    for item in items {
         match item {
             Item::User { text } => user_lines(text, body, &mut lines),
             Item::Assistant { text, streaming } => {
@@ -128,8 +112,8 @@ pub fn layout(items: &[Item], queued: &[String], width: usize, selected: Option<
             }
             Item::Tool { verb, target, outcome, decision, detail, diff, open, .. } => {
                 let right = match (decision, outcome) {
-                    (None, None) => spin.unwrap_or("").to_string(),
-                    (Some(d), None) => spin.map(|f| format!("{d} {f}")).unwrap_or_else(|| d.to_string()),
+                    (None, None) => String::new(),
+                    (Some(d), None) => d.to_string(),
                     (None, Some(o)) => o.summary.clone(),
                     (Some(d), Some(o)) if *d == "denied" => format!("{d} ✕"),
                     (Some(d), Some(o)) => format!("{d} {}", o.summary),
@@ -160,7 +144,6 @@ pub fn layout(items: &[Item], queued: &[String], width: usize, selected: Option<
                 match (open, diff) {
                     (Open::Closed, _) => {}
                     (Open::Preview, Some(d)) => diff_lines(d, body, PREVIEW_LINES, &mut lines),
-                    (_, Some(d)) => diff_lines(d, body, MAX_DIFF_LINES, &mut lines),
                     (_, None) if detail.trim().is_empty() => {
                         let note = if outcome.is_some() { "│ (no output)" } else { "│ (no output yet)" };
                         lines.push(Line::from(vec![Span::raw(format!(" {INDENT}")), Span::styled(note, theme::muted())]));
@@ -211,23 +194,8 @@ pub fn layout(items: &[Item], queued: &[String], width: usize, selected: Option<
                 }
             }
         }
-        // Items open with a blank spacer line; the selection gutter starts below it.
-        let content_start = if lines.get(first).is_some_and(|l| l.width() == 0) { first + 1 } else { first };
-        starts.push(content_start);
-        if selected == Some(idx) {
-            for l in lines.iter_mut().skip(content_start) {
-                if let Some(s) = l.spans.first_mut() {
-                    let rest: String = s.content.chars().skip(1).collect();
-                    *s = Span::styled(format!("┃{rest}"), theme::accent());
-                }
-            }
-        }
     }
-    for text in queued {
-        user_lines(text, body, &mut lines);
-        lines.push(Line::from(Span::styled(format!(" {INDENT}⏳ queued"), theme::muted())));
-    }
-    Laid { lines, starts }
+    lines
 }
 
 /// A prompt: `›` in the accent colour, the text wrapped under it.
@@ -236,78 +204,5 @@ fn user_lines(text: &str, body: usize, lines: &mut Vec<Line<'static>>) {
     for (i, l) in wrap(text, body).into_iter().enumerate() {
         let lead = if i == 0 { Span::styled(" › ".to_string(), theme::accent()) } else { Span::raw(format!(" {INDENT}")) };
         lines.push(Line::from(vec![lead, Span::styled(l, theme::normal())]));
-    }
-}
-
-const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-fn spinner_frame(t: &Thread) -> &'static str {
-    let elapsed = t.working_since.map(|s| s.elapsed()).unwrap_or_default();
-    SPINNER[(elapsed.as_millis() / 100) as usize % SPINNER.len()]
-}
-
-/// `⠹ working 12s · ctrl+c to interrupt` while the thread's agent is working, else an empty line.
-fn working_line(t: &Thread) -> Line<'static> {
-    if t.status() != Status::Working {
-        return Line::from("");
-    }
-    let secs = t.working_since.map(|s| s.elapsed()).unwrap_or_default().as_secs();
-    let time = if secs >= 60 { format!("{}m {:02}s", secs / 60, secs % 60) } else { format!("{secs}s") };
-    let frame = spinner_frame(t);
-    Line::from(vec![
-        Span::raw(format!(" {INDENT}")),
-        Span::styled(frame, theme::accent()),
-        Span::styled(" working ", theme::dim()),
-        Span::styled(format!("{time} · ctrl+c to interrupt"), theme::muted()),
-    ])
-}
-
-pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let selected = if app.focus == Focus::Transcript { app.thread().cursor } else { None };
-    let spin = (app.thread().status() == Status::Working).then(|| spinner_frame(app.thread()));
-    let mut laid = layout(&app.thread().items, &app.thread().meta.queued, area.width as usize, selected, spin);
-    // Two lines are always kept free under the last item. While the agent works the second one says
-    // so, exactly where its next words will appear; when it stops, nothing above has to move.
-    laid.lines.push(Line::from(""));
-    laid.lines.push(working_line(app.thread()));
-    let total = laid.lines.len();
-    let height = area.height as usize;
-    app.view.transcript_height = height;
-    app.view.transcript_lines = total;
-
-    let max = total.saturating_sub(height);
-    let t = app.thread_mut();
-    if let Some(i) = selected
-        && let Some(&start) = laid.starts.get(i)
-    {
-        // Keep the selected item in view.
-        let end = laid.starts.get(i + 1).copied().unwrap_or(total);
-        if start < t.scroll || t.follow {
-            if !t.follow {
-                t.scroll = start.saturating_sub(1).min(max);
-            }
-        } else if end > t.scroll + height {
-            t.scroll = (end.saturating_sub(height)).min(max);
-        }
-    }
-    if t.scroll >= max {
-        t.follow = true;
-    }
-    let offset = if t.follow { max } else { t.scroll.min(max) };
-    if t.follow {
-        t.scroll = max;
-    }
-    let hidden_below = total.saturating_sub(offset + height);
-
-    let visible: Vec<Line<'static>> = laid.lines.into_iter().skip(offset).take(height).collect();
-    f.render_widget(Paragraph::new(visible), area);
-
-    if hidden_below > 0 {
-        let label = format!(" ↓ {hidden_below} new ");
-        let w = label.width() as u16;
-        if w + 2 <= area.width {
-            let pill = Rect::new(area.right() - w - 1, area.bottom() - 1, w, 1);
-            f.render_widget(Line::from(Span::styled(label, theme::pill())), pill);
-        }
     }
 }

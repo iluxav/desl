@@ -113,13 +113,6 @@ impl Conn {
 }
 
 impl Link {
-    /// A link whose commands go nowhere, for tests that feed the client frames by hand.
-    #[cfg(test)]
-    pub fn detached() -> (Link, UnixStream) {
-        let (writer, peer) = UnixStream::pair().expect("a socket pair");
-        (Link { writer, next_id: 0 }, peer)
-    }
-
     /// Sends a command and returns its request id. A lost connection is reported by the reader.
     pub fn request(&mut self, command: Command) -> u64 {
         self.next_id += 1;

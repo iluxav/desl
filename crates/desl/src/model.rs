@@ -1,10 +1,7 @@
-//! The client's view of a thread: the daemon's IR events projected into what the transcript
-//! draws. Holds no state that matters beyond scroll position and focus; everything else comes
-//! from the daemon and can be rebuilt at any time.
+//! A conversation as the transcript renderer draws it: IR events projected into items. The
+//! native client uses it for a subagent's conversation; it holds nothing that matters.
 
-pub use desl_ir::Status;
 use desl_ir::{Decision, Event, EventKind, diff, tool_target, tool_verb};
-use std::time::Instant;
 
 pub struct Outcome {
     pub ok: bool,
@@ -18,7 +15,6 @@ pub enum Open {
     Closed,
     /// An edit as it lands: the first `PREVIEW_LINES` rows of its diff.
     Preview,
-    Full,
 }
 
 /// Rows of a diff shown under an edit before the user asks for all of it.
@@ -57,137 +53,27 @@ pub enum Item {
     Error(String),
 }
 
-impl Item {
-    pub fn expandable(&self) -> bool {
-        matches!(self, Item::Tool { .. } | Item::Brief { .. })
-    }
-    pub fn toggle(&mut self) {
-        match self {
-            // enter shows more while there is more, then closes.
-            Item::Tool { open, diff, .. } => {
-                let hidden = diff.as_deref().is_some_and(|d| diff::parse(d).len() > PREVIEW_LINES);
-                *open = match *open {
-                    Open::Closed => Open::Full,
-                    Open::Preview if hidden => Open::Full,
-                    _ => Open::Closed,
-                };
-            }
-            Item::Brief { expanded, .. } => *expanded = !*expanded,
-            _ => {}
-        }
-    }
-    /// The file a tool call is about, for `o`.
-    pub fn path(&self) -> Option<&str> {
-        match self {
-            Item::Tool { verb, target, .. } if (verb == "read" || verb == "edit") && !target.is_empty() => Some(target),
-            _ => None,
-        }
-    }
-}
-
-/// A one-line yes/no question above the prompt, never a modal.
-pub struct Ask {
-    pub text: String,
-    pub kind: AskKind,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub enum AskKind {
-    Switch(String),
-}
-
 pub struct Thread {
-    /// The thread as the daemon holds it: id, name, agent, status, bindings, queue, approval.
-    pub meta: desl_ir::Thread,
     pub items: Vec<Item>,
-    /// The event index behind each user and assistant message, in order: `/fork @n` counts these.
+    /// The event index behind each user and assistant message, in order.
     pub messages: Vec<u64>,
-    /// The thread's events have been fetched; until then only `meta` is known.
-    pub loaded: bool,
     pub cost_usd: f64,
     pub turns: u32,
-    /// Auto-follow the newest output. Turns off the moment the user scrolls up.
-    pub follow: bool,
-    /// First visible transcript line when not following.
-    pub scroll: usize,
-    /// Selected item while the transcript is focused.
-    pub cursor: Option<usize>,
-    pub ask: Option<Ask>,
-    /// When this client first saw the current turn working; kept across a wait for approval.
-    pub working_since: Option<Instant>,
 }
 
 impl Thread {
-    pub fn new(meta: desl_ir::Thread) -> Self {
-        Thread {
-            meta,
-            items: Vec::new(),
-            messages: Vec::new(),
-            loaded: false,
-            cost_usd: 0.0,
-            turns: 0,
-            follow: true,
-            scroll: 0,
-            cursor: None,
-            ask: None,
-            working_since: None,
-        }
-    }
-
-    pub fn id(&self) -> &str {
-        &self.meta.id
-    }
-    pub fn name(&self) -> &str {
-        &self.meta.name
-    }
-    pub fn agent(&self) -> &str {
-        &self.meta.active_agent
-    }
-    pub fn status(&self) -> Status {
-        self.meta.status
-    }
-    pub fn busy(&self) -> bool {
-        self.meta.status.busy()
+    pub fn new() -> Self {
+        Thread { items: Vec::new(), messages: Vec::new(), cost_usd: 0.0, turns: 0 }
     }
 
     /// Replaces everything this view knows with the daemon's events.
-    pub fn load(&mut self, events: &[Event], partial: Option<&str>) {
+    pub fn load(&mut self, events: &[Event]) {
         self.items.clear();
         self.messages.clear();
         self.cost_usd = 0.0;
         self.turns = 0;
         for e in events {
             self.apply(e);
-        }
-        self.loaded = true;
-        self.set_partial(partial);
-    }
-
-    /// The text of a block still being generated, for a view that joins mid-turn.
-    pub fn set_partial(&mut self, partial: Option<&str>) {
-        if let Some(text) = partial.filter(|t| !t.is_empty()) {
-            match self.items.last_mut() {
-                Some(Item::Assistant { text: shown, streaming: true }) => *shown = text.to_string(),
-                _ => self.items.push(Item::Assistant { text: text.to_string(), streaming: true }),
-            }
-        }
-    }
-
-    /// A new text block starts: open a fresh assistant item unless an empty one is already open.
-    pub fn start_text(&mut self) {
-        if let Some(Item::Assistant { text, streaming: true }) = self.items.last()
-            && text.is_empty()
-        {
-            return;
-        }
-        self.close_streaming();
-        self.items.push(Item::Assistant { text: String::new(), streaming: true });
-    }
-
-    pub fn push_text_delta(&mut self, delta: &str) {
-        match self.items.last_mut() {
-            Some(Item::Assistant { text, streaming: true }) => text.push_str(delta),
-            _ => self.items.push(Item::Assistant { text: delta.to_string(), streaming: true }),
         }
     }
 
@@ -230,7 +116,6 @@ impl Thread {
                 self.items.push(Item::User { text: text.clone() });
                 self.messages.push(e.index);
                 self.turns += 1;
-                self.follow = true;
             }
             EventKind::AssistantMessage { text, .. } => {
                 self.finish_text(text);
@@ -315,7 +200,6 @@ impl Thread {
             EventKind::AgentSwitch { to, .. } => {
                 self.close_streaming();
                 self.items.push(Item::Divider(format!("switched to {to}")));
-                self.follow = true;
             }
             EventKind::Fork { parent_id, .. } => {
                 self.close_streaming();
@@ -341,31 +225,8 @@ impl Thread {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use desl_ir::{ChangeKind, GitState, PermissionMode};
+    use desl_ir::ChangeKind;
     use serde_json::json;
-
-    fn meta() -> desl_ir::Thread {
-        desl_ir::Thread {
-            id: "t-7f3a".into(),
-            project_id: "api".into(),
-            name: "auth".into(),
-            cwd: "/p/api".into(),
-            worktree: None,
-            parent_id: None,
-            fork_point: None,
-            active_agent: "claude".into(),
-            status: Status::Idle,
-            permission_mode: PermissionMode::Edits,
-            created_at: 0,
-            updated_at: 0,
-            head: 0,
-            bindings: Default::default(),
-            queued: vec![],
-            pending_approval: None,
-            subagents: Vec::new(),
-            git: GitState::default(),
-        }
-    }
 
     fn ev(index: u64, agent: &str, kind: EventKind) -> Event {
         Event { index, thread_id: "t-7f3a".into(), timestamp: 0, agent: agent.into(), kind }
@@ -373,7 +234,7 @@ mod tests {
 
     #[test]
     fn an_edit_shows_its_diff_and_counts_on_its_own_line() {
-        let mut t = Thread::new(meta());
+        let mut t = Thread::new();
         t.apply(&ev(1, "claude", EventKind::ToolCall { id: "c1".into(), name: "edit".into(), args: json!({ "path": "src/a.ts" }) }));
         t.apply(&ev(
             2,
@@ -406,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_command_runs_and_a_failure_leads_with_its_first_line() {
-        let mut t = Thread::new(meta());
+        let mut t = Thread::new();
         t.apply(&ev(1, "codex", EventKind::ToolCall { id: "c1".into(), name: "bash".into(), args: json!({ "command": "ls /nope" }) }));
         t.apply(&ev(
             2,
@@ -427,48 +288,24 @@ mod tests {
     }
 
     #[test]
-    fn streamed_text_is_replaced_by_the_final_message_and_never_doubled() {
-        let mut t = Thread::new(meta());
-        t.start_text();
-        t.push_text_delta("Hel");
-        t.push_text_delta("lo");
-        t.apply(&ev(1, "claude", EventKind::AssistantMessage { text: "Hello.".into(), model: None }));
+    fn a_final_message_is_one_item() {
+        let mut t = Thread::new();
+        t.load(&[ev(1, "claude", EventKind::AssistantMessage { text: "Hello.".into(), model: None })]);
         assert_eq!(t.items.len(), 1);
         assert!(matches!(&t.items[0], Item::Assistant { text, streaming: false } if text == "Hello."));
-        // A view that never saw the deltas gets the same single item.
-        let mut cold = Thread::new(meta());
-        cold.load(&[ev(1, "claude", EventKind::AssistantMessage { text: "Hello.".into(), model: None })], None);
-        assert_eq!(cold.items.len(), 1);
-    }
-
-    #[test]
-    fn a_view_joining_mid_block_shows_the_text_so_far() {
-        let mut t = Thread::new(meta());
-        t.load(&[ev(1, "claude", EventKind::UserMessage { text: "hi".into(), attachments: vec![] })], Some("Half a sent"));
-        assert!(matches!(t.items.last(), Some(Item::Assistant { text, streaming: true }) if text == "Half a sent"));
-        t.push_text_delta("ence.");
-        t.apply(&ev(2, "claude", EventKind::AssistantMessage { text: "Half a sentence.".into(), model: None }));
-        assert_eq!(t.items.len(), 2);
     }
 
     #[test]
     fn switches_briefs_errors_and_interrupts_have_their_own_rows() {
-        let mut t = Thread::new(meta());
-        t.load(
-            &[
-                ev(1, "claude", EventKind::UserMessage { text: "one".into(), attachments: vec![] }),
-                ev(2, "codex", EventKind::AgentSwitch { from: "claude".into(), to: "codex".into(), brief_event_id: None }),
-                ev(3, "codex", EventKind::UserMessage { text: "two".into(), attachments: vec![] }),
-                ev(
-                    4,
-                    "codex",
-                    EventKind::Brief { text: "# Handoff brief".into(), token_estimate: 617, covers_range: (1, 2), delta: false },
-                ),
-                ev(5, "codex", EventKind::Interrupt),
-                ev(6, "codex", EventKind::Error { message: "codex exited with 1 mid-turn.".into(), recoverable: true }),
-            ],
-            None,
-        );
+        let mut t = Thread::new();
+        t.load(&[
+            ev(1, "claude", EventKind::UserMessage { text: "one".into(), attachments: vec![] }),
+            ev(2, "codex", EventKind::AgentSwitch { from: "claude".into(), to: "codex".into(), brief_event_id: None }),
+            ev(3, "codex", EventKind::UserMessage { text: "two".into(), attachments: vec![] }),
+            ev(4, "codex", EventKind::Brief { text: "# Handoff brief".into(), token_estimate: 617, covers_range: (1, 2), delta: false }),
+            ev(5, "codex", EventKind::Interrupt),
+            ev(6, "codex", EventKind::Error { message: "codex exited with 1 mid-turn.".into(), recoverable: true }),
+        ]);
         let rows: Vec<String> = t
             .items
             .iter()

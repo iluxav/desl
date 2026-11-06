@@ -3,19 +3,13 @@
 //! One binary, two roles (SPEC.md "Architecture"): `desl` is the thin client, a TUI or a CLI
 //! command; `desl daemon run` is the long-lived daemon the client starts on first use.
 
-mod app;
 mod cli;
-mod commands;
 mod conn;
-mod input;
-mod keymap;
 mod layout;
 mod model;
 mod native;
-mod picker;
 mod rawkeys;
 mod theme;
-mod tui;
 mod ui;
 
 use clap::{Parser, Subcommand};
@@ -158,21 +152,9 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
         Some(c) => c,
         None => anyhow::bail!("The desl daemon could not be started. Its log is {}.", paths.log.display()),
     };
-    // The native route is the client (SPEC.md "Interface design"); DESL_TRANSCRIPT=1 keeps the
-    // headless transcript client reachable while crates/ moves over.
-    let transcript = std::env::var_os("DESL_TRANSCRIPT").is_some_and(|v| !v.is_empty() && v != "0");
-    if !transcript {
-        // Leaving the native client is never a failure: detaching, or the agent quitting.
-        if let Some(line) = native::run(conn, cwd)? {
-            println!("{line}");
-        }
-        return Ok(());
-    }
-    if let Some(line) = tui::run(conn, cwd)? {
+    // Leaving the client is never a failure: detaching, or the last agent quitting.
+    if let Some(line) = native::run(conn, cwd)? {
         println!("{line}");
-        if !line.starts_with("Detached") && !line.starts_with("The desl daemon was stopped") {
-            std::process::exit(1);
-        }
     }
     Ok(())
 }

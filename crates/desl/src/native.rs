@@ -3,11 +3,11 @@
 //! every key goes to it except the prefix and the key after it.
 
 use crate::conn::{Conn, Link};
-use crate::layout::{self, Action, Areas, Row, View};
+use crate::layout::{self, Action, Areas, Menu, MenuItem, Row, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Project, SHELL, Status, Thread};
-use desl_proto::{Change, Command, Reply, ServerFrame, b64, read_frame, term};
+use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -124,6 +124,21 @@ struct Client {
     side: Option<usize>,
     help: bool,
     scrolled: usize,
+    agents: Vec<AgentInfo>,
+    /// The new-thread menu's cursor while it is open.
+    menu: Option<usize>,
+}
+
+/// What a new-thread menu row starts: an agent's id, or [`SHELL`].
+struct Choice {
+    start: String,
+    item: MenuItem,
+}
+
+/// The user's shell by name: `bash`, `zsh`.
+fn shell_name() -> String {
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "bash".into());
+    std::path::Path::new(&shell).file_name().map_or(shell.clone(), |n| n.to_string_lossy().into_owned())
 }
 
 impl Client {
@@ -197,7 +212,7 @@ impl Client {
                 self.mouse(m);
                 continue;
             }
-            let ours = self.side.is_some() || self.help;
+            let ours = self.side.is_some() || self.help || self.menu.is_some();
             if ours && self.armed.is_none() {
                 // Keys rawkeys leaves whole: a lone escape, and arrows in application mode.
                 if rest == [0x1b] {
@@ -310,8 +325,9 @@ impl Client {
                     self.dirty = true;
                 }
             }
-            if m.press && !m.motion() && m.wheel().is_none() && self.side.is_some() {
+            if m.press && !m.motion() && m.wheel().is_none() && (self.side.is_some() || self.menu.is_some()) {
                 self.side = None;
+                self.menu = None;
                 self.dirty = true;
             }
             return;
@@ -365,6 +381,9 @@ impl Client {
             return None;
         }
         self.help = false;
+        if a != Action::New {
+            self.menu = None;
+        }
         match a {
             Action::Threads if self.side.is_some() => self.side = None,
             Action::Threads => {
@@ -395,20 +414,18 @@ impl Client {
                 let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
                 self.busy = Some(Busy::Switch(id));
             }
+            Action::New if self.menu.is_some() => self.menu = None,
             Action::New => {
-                let cwd = self
-                    .threads
+                self.side = None;
+                // The cursor starts on the project's default agent, else the first that works.
+                let choices = self.choices();
+                let default = self.project().and_then(|p| p.default_agent.clone());
+                let at = choices
                     .iter()
-                    .find(|t| t.id == self.thread_id)
-                    .map(|t| self.projects.iter().find(|p| p.id == t.project_id).map_or(t.cwd.clone(), |p| p.path.clone()));
-                match cwd {
-                    Some(cwd) => {
-                        let command = Command::NewThread { cwd, agent: None, prompt: None, beside: Some(self.thread_id.clone()) };
-                        let id = self.link.request(command);
-                        self.busy = Some(Busy::Create(id));
-                    }
-                    None => self.notice("desl does not know this thread's project yet. Try again in a moment."),
-                }
+                    .position(|c| Some(&c.start) == default.as_ref() && c.item.enabled)
+                    .or_else(|| choices.iter().position(|c| c.item.enabled))
+                    .unwrap_or(0);
+                self.menu = Some(at);
             }
             Action::Next | Action::Prev => {
                 let ids = self.ordered();
@@ -442,11 +459,80 @@ impl Client {
         self.busy = Some(Busy::Attach(id, thread_id));
     }
 
+    fn project(&self) -> Option<&Project> {
+        let t = self.threads.iter().find(|t| t.id == self.thread_id)?;
+        self.projects.iter().find(|p| p.id == t.project_id)
+    }
+
+    /// What `prefix c` offers: every agent desl drives, then the user's shell.
+    fn choices(&self) -> Vec<Choice> {
+        let mut out: Vec<Choice> = self
+            .agents
+            .iter()
+            .map(|a| {
+                let note = if !a.detection.installed {
+                    "not installed".to_string()
+                } else if a.detection.logged_in == Some(false) {
+                    "not logged in".to_string()
+                } else {
+                    "agent".to_string()
+                };
+                let mut label = a.id.clone();
+                if let Some(f) = label.get_mut(0..1) {
+                    f.make_ascii_uppercase();
+                }
+                Choice { start: a.id.clone(), item: MenuItem { label, note, enabled: a.usable() } }
+            })
+            .collect();
+        out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
+        out
+    }
+
+    /// Starts the menu's choice `i` in this project (from a shell: where it is).
+    fn start(&mut self, i: usize) {
+        let choices = self.choices();
+        let Some(choice) = choices.get(i) else { return };
+        if !choice.item.enabled {
+            let hint = self
+                .agents
+                .iter()
+                .find(|a| a.id == choice.start)
+                .map(|a| if a.detection.installed { a.detection.login_hint.clone() } else { a.detection.install_hint.clone() });
+            self.notice(&format!("{} is {}. {}", choice.item.label, choice.item.note, hint.unwrap_or_default()));
+            return;
+        }
+        self.menu = None;
+        let cwd = match (self.project(), self.threads.iter().find(|t| t.id == self.thread_id)) {
+            (Some(p), _) => p.path.clone(),
+            (None, Some(t)) => t.cwd.clone(),
+            (None, None) => return self.notice("desl does not know this thread's project yet. Try again in a moment."),
+        };
+        let command = Command::NewThread { cwd, agent: Some(choice.start.clone()), prompt: None, beside: Some(self.thread_id.clone()) };
+        let id = self.link.request(command);
+        self.busy = Some(Busy::Create(id));
+    }
+
+    fn menu_key(&mut self, key: SKey) {
+        let Some(at) = self.menu else { return };
+        let n = self.choices().len();
+        match key {
+            SKey::Close | SKey::Char('q') => self.menu = None,
+            SKey::Down | SKey::Char('j') => self.menu = Some((at + 1).min(n.saturating_sub(1))),
+            SKey::Up | SKey::Char('k') => self.menu = Some(at.saturating_sub(1)),
+            SKey::Enter => self.start(at),
+            SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
+            SKey::Char(_) => {}
+        }
+    }
+
     fn side_key(&mut self, key: SKey) {
         self.dirty = true;
         if self.help {
             self.help = false;
             return;
+        }
+        if self.menu.is_some() {
+            return self.menu_key(key);
         }
         let Some(cursor) = self.side else { return };
         let rows = layout::rows(&self.projects, &self.threads);
@@ -506,14 +592,19 @@ impl Client {
             notice: self.notice.as_deref(),
             help: self.help,
             scrolled: self.scrolled,
+            menu: None,
         };
+        let choices = self.choices();
+        let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
+        let title = format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()));
+        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), ..view };
         let screen = self.vt.screen();
         let _ = self.term.draw(|f| layout::draw(f, &view, &a, screen));
         let next = self.term.backend().buffer().clone();
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend_from_slice(&layout::paint(self.shown.as_ref(), &next));
         let (row, col) = screen.cursor_position();
-        if self.side.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
+        if self.side.is_none() && self.menu.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
             frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", a.pane.y + row + 1, a.pane.x + col + 1).as_bytes());
         } else {
             frame.extend_from_slice(b"\x1b[?25l");
@@ -628,7 +719,8 @@ impl Client {
             Change::Bye => {
                 return Some("The desl daemon was stopped. Run desl to start it again; the thread resumes where it was.".to_string());
             }
-            Change::Appended { .. } | Change::Agents { .. } => return None,
+            Change::Agents { agents } => self.agents = agents,
+            Change::Appended { .. } => return None,
         }
         self.title();
         self.dirty = true;
@@ -721,6 +813,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         side: None,
         help: false,
         scrolled: 0,
+        agents: ws.agents,
+        menu: None,
     };
     c.screen_from(&replay);
     c.title();

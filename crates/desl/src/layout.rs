@@ -34,7 +34,7 @@ pub enum Action {
 pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "s", "Switch this thread to the other agent"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
-    ("Threads", "c", "New agent thread (in a shell: its directory)"),
+    ("Threads", "c", "New thread: pick Claude, Codex or a shell"),
     ("Threads", "o", "Open a directory: a shell to cd into it, then c"),
     ("Threads", "n", "Next thread"),
     ("Threads", "p", "Previous thread"),
@@ -174,6 +174,20 @@ pub fn thread_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usi
     }
 }
 
+/// One choice in a menu: what it starts, and why it cannot when it cannot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub label: String,
+    pub note: String,
+    pub enabled: bool,
+}
+
+pub struct Menu<'a> {
+    pub title: &'a str,
+    pub items: &'a [MenuItem],
+    pub cursor: usize,
+}
+
 pub struct View<'a> {
     pub projects: &'a [Project],
     pub threads: &'a [Thread],
@@ -188,6 +202,7 @@ pub struct View<'a> {
     pub help: bool,
     /// Lines scrolled back in the agent's screen, 0 when following it.
     pub scrolled: usize,
+    pub menu: Option<Menu<'a>>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -311,6 +326,13 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
         Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
+    } else if v.menu.is_some() {
+        let mut spans = vec![Span::raw("  ")];
+        for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("esc", "cancel")] {
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+        }
+        Line::from(spans)
     } else if v.cursor.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("j/k", "move"), ("enter", "open"), ("1-9", "jump"), ("esc", "back to the agent")] {
@@ -371,6 +393,40 @@ fn help(f: &mut Frame, area: Rect) {
     );
 }
 
+/// A small box in the middle of the pane: numbered choices, the cursor's lit.
+fn menu(f: &mut Frame, m: &Menu, area: Rect) {
+    let label_w = m.items.iter().map(|i| i.label.width()).max().unwrap_or(0);
+    let note_w = m.items.iter().map(|i| i.note.width()).max().unwrap_or(0);
+    let w = ((label_w + note_w + 13) as u16).max(m.title.width() as u16 + 6).min(area.width);
+    let h = (m.items.len() as u16 + 4).min(area.height);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 3, w, h);
+    let inner_w = w.saturating_sub(4) as usize;
+    let lines: Vec<Line<'static>> = m
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let lit = i == m.cursor;
+            let text = format!(" {}  {:<label_w$}  {}", i + 1, item.label, item.note);
+            let text = format!("{text:<inner_w$}");
+            let style = match (lit, item.enabled) {
+                (true, _) => theme::pill(),
+                (false, true) => theme::normal(),
+                (false, false) => theme::muted(),
+            };
+            Line::from(Span::styled(truncate_end(&text, inner_w), style))
+        })
+        .collect();
+    let block = panel(true).title(Line::from(Span::styled(format!(" {} ", m.title), theme::bold())));
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(block, r);
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), inner.height.saturating_sub(1)),
+    );
+}
+
 fn colour(c: vt100::Color) -> Color {
     match c {
         vt100::Color::Default => Color::Reset,
@@ -421,6 +477,9 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
     main_panel(f, v, a.main);
     pane(f.buffer_mut(), a.pane, screen);
     footer(f, v, a.footer);
+    if let Some(m) = &v.menu {
+        menu(f, m, a.pane);
+    }
     if v.help {
         help(f, a.pane);
     }
@@ -605,6 +664,7 @@ mod tests {
             notice: None,
             help: false,
             scrolled: 0,
+            menu: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
@@ -622,6 +682,16 @@ mod tests {
         let before = t.backend().buffer().clone();
         let full = String::from_utf8(paint(None, &before)).unwrap();
         assert!(full.contains("\x1b[2J") && full.contains("hello"), "{full:?}");
+        let items = [
+            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true },
+            MenuItem { label: "bash".into(), note: "shell".into(), enabled: true },
+        ];
+        v.menu = Some(Menu { title: "New in desl", items: &items, cursor: 1 });
+        t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
+        let s = screen(&t);
+        assert!(s.contains("╭ New in desl ") && s.contains(" 1  Claude  agent") && s.contains(" 2  bash    shell"), "{s}");
+        assert!(s.lines().last().unwrap().contains("enter start"), "{s}");
+        v.menu = None;
         v.help = true;
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
         assert!(screen(&t).contains("Every other key goes to the agent."));

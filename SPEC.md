@@ -169,7 +169,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | --- | --- | --- |
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
 | `prefix f` | Fork from here: pick the agent, a new thread opens with the conversation so far | desl |
-| `prefix c` | New thread in this project, on the default agent; from a shell, in the shell's directory, which becomes a project | tmux |
+| `prefix c` | New thread in this project: a menu of the agents and the user's shell, the cursor on the project's default (`j`/`k`, `enter`, `1`…`9`, `esc`); from a shell, in the shell's directory, which becomes a project | tmux |
 | `prefix o` | Open a directory: a shell beside this project to `cd` to it, then `prefix c` | desl |
 | `prefix w` | Move the keys to the sidebar's thread list | tmux |
 | `prefix n` / `prefix p` | Next / previous thread | tmux |

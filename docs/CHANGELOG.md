@@ -3,6 +3,15 @@
 All notable changes to desl are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning.
 
+## [0.1.1]
+
+### Changed
+
+- `prefix o` opens a directory finder: type part of a name to filter the known projects,
+  zoxide's directories and the git repositories under the home directory, or type a path (`tab`
+  completes it). Picking one opens a shell there; `prefix c` then starts an agent in it.
+- The sidebar puts threads row on row, with one blank row between projects.
+
 ## [0.1.0] — first public build
 
 desl on the native route: each agent runs its own interface, and desl adds a workspace around it.

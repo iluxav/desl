@@ -3,10 +3,10 @@
 //! every key goes to it except the prefix and the key after it.
 
 use crate::conn::{Conn, Link};
-use crate::layout::{self, Action, Areas, Menu, MenuItem, Row, View};
+use crate::layout::{self, Action, Areas, Menu, MenuItem, Row, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
-use desl_ir::{Project, SHELL, Status, Thread};
+use desl_ir::{Event, Project, SHELL, Status, Thread};
 use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -129,6 +129,18 @@ struct Client {
     menu: Option<usize>,
     /// The thread `prefix x` asks to close, until the user answers y or n.
     closing: Option<String>,
+    /// A subagent's conversation shown in the pane.
+    sub: Option<Sub>,
+}
+
+struct Sub {
+    thread_id: String,
+    id: String,
+    events: Vec<Event>,
+    scroll: usize,
+    /// The request for its events in flight.
+    asked: Option<u64>,
+    last: Instant,
 }
 
 /// What a new-thread menu row starts: an agent's id, or [`SHELL`].
@@ -214,7 +226,7 @@ impl Client {
                 self.mouse(m);
                 continue;
             }
-            let ours = self.side.is_some() || self.help || self.menu.is_some() || self.closing.is_some();
+            let ours = self.side.is_some() || self.help || self.menu.is_some() || self.closing.is_some() || self.sub.is_some();
             if ours && self.armed.is_none() {
                 // Keys rawkeys leaves whole: a lone escape, and arrows in application mode.
                 if rest == [0x1b] {
@@ -300,6 +312,15 @@ impl Client {
     fn mouse(&mut self, m: Mouse) {
         let a = self.areas();
         let inside = |r: ratatui::layout::Rect| m.x >= r.x && m.x < r.x + r.width && m.y >= r.y && m.y < r.y + r.height;
+        if inside(a.pane)
+            && let Some(sub) = &mut self.sub
+        {
+            if let Some(up) = m.wheel() {
+                sub.scroll = if up { sub.scroll + 3 } else { sub.scroll.saturating_sub(3) };
+                self.dirty = true;
+            }
+            return;
+        }
         if inside(a.pane) {
             let screen = self.vt.screen();
             let wants = match screen.mouse_protocol_mode() {
@@ -342,12 +363,20 @@ impl Client {
             && m.wheel().is_none()
         {
             let skip = self.side_skip();
-            if let Some(id) = layout::thread_at(&self.projects, &self.threads, s, skip, m.y) {
-                self.side = None;
-                self.dirty = true;
-                if id != self.thread_id && self.busy.is_none() {
-                    self.go(id);
+            match layout::row_at(&self.projects, &self.threads, s, skip, m.y) {
+                Some(Row::Thread(id)) => {
+                    self.side = None;
+                    self.sub = None;
+                    self.dirty = true;
+                    if id != self.thread_id && self.busy.is_none() {
+                        self.go(id);
+                    }
                 }
+                Some(Row::Sub(id, k)) => {
+                    self.side = None;
+                    self.open_sub(&id, k);
+                }
+                _ => {}
             }
         }
     }
@@ -386,6 +415,7 @@ impl Client {
         if a != Action::New {
             self.menu = None;
         }
+        self.sub = None;
         self.closing = None;
         match a {
             Action::Close => {
@@ -539,10 +569,62 @@ impl Client {
         }
     }
 
+    /// Shows subagent `k` of `thread_id` in the pane.
+    fn open_sub(&mut self, thread_id: &str, k: usize) {
+        let Some(s) = self.threads.iter().find(|t| t.id == thread_id).and_then(|t| t.subagents.get(k)) else { return };
+        self.sub = Some(Sub {
+            thread_id: thread_id.to_string(),
+            id: s.id.clone(),
+            events: Vec::new(),
+            scroll: 0,
+            asked: None,
+            last: Instant::now(),
+        });
+        self.ask_sub();
+        self.dirty = true;
+    }
+
+    fn ask_sub(&mut self) {
+        let Some(sub) = &mut self.sub else { return };
+        let id = self.link.request(Command::Subagent { thread_id: sub.thread_id.clone(), subagent_id: sub.id.clone() });
+        sub.asked = Some(id);
+        sub.last = Instant::now();
+    }
+
+    /// The subagent shown, as its thread knows it now.
+    fn sub_meta(&self) -> Option<(&Thread, &desl_ir::Subagent)> {
+        let sub = self.sub.as_ref()?;
+        let t = self.threads.iter().find(|t| t.id == sub.thread_id)?;
+        Some((t, t.subagents.iter().find(|s| s.id == sub.id)?))
+    }
+
+    /// A running subagent's view is read again every second.
+    fn tick(&mut self) {
+        let running = self.sub_meta().is_some_and(|(t, s)| !s.finished && t.status.busy());
+        if let Some(sub) = &self.sub
+            && running
+            && sub.asked.is_none()
+            && sub.last.elapsed() >= Duration::from_secs(1)
+        {
+            self.ask_sub();
+        }
+    }
+
     fn side_key(&mut self, key: SKey) {
         self.dirty = true;
         if self.help {
             self.help = false;
+            return;
+        }
+        if let Some(sub) = &mut self.sub {
+            match key {
+                SKey::Close | SKey::Char('q') => self.sub = None,
+                SKey::Up | SKey::Char('k') => sub.scroll += 1,
+                SKey::Down | SKey::Char('j') => sub.scroll = sub.scroll.saturating_sub(1),
+                SKey::Char('g') => sub.scroll = usize::MAX / 2,
+                SKey::Char('G') => sub.scroll = 0,
+                _ => {}
+            }
             return;
         }
         if let Some(id) = self.closing.take() {
@@ -560,15 +642,22 @@ impl Client {
             Some(Row::Thread(id)) => Some(id.clone()),
             _ => None,
         };
+        let pickable = |i: usize| matches!(rows.get(i), Some(Row::Thread(_) | Row::Sub(..)));
         match key {
+            SKey::Enter if matches!(rows.get(cursor), Some(Row::Sub(..))) => {
+                if let Some(Row::Sub(id, k)) = rows.get(cursor).cloned() {
+                    self.side = None;
+                    self.open_sub(&id, k);
+                }
+            }
             SKey::Close | SKey::Char('q') => self.side = None,
             SKey::Down | SKey::Char('j') => {
-                if let Some(i) = (cursor + 1..rows.len()).find(|&i| thread_at(i).is_some()) {
+                if let Some(i) = (cursor + 1..rows.len()).find(|&i| pickable(i)) {
                     self.side = Some(i);
                 }
             }
             SKey::Up | SKey::Char('k') => {
-                if let Some(i) = (0..cursor).rev().find(|&i| thread_at(i).is_some()) {
+                if let Some(i) = (0..cursor).rev().find(|&i| pickable(i)) {
                     self.side = Some(i);
                 }
             }
@@ -613,18 +702,40 @@ impl Client {
             help: self.help,
             scrolled: self.scrolled,
             menu: None,
+            sub: None,
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
         let title = format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()));
-        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), ..view };
+        // A subagent's conversation, laid out by the transcript renderer.
+        let width = a.pane.width as usize;
+        let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
+            (Some(sub), Some((t, _))) => {
+                let mut m = crate::model::Thread::new(t.clone());
+                m.load(&sub.events, None);
+                crate::ui::transcript::layout(&m.items, &[], width, None, None).lines
+            }
+            _ => Vec::new(),
+        };
+        let sub_view = self.sub.as_ref().map(|sub| {
+            let (title, running) = match self.sub_meta() {
+                Some((t, s)) => {
+                    let title = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
+                    (title, !s.finished && t.status.busy())
+                }
+                None => ("gone".to_string(), false),
+            };
+            let max = sub_lines.len().saturating_sub(a.pane.height as usize);
+            SubView { title, running, lines: &sub_lines, scroll: sub.scroll.min(max) }
+        });
+        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), sub: sub_view, ..view };
         let screen = self.vt.screen();
         let _ = self.term.draw(|f| layout::draw(f, &view, &a, screen));
         let next = self.term.backend().buffer().clone();
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend_from_slice(&layout::paint(self.shown.as_ref(), &next));
         let (row, col) = screen.cursor_position();
-        if self.side.is_none() && self.menu.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
+        if self.side.is_none() && self.menu.is_none() && self.sub.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
             frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", a.pane.y + row + 1, a.pane.x + col + 1).as_bytes());
         } else {
             frame.extend_from_slice(b"\x1b[?25l");
@@ -687,6 +798,18 @@ impl Client {
     }
 
     fn reply(&mut self, id: u64, ok: Option<Reply>, error: Option<String>) {
+        if let Some(sub) = &mut self.sub
+            && sub.asked == Some(id)
+        {
+            sub.asked = None;
+            match (ok, error) {
+                (Some(Reply::Events { events }), _) => sub.events = events,
+                (_, Some(sentence)) => self.notice = Some(sentence),
+                _ => {}
+            }
+            self.dirty = true;
+            return;
+        }
         let mine = match &self.busy {
             Some(Busy::Switch(r) | Busy::Attach(r, _) | Busy::Create(r)) => *r == id,
             None => false,
@@ -846,6 +969,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         agents: ws.agents,
         menu: None,
         closing: None,
+        sub: None,
     };
     c.screen_from(&replay);
     c.title();
@@ -869,6 +993,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
             break bye;
         }
         c.resized();
+        c.tick();
         if c.dirty && c.painted.elapsed() >= FRAME {
             c.paint();
         }

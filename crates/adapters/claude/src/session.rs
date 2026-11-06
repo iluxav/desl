@@ -44,11 +44,16 @@ pub struct Reader {
     parser: Parser,
     /// The model of the last reply, to report a change once.
     model: Option<String>,
+    /// Read a subagent's file, whose every line is a sidechain, instead of a session's.
+    sidechain: bool,
 }
 
 impl Reader {
     pub fn new(cwd: &Path) -> Reader {
-        Reader { parser: Parser::new(cwd), model: None }
+        Reader { parser: Parser::new(cwd), model: None, sidechain: false }
+    }
+    pub fn subagent(cwd: &Path) -> Reader {
+        Reader { parser: Parser::new(cwd), model: None, sidechain: true }
     }
 }
 
@@ -62,7 +67,7 @@ fn effort_set(text: &str) -> Option<String> {
 impl SessionReader for Reader {
     fn line(&mut self, line: &str) -> Vec<Reading> {
         let Ok(mut v) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        if (v.get("isSidechain").and_then(Value::as_bool) == Some(true)) != self.sidechain {
             return Vec::new();
         }
         match v.get("type").and_then(Value::as_str) {
@@ -222,6 +227,24 @@ pub fn subagents(cwd: &Path, session_id: &str) -> Vec<desl_ir::Subagent> {
     }
 }
 
+/// What subagent `agent_id` of session `session_id` said and did, as IR events.
+pub fn subagent_events(cwd: &Path, session_id: &str, agent_id: &str) -> Vec<desl_ir::EventKind> {
+    let Some(f) = file(cwd, session_id) else { return Vec::new() };
+    if agent_id.contains(['/', '.']) {
+        return Vec::new();
+    }
+    let path = f.with_extension("").join("subagents").join(format!("agent-{agent_id}.jsonl"));
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let mut reader = Reader::subagent(cwd);
+    text.lines()
+        .flat_map(|l| reader.line(l))
+        .filter_map(|r| match r {
+            Reading::Event(kind) => Some(kind),
+            _ => None,
+        })
+        .collect()
+}
+
 fn subagents_in(dir: &Path) -> Vec<desl_ir::Subagent> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<desl_ir::Subagent> = entries
@@ -375,5 +398,25 @@ mod tests {
         );
         assert_eq!((got[1].id.as_str(), got[1].finished), ("b2", true));
         assert!(subagents_in(Path::new("/nonexistent")).is_empty());
+    }
+
+    #[test]
+    fn a_subagent_file_reads_as_its_own_conversation() {
+        let lines = [
+            r#"{"type":"user","isSidechain":true,"agentId":"a1","uuid":"u1","message":{"role":"user","content":"Write a haiku"}}"#,
+            r#"{"type":"assistant","isSidechain":true,"agentId":"a1","uuid":"u2","message":{"role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"Rivers run"}]}}"#,
+        ];
+        let mut sub = Reader::subagent(Path::new("/w"));
+        let mut main = Reader::new(Path::new("/w"));
+        let got: Vec<Reading> = lines.iter().flat_map(|l| sub.line(l)).collect();
+        assert!(
+            got.iter().any(|r| matches!(r, Reading::Event(desl_ir::EventKind::UserMessage { text, .. }) if text == "Write a haiku")),
+            "{got:?}"
+        );
+        assert!(
+            got.iter().any(|r| matches!(r, Reading::Event(desl_ir::EventKind::AssistantMessage { text, .. }) if text == "Rivers run")),
+            "{got:?}"
+        );
+        assert!(lines.iter().flat_map(|l| main.line(l)).next().is_none(), "the session reader skips subagent lines");
     }
 }

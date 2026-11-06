@@ -1480,6 +1480,26 @@ impl Engine {
                 }
                 return None;
             }
+            Command::Subagent { thread_id, subagent_id } => self.idx(&thread_id).map(|i| {
+                let t = &self.threads[i];
+                let session = t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone());
+                let kinds = match (self.adapter(&t.active_agent), session) {
+                    (Some(a), Some(s)) => a.subagent_events(Path::new(&t.cwd), &s, &subagent_id),
+                    _ => Vec::new(),
+                };
+                let events = kinds
+                    .into_iter()
+                    .enumerate()
+                    .map(|(n, kind)| Event {
+                        index: n as u64 + 1,
+                        thread_id: thread_id.clone(),
+                        timestamp: 0,
+                        agent: t.active_agent.clone(),
+                        kind,
+                    })
+                    .collect();
+                Reply::Events { events }
+            }),
             Command::Doctor => Ok(Reply::Doctor { checks: self.doctor() }),
             Command::Shutdown => {
                 self.stopping = true;

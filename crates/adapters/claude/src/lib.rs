@@ -146,6 +146,10 @@ impl Adapter for Claude {
         session::subagents(cwd, session_id)
     }
 
+    fn subagent_events(&self, cwd: &Path, session_id: &str, agent_id: &str) -> Vec<desl_ir::EventKind> {
+        session::subagent_events(cwd, session_id, agent_id)
+    }
+
     fn session_reader(&self, cwd: &Path) -> Option<Box<dyn SessionReader>> {
         Some(Box::new(session::Reader::new(cwd)))
     }

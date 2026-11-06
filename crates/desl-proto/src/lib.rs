@@ -212,6 +212,11 @@ pub enum Command {
         rows: u16,
         cols: u16,
     },
+    /// The conversation of one of a thread's subagents, read-only. Replied with `events`.
+    Subagent {
+        thread_id: String,
+        subagent_id: String,
+    },
     /// Stops every agent and the daemon.
     Shutdown,
 }

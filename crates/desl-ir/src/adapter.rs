@@ -182,6 +182,11 @@ pub trait Adapter: Send + Sync {
         let _ = (cwd, session_id);
         Vec::new()
     }
+    /// What subagent `agent_id` of session `session_id` said and did.
+    fn subagent_events(&self, cwd: &std::path::Path, session_id: &str, agent_id: &str) -> Vec<crate::EventKind> {
+        let _ = (cwd, session_id, agent_id);
+        Vec::new()
+    }
     /// A reader for this agent's session files; None when the agent has none.
     fn session_reader(&self, cwd: &std::path::Path) -> Option<Box<dyn SessionReader>> {
         let _ = cwd;

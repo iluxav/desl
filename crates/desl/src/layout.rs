@@ -172,16 +172,22 @@ pub fn side_skip(total: usize, keep: usize, area: Rect) -> usize {
     if total <= room { 0 } else { (keep + 1).saturating_sub(room).min(total - room) }
 }
 
-/// The thread at sidebar line `y` (terminal row), if any.
-pub fn thread_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usize, y: u16) -> Option<String> {
+/// The sidebar row at line `y` (terminal row), if any.
+pub fn row_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usize, y: u16) -> Option<Row> {
     if y + 1 >= area.y + area.height {
         return None;
     }
     let i = (y.checked_sub(area.y + SIDE_TOP)? as usize) + skip;
-    match rows(projects, threads).get(i) {
-        Some(Row::Thread(id) | Row::Sub(id, _)) => Some(id.clone()),
-        _ => None,
-    }
+    rows(projects, threads).get(i).cloned()
+}
+
+/// A subagent's conversation shown in the pane instead of the agent.
+pub struct SubView<'a> {
+    pub title: String,
+    pub running: bool,
+    pub lines: &'a [Line<'static>],
+    /// Lines up from the bottom; 0 follows the end.
+    pub scroll: usize,
 }
 
 /// One choice in a menu: what it starts, and why it cannot when it cannot.
@@ -213,6 +219,7 @@ pub struct View<'a> {
     /// Lines scrolled back in the agent's screen, 0 when following it.
     pub scrolled: usize,
     pub menu: Option<Menu<'a>>,
+    pub sub: Option<SubView<'a>>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -313,6 +320,20 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
 /// id and status on the right.
 fn main_panel(f: &mut Frame, v: &View, area: Rect) {
     let mut block = panel(v.cursor.is_none() && !v.help);
+    if let Some(s) = &v.sub {
+        let state = if s.running { Span::styled(" ● running ", theme::accent()) } else { Span::styled(" ✓ done ", theme::dim()) };
+        block = block
+            .title(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("Subagent", theme::accent().add_modifier(Modifier::BOLD)),
+                Span::styled(" · ", theme::muted()),
+                Span::styled(s.title.clone(), theme::normal()),
+                Span::raw(" "),
+            ]))
+            .title(Line::from(state).right_aligned());
+        f.render_widget(block, area);
+        return;
+    }
     if let Some(t) = v.threads.iter().find(|t| t.id == v.current) {
         // A shell's header names where it started; an agent's, its project.
         let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
@@ -354,6 +375,13 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
         Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
+    } else if v.sub.is_some() {
+        let mut spans = vec![Span::raw("  ")];
+        for (k, what) in [("esc", "back to the agent"), ("j/k", "scroll"), ("g/G", "top/bottom"), ("wheel", "scroll")] {
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+        }
+        Line::from(spans)
     } else if v.menu.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("esc", "cancel")] {
@@ -503,7 +531,16 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
         sidebar(f, v, s);
     }
     main_panel(f, v, a.main);
-    pane(f.buffer_mut(), a.pane, screen);
+    match &v.sub {
+        Some(s) => {
+            let h = a.pane.height as usize;
+            let top = s.lines.len().saturating_sub(h + s.scroll);
+            let shown: Vec<Line<'static>> = s.lines.iter().skip(top).take(h).cloned().collect();
+            f.render_widget(Clear, a.pane);
+            f.render_widget(Paragraph::new(shown), a.pane);
+        }
+        None => pane(f.buffer_mut(), a.pane, screen),
+    }
     footer(f, v, a.footer);
     if let Some(m) = &v.menu {
         menu(f, m, a.pane);
@@ -669,19 +706,15 @@ mod tests {
         assert_eq!(r[2], Row::Sub("t-1".into(), 2), "the newest four only");
         assert_eq!(r[6], Row::Thread("t-2".into()));
         let a = areas(120, 30, true);
-        assert_eq!(
-            thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 2),
-            Some("t-1".into()),
-            "a subagent's row opens its thread"
-        );
+        assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 2), Some(Row::Sub("t-1".into(), 2)));
         threads[2].subagents.clear();
         let r = rows(&projects, &threads);
         assert_eq!(r[0], Row::Project("a".into()));
         assert_eq!(r[3], Row::Gap);
         assert_eq!(r[4], Row::Project("b".into()));
         let a = areas(120, 30, true);
-        assert_eq!(thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 1), Some("t-1".into()));
-        assert_eq!(thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP), None);
+        assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 1), Some(Row::Thread("t-1".into())));
+        assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP), Some(Row::Project("a".into())));
     }
 
     #[test]
@@ -714,6 +747,7 @@ mod tests {
             help: false,
             scrolled: 0,
             menu: None,
+            sub: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();

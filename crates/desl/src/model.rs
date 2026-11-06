@@ -362,6 +362,7 @@ mod tests {
             bindings: Default::default(),
             queued: vec![],
             pending_approval: None,
+            subagents: Vec::new(),
             git: GitState::default(),
         }
     }

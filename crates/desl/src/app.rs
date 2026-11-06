@@ -161,6 +161,7 @@ fn placeholder() -> Thread {
         bindings: Default::default(),
         queued: Vec::new(),
         pending_approval: None,
+        subagents: Vec::new(),
         git: GitState::default(),
     })
 }

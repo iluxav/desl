@@ -176,6 +176,12 @@ pub trait Adapter: Send + Sync {
         let _ = (cwd, session_id, since);
         None
     }
+    /// The helper agents session `session_id` started, oldest first; empty for an agent that
+    /// has none or does not record them.
+    fn subagents(&self, cwd: &std::path::Path, session_id: &str) -> Vec<crate::Subagent> {
+        let _ = (cwd, session_id);
+        Vec::new()
+    }
     /// A reader for this agent's session files; None when the agent has none.
     fn session_reader(&self, cwd: &std::path::Path) -> Option<Box<dyn SessionReader>> {
         let _ = cwd;

@@ -47,6 +47,7 @@ fn thread(id: &str, project: &str, name: &str, agent: &str, status: Status, crea
         .into(),
         queued: vec![],
         pending_approval: None,
+        subagents: Vec::new(),
         git: GitState { branch: Some("main".into()), ahead: 2, behind: 0 },
     }
 }

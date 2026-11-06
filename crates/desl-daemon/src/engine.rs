@@ -501,6 +501,7 @@ impl Engine {
             bindings: Default::default(),
             queued: Vec::new(),
             pending_approval: None,
+            subagents: Vec::new(),
         };
         let id = thread.id.clone();
         self.threads.push(thread);
@@ -1040,7 +1041,21 @@ impl Engine {
             }
             self.persist(thread_id);
         }
+        self.refresh_subagents(thread_id);
         self.check_asking(thread_id);
+    }
+
+    /// The helpers the thread's agent started in its current session, from the agent's files.
+    fn refresh_subagents(&mut self, thread_id: &str) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        let t = &self.threads[i];
+        let Some(session) = t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone()) else { return };
+        let Some(adapter) = self.adapter(&t.active_agent) else { return };
+        let found = adapter.subagents(Path::new(&t.cwd), &session);
+        if found != self.threads[i].subagents {
+            self.threads[i].subagents = found;
+            self.persist(thread_id);
+        }
     }
 
     /// `waiting` while the agent's screen shows it asking something in the middle of a turn.
@@ -1743,6 +1758,7 @@ impl Engine {
             bindings: Default::default(),
             queued: Vec::new(),
             pending_approval: None,
+            subagents: Vec::new(),
             // `yolo` is set per thread, by hand; a fork does not inherit it.
             permission_mode: match parent.permission_mode {
                 PermissionMode::Yolo => PermissionMode::default(),

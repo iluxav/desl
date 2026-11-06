@@ -481,3 +481,13 @@ stack paragraph of `SPEC.md`.
 
 `portable-pty` 0.9 and `vt100` 0.18 served Prototype B's panes and left with it; `proto-n` uses them again (with `crossterm` 0.29 for raw mode and `chrono` for timestamps).
 
+
+## Subagents (Claude Code 2.1.318)
+
+Claude keeps each subagent of session `<id>` beside the session file, in `<id>/subagents/`:
+`agent-<agentId>.jsonl` (its own transcript, every line `isSidechain: true` with `agentId`) and
+`agent-<agentId>.meta.json`. The meta file is written at launch with `agentType`,
+`description`, `toolUseId`, `spawnDepth`, `requestShape` (`foreground` or `background`) and
+`pickedEffortModel`; `"finished": true` is added when the subagent is done (watched live
+2026-11-06). A subagent whose turn was stopped stays unfinished, so desl shows one as running
+only while its thread is busy. Codex records none that desl reads.

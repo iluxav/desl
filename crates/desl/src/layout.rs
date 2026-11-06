@@ -131,14 +131,19 @@ pub fn areas(cols: u16, rows: u16, sidebar: bool) -> Areas {
     }
 }
 
-/// One line of the sidebar: a project, a thread that a click or `enter` opens, or the space
-/// between two projects.
+/// One line of the sidebar: a project, a thread that a click or `enter` opens, one of a
+/// thread's subagents (a click opens its thread), or the space between two projects.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Row {
     Project(String),
     Thread(String),
+    /// A thread and the index of one of its subagents.
+    Sub(String, usize),
     Gap,
 }
+
+/// A thread lists at most this many of its subagents, the newest.
+pub const SUBAGENTS_SHOWN: usize = 4;
 
 pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     let mut out = Vec::new();
@@ -152,6 +157,8 @@ pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
             out.push(Row::Project(t.project_id.clone()));
         }
         out.push(Row::Thread(t.id.clone()));
+        let n = t.subagents.len();
+        out.extend((n.saturating_sub(SUBAGENTS_SHOWN)..n).map(|k| Row::Sub(t.id.clone(), k)));
     }
     out
 }
@@ -172,7 +179,7 @@ pub fn thread_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usi
     }
     let i = (y.checked_sub(area.y + SIDE_TOP)? as usize) + skip;
     match rows(projects, threads).get(i) {
-        Some(Row::Thread(id)) => Some(id.clone()),
+        Some(Row::Thread(id) | Row::Sub(id, _)) => Some(id.clone()),
         _ => None,
     }
 }
@@ -243,6 +250,24 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
     for (i, row) in rows(v.projects, v.threads).into_iter().enumerate().skip(v.skip) {
         match row {
             Row::Gap => lines.push(Line::default()),
+            Row::Sub(id, k) => {
+                let Some(t) = v.threads.iter().find(|t| t.id == id) else { continue };
+                let Some(s) = t.subagents.get(k) else { continue };
+                // Running only while its thread's turn is: one left unfinished by a stopped turn is not.
+                let (glyph, style) = match (s.finished, t.status.busy()) {
+                    (true, _) => ("✓", theme::muted()),
+                    (false, true) => ("●", theme::accent()),
+                    (false, false) => ("○", theme::muted()),
+                };
+                let what = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
+                let label = if s.kind == "general-purpose" || s.description.is_empty() { what } else { format!("{} · {what}", s.kind) };
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(glyph, style),
+                    Span::raw(" "),
+                    Span::styled(truncate_end(&label, w.saturating_sub(6)), if s.finished { theme::muted() } else { theme::dim() }),
+                ]));
+            }
             Row::Project(id) => {
                 // The folder's name, then dimmer where it lives: `desl  ~/Projects`.
                 let path = v.projects.iter().find(|p| p.id == id).map_or(id.clone(), |p| p.path.clone());
@@ -629,6 +654,27 @@ mod tests {
         ];
         let ids: Vec<&str> = order(&projects, &threads).iter().map(|t| t.id.as_str()).collect();
         assert_eq!(ids, ["t-1", "t-2", "t-3"]);
+        let mut threads = threads;
+        threads[2].subagents = (0..6)
+            .map(|k| desl_ir::Subagent {
+                id: format!("s{k}"),
+                kind: "Explore".into(),
+                description: "look".into(),
+                finished: k < 5,
+                started_at: k,
+            })
+            .collect();
+        let r = rows(&projects, &threads);
+        assert_eq!(r[1], Row::Thread("t-1".into()));
+        assert_eq!(r[2], Row::Sub("t-1".into(), 2), "the newest four only");
+        assert_eq!(r[6], Row::Thread("t-2".into()));
+        let a = areas(120, 30, true);
+        assert_eq!(
+            thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 2),
+            Some("t-1".into()),
+            "a subagent's row opens its thread"
+        );
+        threads[2].subagents.clear();
         let r = rows(&projects, &threads);
         assert_eq!(r[0], Row::Project("a".into()));
         assert_eq!(r[3], Row::Gap);

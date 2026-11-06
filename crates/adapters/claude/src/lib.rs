@@ -142,6 +142,10 @@ impl Adapter for Claude {
         session::file(cwd, id).map(|p| (id.to_string(), p))
     }
 
+    fn subagents(&self, cwd: &Path, session_id: &str) -> Vec<desl_ir::Subagent> {
+        session::subagents(cwd, session_id)
+    }
+
     fn session_reader(&self, cwd: &Path) -> Option<Box<dyn SessionReader>> {
         Some(Box::new(session::Reader::new(cwd)))
     }

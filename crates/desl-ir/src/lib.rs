@@ -390,6 +390,22 @@ pub struct Thread {
     pub pending_approval: Option<PendingApproval>,
     #[serde(default)]
     pub git: GitState,
+    /// Helpers the agent started in its current session (Claude's subagents), oldest first.
+    /// Read from the agent's files while it runs; never stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagents: Vec<Subagent>,
+}
+
+/// A helper agent that a thread's agent started.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Subagent {
+    pub id: String,
+    /// The agent's own word for its kind: `general-purpose`, `Explore`.
+    pub kind: String,
+    pub description: String,
+    pub finished: bool,
+    /// Milliseconds since the epoch.
+    pub started_at: i64,
 }
 
 impl Thread {

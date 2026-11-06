@@ -212,6 +212,40 @@ fn write_in(home: &Path, cwd: &Path, events: &[EventKind]) -> Result<(String, Pa
     Ok((session_id, path, out.len() as u64))
 }
 
+/// The subagents of session `session_id`, oldest first. Claude keeps each one as
+/// `<session>/subagents/agent-<id>.jsonl` beside a `.meta.json` it writes at launch (agentType,
+/// description) and marks `"finished": true` when the subagent is done.
+pub fn subagents(cwd: &Path, session_id: &str) -> Vec<desl_ir::Subagent> {
+    match file(cwd, session_id) {
+        Some(f) => subagents_in(&f.with_extension("").join("subagents")),
+        None => Vec::new(),
+    }
+}
+
+fn subagents_in(dir: &Path) -> Vec<desl_ir::Subagent> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut out: Vec<desl_ir::Subagent> = entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let id = name.strip_prefix("agent-")?.strip_suffix(".meta.json")?.to_string();
+            let meta: serde_json::Value = serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok()?;
+            let md = e.metadata().ok()?;
+            let when = md.created().or_else(|_| md.modified()).ok()?;
+            let started_at = when.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+            Some(desl_ir::Subagent {
+                id,
+                kind: meta.get("agentType").and_then(|v| v.as_str()).unwrap_or("agent").to_string(),
+                description: meta.get("description").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                finished: meta.get("finished").and_then(|v| v.as_bool()).unwrap_or(false),
+                started_at,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.started_at.cmp(&b.started_at).then(a.id.cmp(&b.id)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +355,25 @@ mod tests {
             assert_eq!(w[1]["parentUuid"], w[0]["uuid"]);
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn subagents_come_from_their_meta_files() {
+        let dir = std::env::temp_dir().join(format!("desl-subagents-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agent-a1.meta.json"), r#"{"agentType":"Explore","description":"find auth"}"#).unwrap();
+        std::fs::write(dir.join("agent-a1.jsonl"), "").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(dir.join("agent-b2.meta.json"), r#"{"agentType":"general-purpose","description":"write tests","finished":true}"#)
+            .unwrap();
+        let got = subagents_in(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(
+            (got[0].id.as_str(), got[0].kind.as_str(), got[0].description.as_str(), got[0].finished),
+            ("a1", "Explore", "find auth", false)
+        );
+        assert_eq!((got[1].id.as_str(), got[1].finished), ("b2", true));
+        assert!(subagents_in(Path::new("/nonexistent")).is_empty());
     }
 }

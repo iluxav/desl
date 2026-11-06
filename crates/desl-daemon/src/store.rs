@@ -218,6 +218,7 @@ impl Store {
                 bindings: bindings.remove(&id).unwrap_or_default(),
                 queued: queued.remove(&id).unwrap_or_default(),
                 pending_approval: None,
+                subagents: Vec::new(),
                 git: GitState::default(),
                 id,
             })
@@ -230,7 +231,7 @@ impl Store {
         self.conn.execute(
             "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT (id) DO UPDATE SET name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12",
+             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12",
             params![
                 t.id, t.project_id, t.name, t.cwd, t.worktree, t.parent_id, t.fork_point, t.active_agent,
                 t.status.word(), t.permission_mode.word(), t.created_at, t.updated_at
@@ -432,6 +433,7 @@ mod tests {
             bindings: BTreeMap::new(),
             queued: vec![],
             pending_approval: None,
+            subagents: Vec::new(),
             git: GitState::default(),
         }
     }

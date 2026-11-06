@@ -17,8 +17,11 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Switch,
+    Fork,
     New,
     Open,
+    Rename,
+    Info,
     Threads,
     Next,
     Prev,
@@ -34,6 +37,8 @@ pub enum Action {
 /// from this table and [`action`] reads it, so the two cannot disagree.
 pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "s", "Switch this thread to the other agent"),
+    ("Agent", "f", "Fork: this conversation in a new thread, on either agent"),
+    ("Agent", "i", "Info: agent, session ids, model, directory"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
     ("Threads", "c", "New thread: pick Claude, Codex or a shell"),
     ("Threads", "o", "Open a directory: a shell to cd into it, then c"),
@@ -41,6 +46,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Threads", "p", "Previous thread"),
     ("Threads", "1…9", "Jump to thread n"),
     ("Threads", "l", "Back to the thread shown before"),
+    ("Threads", ",", "Rename this thread"),
     ("Threads", "x", "Close this thread: its agent or shell ends"),
     ("desl", "b", "Hide or show the sidebar"),
     ("desl", "d", "Detach; the agents keep working"),
@@ -54,6 +60,9 @@ pub fn action(c: char) -> Option<Action> {
         's' => Action::Switch,
         'w' => Action::Threads,
         'c' => Action::New,
+        'f' => Action::Fork,
+        ',' => Action::Rename,
+        'i' => Action::Info,
         'o' => Action::Open,
         'n' => Action::Next,
         'p' => Action::Prev,
@@ -227,6 +236,10 @@ pub struct View<'a> {
     pub now: i64,
     /// The subagent shown in the pane, (thread, subagent id): its row takes the tint.
     pub shown_sub: Option<(&'a str, &'a str)>,
+    /// The new name being typed for the thread, in the key line.
+    pub renaming: Option<&'a str>,
+    /// `prefix i`: (label, value) rows shown in a box over the pane.
+    pub info: Option<&'a [(String, String)]>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -468,6 +481,13 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
         Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
+    } else if let Some(name) = v.renaming {
+        Line::from(vec![
+            Span::styled("  Rename ", theme::bold()),
+            Span::styled(name.to_string(), theme::normal()),
+            Span::styled("▏", theme::accent()),
+            Span::styled("   enter save   esc cancel", theme::dim()),
+        ])
     } else if v.sub.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("esc", "back to the agent"), ("j/k", "scroll"), ("g/G", "top/bottom"), ("wheel", "scroll")] {
@@ -501,6 +521,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ("o", "open dir"),
             ("w", "threads"),
             ("n p", "next prev"),
+            ("f", "fork"),
             ("x", "close"),
             ("?", "help"),
             ("d", "detach"),
@@ -539,6 +560,28 @@ fn help(f: &mut Frame, area: Rect) {
     f.render_widget(
         Paragraph::new(lines),
         Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), inner.height.saturating_sub(1)),
+    );
+}
+
+/// `prefix i`: the thread's facts in a box over the pane, labels dim, values plain.
+fn info(f: &mut Frame, rows: &[(String, String)], area: Rect) {
+    let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0);
+    let value_w = rows.iter().map(|(_, v)| v.width()).max().unwrap_or(0);
+    let w = ((label_w + value_w + 9) as u16).min(area.width);
+    let h = (rows.len() as u16 + 4).min(area.height);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 3, w, h);
+    let inner_w = (w as usize).saturating_sub(6 + label_w);
+    let lines: Vec<Line<'static>> = rows
+        .iter()
+        .map(|(l, v)| Line::from(vec![Span::styled(format!("{l:<label_w$}  "), theme::dim()), Span::raw(truncate_start(v, inner_w))]))
+        .collect();
+    let block = panel(true).title(Line::from(Span::styled(" Thread ", theme::bold())));
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(block, r);
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), inner.height.saturating_sub(1)),
     );
 }
 
@@ -637,6 +680,9 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
     footer(f, v, a.footer);
     if let Some(m) = &v.menu {
         menu(f, m, a.pane);
+    }
+    if let Some(rows) = v.info {
+        info(f, rows, a.pane);
     }
     if v.help {
         help(f, a.pane);
@@ -847,6 +893,8 @@ mod tests {
             sub: None,
             now: 0,
             shown_sub: None,
+            renaming: None,
+            info: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
@@ -891,6 +939,8 @@ mod tests {
             sub: None,
             now: 0,
             shown_sub: Some(("t-1a", "s1")),
+            renaming: None,
+            info: None,
         };
         t2.draw(|f| draw(f, &v2, &a, vt.screen())).unwrap();
         let b2 = t2.backend().buffer();

@@ -108,6 +108,7 @@ enum SKey {
     Down,
     Enter,
     Close,
+    Back,
     Char(char),
 }
 
@@ -148,6 +149,12 @@ struct Client {
     closing: Option<String>,
     /// A subagent's conversation shown in the pane.
     sub: Option<Sub>,
+    /// The menu is `prefix f`'s (fork onto an agent), not `prefix c`'s.
+    forking: bool,
+    /// `prefix ,`: the name being typed.
+    renaming: Option<String>,
+    /// `prefix i`: the facts shown.
+    info: Option<Vec<(String, String)>>,
 }
 
 struct Sub {
@@ -243,7 +250,13 @@ impl Client {
                 self.mouse(m);
                 continue;
             }
-            let ours = self.side.is_some() || self.help || self.menu.is_some() || self.closing.is_some() || self.sub.is_some();
+            let ours = self.side.is_some()
+                || self.help
+                || self.menu.is_some()
+                || self.closing.is_some()
+                || self.sub.is_some()
+                || self.renaming.is_some()
+                || self.info.is_some();
             if ours && self.armed.is_none() {
                 // Keys rawkeys leaves whole: a lone escape, and arrows in application mode.
                 if rest == [0x1b] {
@@ -309,6 +322,7 @@ impl Client {
                 let key = match k.code {
                     Some(13) => SKey::Enter,
                     Some(27) => SKey::Close,
+                    Some(127 | 8) => SKey::Back,
                     Some(c) => match char::from_u32(c) {
                         Some(ch) => SKey::Char(ch),
                         None => continue,
@@ -475,9 +489,27 @@ impl Client {
                 let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
                 self.busy = Some(Busy::Switch(id));
             }
-            Action::New if self.menu.is_some() => self.menu = None,
+            Action::New | Action::Fork if self.menu.is_some() => self.menu = None,
+            Action::Fork if self.agent == SHELL => self.notice("A shell has no conversation to fork."),
+            Action::Fork => {
+                self.side = None;
+                self.forking = true;
+                // The cursor starts on the thread's own agent.
+                let at = self.choices().iter().position(|c| c.start == self.agent).unwrap_or(0);
+                self.menu = Some(at);
+            }
+            Action::Rename => {
+                self.side = None;
+                let name = self.threads.iter().find(|t| t.id == self.thread_id).map(|t| t.name.clone()).unwrap_or_default();
+                self.renaming = Some(name);
+            }
+            Action::Info => {
+                self.side = None;
+                self.info = Some(self.facts());
+            }
             Action::New => {
                 self.side = None;
+                self.forking = false;
                 // The cursor starts on the project's default agent, else the first that works.
                 let choices = self.choices();
                 let default = self.project().and_then(|p| p.default_agent.clone());
@@ -525,7 +557,38 @@ impl Client {
         self.projects.iter().find(|p| p.id == t.project_id)
     }
 
-    /// What `prefix c` offers: every agent desl drives, then the user's shell.
+    /// `prefix i`: what the thread is and where its agents keep it.
+    fn facts(&self) -> Vec<(String, String)> {
+        let Some(t) = self.threads.iter().find(|t| t.id == self.thread_id) else { return Vec::new() };
+        let mut out = vec![
+            ("Thread".to_string(), t.id.clone()),
+            ("Title".to_string(), if t.name.is_empty() { "New thread".into() } else { t.name.clone() }),
+            ("Directory".to_string(), layout::tilde(&t.cwd)),
+        ];
+        if let Some(b) = &t.git.branch {
+            out.push(("Branch".into(), b.clone()));
+        }
+        if let Some(p) = &t.parent_id {
+            out.push(("Forked from".into(), format!("{p} at event {}", t.fork_point.unwrap_or(0))));
+        }
+        out.push(("Agent".into(), t.active_agent.clone()));
+        out.push(("Permissions".into(), t.permission_mode.word().to_string()));
+        for (agent, b) in &t.bindings {
+            let mark = if *agent == t.active_agent { " (on screen)" } else { "" };
+            out.push((format!("{agent} session"), format!("{}{mark}", b.session_id.as_deref().unwrap_or("none yet"))));
+            let model = b.model_choice.clone().or(b.model.clone()).unwrap_or_else(|| "its default".into());
+            let effort = b.effort_choice.as_deref().map(|e| format!(" · {e}")).unwrap_or_default();
+            out.push((format!("{agent} model"), format!("{model}{effort}")));
+        }
+        if !t.subagents.is_empty() {
+            let done = t.subagents.iter().filter(|s| s.finished).count();
+            out.push(("Subagents".into(), format!("{} ({done} done)", t.subagents.len())));
+        }
+        out
+    }
+
+    /// What `prefix c` offers: every agent desl drives, then the user's shell. `prefix f`
+    /// offers the agents only.
     fn choices(&self) -> Vec<Choice> {
         let mut out: Vec<Choice> = self
             .agents
@@ -545,7 +608,9 @@ impl Client {
                 Choice { start: a.id.clone(), item: MenuItem { label, note, enabled: a.usable() } }
             })
             .collect();
-        out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
+        if !self.forking {
+            out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
+        }
         out
     }
 
@@ -563,6 +628,11 @@ impl Client {
             return;
         }
         self.menu = None;
+        if self.forking {
+            let id = self.link.request(Command::Fork { thread_id: self.thread_id.clone(), agent: Some(choice.start.clone()), at: None });
+            self.busy = Some(Busy::Create(id));
+            return;
+        }
         let cwd = match (self.project(), self.threads.iter().find(|t| t.id == self.thread_id)) {
             (Some(p), _) => p.path.clone(),
             (None, Some(t)) => t.cwd.clone(),
@@ -582,7 +652,7 @@ impl Client {
             SKey::Up | SKey::Char('k') => self.menu = Some(at.saturating_sub(1)),
             SKey::Enter => self.start(at),
             SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
-            SKey::Char(_) => {}
+            SKey::Char(_) | SKey::Back => {}
         }
     }
 
@@ -644,6 +714,27 @@ impl Client {
             }
             return;
         }
+        if self.info.take().is_some() {
+            return;
+        }
+        if let Some(name) = &mut self.renaming {
+            match key {
+                SKey::Close => self.renaming = None,
+                SKey::Back => {
+                    name.pop();
+                }
+                SKey::Char(c) if !c.is_control() && name.chars().count() < desl_ir::MAX_NAME => name.push(c),
+                SKey::Enter => {
+                    let name = self.renaming.take().unwrap_or_default();
+                    let name = name.trim().to_string();
+                    if !name.is_empty() {
+                        self.link.request(Command::Rename { thread_id: self.thread_id.clone(), name });
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(id) = self.closing.take() {
             if matches!(key, SKey::Char('y' | 'Y')) {
                 self.link.request(Command::RemoveThread { thread_id: id });
@@ -687,7 +778,7 @@ impl Client {
             SKey::Char(c @ '1'..='9') => {
                 self.act(Action::Jump(c as usize - '0' as usize));
             }
-            SKey::Char(_) => {}
+            SKey::Char(_) | SKey::Back => {}
         }
     }
 
@@ -723,10 +814,16 @@ impl Client {
             sub: None,
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
             shown_sub: self.sub.as_ref().map(|s| (s.thread_id.as_str(), s.id.as_str())),
+            renaming: self.renaming.as_deref(),
+            info: self.info.as_deref(),
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
-        let title = format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()));
+        let title = if self.forking {
+            "Fork onto".to_string()
+        } else {
+            format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()))
+        };
         // A subagent's conversation, laid out by the transcript renderer.
         let width = a.pane.width as usize;
         let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
@@ -755,7 +852,15 @@ impl Client {
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend_from_slice(&layout::paint(self.shown.as_ref(), &next));
         let (row, col) = screen.cursor_position();
-        if self.side.is_none() && self.menu.is_none() && self.sub.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
+        if self.side.is_none()
+            && self.menu.is_none()
+            && self.sub.is_none()
+            && self.info.is_none()
+            && self.renaming.is_none()
+            && !self.help
+            && self.scrolled == 0
+            && !screen.hide_cursor()
+        {
             frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", a.pane.y + row + 1, a.pane.x + col + 1).as_bytes());
         } else {
             frame.extend_from_slice(b"\x1b[?25l");
@@ -992,6 +1097,9 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         menu: None,
         closing: None,
         sub: None,
+        forking: false,
+        renaming: None,
+        info: None,
     };
     c.screen_from(&replay);
     c.title();

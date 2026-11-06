@@ -848,6 +848,18 @@ impl Engine {
                         Open::New { session_id: Some(id) }
                     }
                     Some(session_id) => Open::Resume { session_id },
+                    // A thread with history and no session of this agent yet, such as a fork:
+                    // its conversation is copied into a new session, as a switch does.
+                    None if t.head > 0 => {
+                        let kinds: Vec<EventKind> = self.store.all_events(&t.id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
+                        match adapter.write_session(Path::new(&t.cwd), &kinds) {
+                            Ok((session_id, _, _)) => Open::Resume { session_id },
+                            Err(e) => {
+                                tracing::warn!(thread = %t.id, agent = %agent, "could not copy the conversation into a new session: {e}");
+                                Open::New { session_id: Some(desl_ir::adapter::new_uuid()) }
+                            }
+                        }
+                    }
                     None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
                 };
                 adapter.launch(&LaunchOpts {
@@ -1799,7 +1811,15 @@ impl Engine {
             created_at: ts,
             updated_at: ts,
             head: point,
-            bindings: Default::default(),
+            // The parent's model and effort choices carry over; its sessions do not.
+            bindings: parent
+                .bindings
+                .iter()
+                .map(|(a, b)| {
+                    let b = Binding { session_id: None, seen_up_to: 0, file_offset: 0, last_used_at: ts, ..b.clone() };
+                    (a.clone(), b)
+                })
+                .collect(),
             queued: Vec::new(),
             pending_approval: None,
             subagents: Vec::new(),

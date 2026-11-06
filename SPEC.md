@@ -168,15 +168,15 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | Key | Action | Source |
 | --- | --- | --- |
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
-| `prefix f` | Fork from here: pick the agent, a new thread opens with the conversation so far | desl |
+| `prefix f` | Fork from here: a menu of the agents, the thread's own marked; a new thread `t-7f3a/1` opens with the conversation so far copied into a new session of the one picked, keeping the parent's model and effort choices | desl |
 | `prefix c` | New thread in this project: a menu of the agents and the user's shell, the cursor on the project's default (`j`/`k`, `enter`, `1`…`9`, `esc`); from a shell, in the shell's directory, which becomes a project | tmux |
 | `prefix o` | Open a directory: a shell beside this project to `cd` to it, then `prefix c` | desl |
 | `prefix w` | Move the keys to the sidebar's thread list | tmux |
 | `prefix n` / `prefix p` | Next / previous thread | tmux |
 | `prefix 1`…`prefix 9` | Jump to thread n in the list | tmux |
 | `prefix l` | Back to the thread shown before | tmux |
-| `prefix ,` | Rename this thread | tmux |
-| `prefix i` | Agent, native session id, model, worktree | desl |
+| `prefix ,` | Rename this thread: the key line becomes a one-line input with the current title, `enter` saves, `esc` cancels | tmux |
+| `prefix i` | A box over the pane: thread id, title, directory, branch, parent, agent, permissions, each agent's native session id and model, subagents; any key closes it | desl |
 | `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |

@@ -405,7 +405,7 @@ fn a_fork_has_the_parents_history_up_to_the_point_and_a_fresh_agent() {
     assert_eq!(f, format!("{t}/1"));
     let fork = r.thread(&f);
     assert_eq!((fork.parent_id.as_deref(), fork.fork_point, fork.active_agent.as_str()), (Some(t.as_str()), Some(3), "codex"));
-    assert!(fork.bindings.is_empty());
+    assert!(fork.bindings.values().all(|b| b.session_id.is_none() && b.seen_up_to == 0), "choices carry over, sessions do not");
     assert_eq!(r.kinds(&f), ["user_message", "assistant_message", "usage", "fork"]);
     assert_eq!(r.events(&t), before, "the parent is untouched");
 

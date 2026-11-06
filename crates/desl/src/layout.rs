@@ -368,7 +368,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                     format!("{} · {} · {}", t.active_agent, t.status.word(), age(v.now, t.updated_at))
                 };
                 if let Some(b) = t.git.branch.as_deref().filter(|b| *b != "main" && *b != "master") {
-                    meta.push_str(&format!(" · {b}"));
+                    meta.push_str(&format!(" · ⎇ {b}"));
                 }
                 let meta = truncate_end(&meta, w.saturating_sub(6));
                 let pad = w.saturating_sub(5 + meta.width());
@@ -440,7 +440,13 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
     if let Some(t) = v.threads.iter().find(|t| t.id == v.current) {
         // A shell's header names where it started; an agent's, its project.
         let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-        let path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        let mut path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        // A thread in its own worktree says which branch it works on.
+        if t.worktree.is_some()
+            && let Some(b) = &t.git.branch
+        {
+            path.push_str(&format!(" ⎇ {b}"));
+        }
         let binding = t.bindings.get(v.agent);
         let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
         if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
@@ -497,7 +503,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
         Line::from(spans)
     } else if v.menu.is_some() {
         let mut spans = vec![Span::raw("  ")];
-        for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("esc", "cancel")] {
+        for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("w", "own worktree"), ("esc", "cancel")] {
             spans.push(Span::styled(k, theme::bold()));
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }

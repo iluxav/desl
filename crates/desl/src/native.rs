@@ -155,6 +155,10 @@ struct Client {
     renaming: Option<String>,
     /// `prefix i`: the facts shown.
     info: Option<Vec<(String, String)>>,
+    /// The menu's choice gets a git worktree of its own (`w` in the menu).
+    menu_worktree: bool,
+    /// The close request in flight, whose answer may say what became of a worktree.
+    removing: Option<u64>,
 }
 
 struct Sub {
@@ -456,7 +460,12 @@ impl Client {
                     Some(t) => format!("{} · {}", t.active_agent, if t.name.is_empty() { "new" } else { t.name.as_str() }),
                     None => self.thread_id.clone(),
                 };
-                let note = if self.agent == SHELL { "" } else { " The agent keeps the conversation in its own history." };
+                let wt = self.threads.iter().find(|t| t.id == self.thread_id).and_then(|t| t.worktree.clone());
+                let note = match (&wt, self.agent == SHELL) {
+                    (Some(name), _) => format!(" Its worktree goes if nothing in it is uncommitted; the branch desl/{name} stays."),
+                    (None, true) => String::new(),
+                    (None, false) => " The agent keeps the conversation in its own history.".to_string(),
+                };
                 self.notice(&format!("Close {} ({what})?{note}  y close · any other key keeps it", self.thread_id));
                 self.closing = Some(self.thread_id.clone());
             }
@@ -477,7 +486,13 @@ impl Client {
                 let here = self.threads.iter().find(|t| t.id == self.thread_id).map(|t| PathBuf::from(&t.cwd));
                 let start = here.as_deref().and_then(|p| p.parent()).map(|p| p.to_string_lossy().into_owned());
                 let cwd = start.or_else(|| std::env::var("HOME").ok()).unwrap_or_else(|| "/".into());
-                let command = Command::NewThread { cwd, agent: Some(SHELL.into()), prompt: None, beside: Some(self.thread_id.clone()) };
+                let command = Command::NewThread {
+                    cwd,
+                    agent: Some(SHELL.into()),
+                    prompt: None,
+                    beside: Some(self.thread_id.clone()),
+                    worktree: false,
+                };
                 let id = self.link.request(command);
                 self.busy = Some(Busy::Create(id));
                 self.notice("cd to the directory, then press ctrl+b c to start an agent there.");
@@ -494,6 +509,7 @@ impl Client {
             Action::Fork => {
                 self.side = None;
                 self.forking = true;
+                self.menu_worktree = false;
                 // The cursor starts on the thread's own agent.
                 let at = self.choices().iter().position(|c| c.start == self.agent).unwrap_or(0);
                 self.menu = Some(at);
@@ -510,6 +526,7 @@ impl Client {
             Action::New => {
                 self.side = None;
                 self.forking = false;
+                self.menu_worktree = false;
                 // The cursor starts on the project's default agent, else the first that works.
                 let choices = self.choices();
                 let default = self.project().and_then(|p| p.default_agent.clone());
@@ -567,6 +584,9 @@ impl Client {
         ];
         if let Some(b) = &t.git.branch {
             out.push(("Branch".into(), b.clone()));
+        }
+        if let Some(w) = &t.worktree {
+            out.push(("Worktree".into(), format!("{w} (its own folder and branch)")));
         }
         if let Some(p) = &t.parent_id {
             out.push(("Forked from".into(), format!("{p} at event {}", t.fork_point.unwrap_or(0))));
@@ -629,7 +649,12 @@ impl Client {
         }
         self.menu = None;
         if self.forking {
-            let id = self.link.request(Command::Fork { thread_id: self.thread_id.clone(), agent: Some(choice.start.clone()), at: None });
+            let id = self.link.request(Command::Fork {
+                thread_id: self.thread_id.clone(),
+                agent: Some(choice.start.clone()),
+                at: None,
+                worktree: self.menu_worktree,
+            });
             self.busy = Some(Busy::Create(id));
             return;
         }
@@ -638,7 +663,9 @@ impl Client {
             (None, Some(t)) => t.cwd.clone(),
             (None, None) => return self.notice("desl does not know this thread's project yet. Try again in a moment."),
         };
-        let command = Command::NewThread { cwd, agent: Some(choice.start.clone()), prompt: None, beside: Some(self.thread_id.clone()) };
+        let worktree = self.menu_worktree && choice.start != SHELL;
+        let command =
+            Command::NewThread { cwd, agent: Some(choice.start.clone()), prompt: None, beside: Some(self.thread_id.clone()), worktree };
         let id = self.link.request(command);
         self.busy = Some(Busy::Create(id));
     }
@@ -652,6 +679,7 @@ impl Client {
             SKey::Up | SKey::Char('k') => self.menu = Some(at.saturating_sub(1)),
             SKey::Enter => self.start(at),
             SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
+            SKey::Char('w') => self.menu_worktree = !self.menu_worktree,
             SKey::Char(_) | SKey::Back => {}
         }
     }
@@ -737,7 +765,7 @@ impl Client {
         }
         if let Some(id) = self.closing.take() {
             if matches!(key, SKey::Char('y' | 'Y')) {
-                self.link.request(Command::RemoveThread { thread_id: id });
+                self.removing = Some(self.link.request(Command::RemoveThread { thread_id: id }));
             }
             return;
         }
@@ -819,11 +847,14 @@ impl Client {
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
-        let title = if self.forking {
+        let mut title = if self.forking {
             "Fork onto".to_string()
         } else {
             format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()))
         };
+        if self.menu_worktree {
+            title.push_str(" · ⎇ own worktree");
+        }
         // A subagent's conversation, laid out by the transcript renderer.
         let width = a.pane.width as usize;
         let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
@@ -923,6 +954,15 @@ impl Client {
     }
 
     fn reply(&mut self, id: u64, ok: Option<Reply>, error: Option<String>) {
+        if self.removing == Some(id) {
+            self.removing = None;
+            match (ok, error) {
+                (Some(Reply::Removed { note: Some(n) }), _) => self.notice(&n),
+                (_, Some(sentence)) => self.notice(&sentence),
+                _ => {}
+            }
+            return;
+        }
         if let Some(sub) = &mut self.sub
             && sub.asked == Some(id)
         {
@@ -1100,6 +1140,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         forking: false,
         renaming: None,
         info: None,
+        menu_worktree: false,
+        removing: None,
     };
     c.screen_from(&replay);
     c.title();

@@ -398,7 +398,8 @@ fn a_fork_has_the_parents_history_up_to_the_point_and_a_fresh_agent() {
     r.prompt(&t, "first task");
     r.prompt(&t, "second task");
     let before = r.events(&t);
-    let Reply::Created { thread_id: f } = r.cmd(Command::Fork { thread_id: t.clone(), agent: Some("codex".into()), at: Some(3) }).unwrap()
+    let Reply::Created { thread_id: f } =
+        r.cmd(Command::Fork { thread_id: t.clone(), agent: Some("codex".into()), at: Some(3), worktree: false }).unwrap()
     else {
         panic!()
     };
@@ -412,9 +413,12 @@ fn a_fork_has_the_parents_history_up_to_the_point_and_a_fresh_agent() {
     r.prompt(&f, "try it another way");
     let brief = r.codex.lock().unwrap().payloads[0].clone();
     assert!(brief.starts_with("# Handoff brief\n") && brief.contains("first task") && !brief.contains("second task"));
-    let Reply::Created { thread_id: g } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None }).unwrap() else { panic!() };
+    let Reply::Created { thread_id: g } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None, worktree: false }).unwrap()
+    else {
+        panic!()
+    };
     assert_eq!(g, format!("{t}/2"));
-    let bad = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: Some(99) }).unwrap_err();
+    let bad = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: Some(99), worktree: false }).unwrap_err();
     assert_eq!(bad, format!("{t} has events 1 to 6; 99 is not one of them."));
     r.check_invariants();
 }
@@ -572,7 +576,7 @@ fn random_sequences_keep_indices_dense_and_marks_behind_the_head() {
             }
             8 if ids.len() < 6 && r.thread(&t).head > 0 => {
                 let at = 1 + next(r.thread(&t).head);
-                r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: Some(at) }).unwrap();
+                r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: Some(at), worktree: false }).unwrap();
             }
             _ => {
                 // The daemon restarts: every process is gone, every binding stays.
@@ -812,7 +816,10 @@ fn a_fork_keeps_ask_and_never_inherits_yolo() {
     r.prompt(&t, "one");
     let fork_in = |r: &mut Rig, mode| {
         r.cmd(Command::SetMode { thread_id: t.clone(), mode }).unwrap();
-        let Reply::Created { thread_id } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None }).unwrap() else { panic!() };
+        let Reply::Created { thread_id } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None, worktree: false }).unwrap()
+        else {
+            panic!()
+        };
         r.thread(&thread_id).permission_mode
     };
     assert_eq!(fork_in(&mut r, PermissionMode::Yolo), PermissionMode::Edits, "yolo is set by hand, per thread");
@@ -836,4 +843,37 @@ fn an_agent_that_cannot_ask_says_what_it_does_instead() {
 
     let refused = r.cmd(Command::SetMode { thread_id: t.clone(), mode: PermissionMode::Worktree }).unwrap_err();
     assert_eq!(refused, "The worktree mode arrives with worktrees. Pick one of ask, edits or yolo.");
+}
+
+#[test]
+fn a_thread_with_a_worktree_works_in_it_and_closing_keeps_its_branch() {
+    let mut r = rig("worktree");
+    let project = r.dir.join("api");
+    let cwd = project.to_string_lossy().to_string();
+    let new = |worktree| Command::NewThread { cwd: cwd.clone(), agent: Some("claude".into()), prompt: None, beside: None, worktree };
+    let refused = r.cmd(new(true)).unwrap_err();
+    assert!(refused.contains("git repository"), "{refused}");
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git").arg("-C").arg(&project).args(args).output().unwrap().status.success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(project.join("a.txt"), "a").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "one"]);
+    let Ok(Reply::Created { thread_id }) = r.cmd(new(true)) else { panic!("no thread") };
+    let t = r.thread(&thread_id);
+    let wt = project.join(".worktrees").join(&thread_id);
+    assert_eq!((t.worktree.as_deref(), t.cwd.as_str()), (Some(thread_id.as_str()), wt.to_string_lossy().as_ref()));
+    assert_eq!(t.git.branch.as_deref(), Some(format!("desl/{thread_id}").as_str()));
+    let Ok(Reply::Removed { note: Some(note) }) = r.cmd(Command::RemoveThread { thread_id: thread_id.clone() }) else {
+        panic!("not removed")
+    };
+    assert!(note.contains("Removed its worktree") && !wt.exists(), "{note}");
+    // A worktree with work in it stays.
+    let Ok(Reply::Created { thread_id: kept }) = r.cmd(new(true)) else { panic!("no thread") };
+    let kept_dir = project.join(".worktrees").join(&kept);
+    std::fs::write(kept_dir.join("draft.txt"), "wip").unwrap();
+    let Ok(Reply::Removed { note: Some(note) }) = r.cmd(Command::RemoveThread { thread_id: kept }) else { panic!("not removed") };
+    assert!(note.contains("uncommitted") && kept_dir.join("draft.txt").exists(), "{note}");
 }

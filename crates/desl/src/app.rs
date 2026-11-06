@@ -856,7 +856,7 @@ impl App {
 
     pub fn new_thread(&mut self) {
         let cwd = Some(self.thread().meta.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| self.cwd.to_string_lossy().to_string());
-        self.request(Command::NewThread { cwd, agent: None, prompt: None, beside: None }, Pending::Created);
+        self.request(Command::NewThread { cwd, agent: None, prompt: None, beside: None, worktree: false }, Pending::Created);
     }
 
     pub fn jump_to(&mut self, idx: usize) {
@@ -1171,7 +1171,7 @@ impl App {
             }
         }
         let thread_id = t.id().to_string();
-        self.request(Command::Fork { thread_id, agent, at }, Pending::Created);
+        self.request(Command::Fork { thread_id, agent, at, worktree: false }, Pending::Created);
     }
 
     // ---- prompt --------------------------------------------------------------------------------

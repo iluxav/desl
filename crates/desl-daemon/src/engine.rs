@@ -180,6 +180,14 @@ pub struct Engine {
     pub stopping: bool,
 }
 
+/// A path with the home directory written `~`, for sentences.
+fn tilde(path: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
+        _ => path.to_string(),
+    }
+}
+
 /// The user's own shell, with their whole environment: it is theirs, not an agent's.
 fn shell_launch() -> Launch {
     Launch {
@@ -1404,9 +1412,9 @@ impl Engine {
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Answer { thread_id, call_id, decision } => self.answer(&thread_id, call_id.as_deref(), decision),
             Command::Switch { thread_id, agent } => self.switch(&thread_id, &agent),
-            Command::Fork { thread_id, agent, at } => self.fork(&thread_id, agent.as_deref(), at),
-            Command::NewThread { cwd, agent, prompt, beside } => {
-                self.new_thread(&cwd, agent.as_deref(), prompt.as_deref(), beside.as_deref())
+            Command::Fork { thread_id, agent, at, worktree } => self.fork(&thread_id, agent.as_deref(), at, worktree),
+            Command::NewThread { cwd, agent, prompt, beside, worktree } => {
+                self.new_thread(&cwd, agent.as_deref(), prompt.as_deref(), beside.as_deref(), worktree)
             }
             Command::Rename { thread_id, name } => self.idx(&thread_id).and_then(|i| {
                 let name: String = name.trim().chars().take(MAX_NAME).collect();
@@ -1417,9 +1425,15 @@ impl Engine {
                 self.persist(&thread_id);
                 Ok(Reply::Done)
             }),
-            Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|_| {
+            Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
+                let wt = self.threads[i].worktree.clone().map(|name| (name, self.threads[i].cwd.clone()));
                 self.remove_thread(&thread_id);
-                Reply::Done
+                // Its worktree goes only when nothing in it would be lost; its branch always stays.
+                let note = wt.map(|(name, path)| match git::worktree_remove(Path::new(&path)) {
+                    Ok(()) => format!("Removed its worktree; the branch {}{name} keeps its commits.", git::BRANCH_PREFIX),
+                    Err(_) => format!("Its worktree {} has uncommitted changes, so it stays.", tilde(&path)),
+                });
+                Reply::Removed { note }
             }),
             Command::Brief { thread_id, to } => self.idx(&thread_id).and_then(|i| {
                 let to = match to {
@@ -1785,7 +1799,27 @@ impl Engine {
 
     /// SPEC.md fork algorithm. The fork gets the parent's events up to the fork point and no
     /// bindings, so its first prompt carries a full brief to a fresh native session.
-    fn fork(&mut self, thread_id: &str, agent: Option<&str>, at: Option<u64>) -> Outcome {
+    /// Gives thread `id` a git worktree of its own, branched from the commit `from` is on: the
+    /// thread's agent starts there.
+    fn give_worktree(&mut self, id: &str, from: &Path) -> Result<(), String> {
+        let i = self.idx(id)?;
+        let root = self
+            .projects
+            .iter()
+            .find(|p| p.id == self.threads[i].project_id)
+            .map(|p| PathBuf::from(&p.path))
+            .ok_or("The thread has no project.")?;
+        let name = id.replace('/', "-");
+        let path = git::worktree_add(&root, &name, from)?;
+        let t = &mut self.threads[i];
+        t.worktree = Some(name);
+        t.cwd = path.to_string_lossy().into_owned();
+        t.git = git::state(&path);
+        self.persist(id);
+        Ok(())
+    }
+
+    fn fork(&mut self, thread_id: &str, agent: Option<&str>, at: Option<u64>, worktree: bool) -> Outcome {
         let i = self.idx(thread_id)?;
         let parent = self.threads[i].clone();
         if parent.head == 0 {
@@ -1838,10 +1872,14 @@ impl Engine {
         self.threads.push(fork);
         self.append(&id, EventKind::Fork { parent_id: parent.id, fork_point: point });
         self.persist(&id);
+        if worktree && let Err(why) = self.give_worktree(&id, Path::new(&parent.cwd)) {
+            self.remove_thread(&id);
+            return Err(why);
+        }
         Ok(Reply::Created { thread_id: id })
     }
 
-    fn new_thread(&mut self, cwd: &str, agent: Option<&str>, prompt: Option<&str>, beside: Option<&str>) -> Outcome {
+    fn new_thread(&mut self, cwd: &str, agent: Option<&str>, prompt: Option<&str>, beside: Option<&str>, worktree: bool) -> Outcome {
         let beside = beside.and_then(|id| self.idx(id).ok());
         if agent == Some(SHELL) {
             // In the project of the thread the user is on, at `cwd`, to find a directory from.
@@ -1871,6 +1909,13 @@ impl Engine {
             None => self.default_agent(&project_id)?,
         };
         let id = self.create_thread(&project_id, &agent)?;
+        if worktree {
+            let root = self.projects.iter().find(|p| p.id == project_id).map(|p| PathBuf::from(&p.path)).unwrap_or_else(|| dir.clone());
+            if let Err(why) = self.give_worktree(&id, &root) {
+                self.remove_thread(&id);
+                return Err(why);
+            }
+        }
         if let (Some(shell), Some(dir)) = (from_shell, here) {
             let i = self.idx(&shell)?;
             self.threads[i].project_id = project_id.clone();

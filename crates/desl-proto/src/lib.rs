@@ -109,6 +109,9 @@ pub enum Command {
         thread_id: String,
         agent: Option<String>,
         at: Option<u64>,
+        /// The fork gets a git worktree of its own, branched from the parent's commit.
+        #[serde(default)]
+        worktree: bool,
     },
     /// `agent` "shell" opens a shell instead of an agent.
     NewThread {
@@ -120,6 +123,9 @@ pub enum Command {
         /// of its own, and the shell moves into that project.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         beside: Option<String>,
+        /// The thread gets a git worktree of its own, branched from the project's commit.
+        #[serde(default)]
+        worktree: bool,
     },
     Rename {
         thread_id: String,
@@ -286,6 +292,10 @@ pub enum Reply {
         partial: Option<String>,
     },
     Done,
+    /// The answer to `remove_thread`: a sentence about the thread's worktree, if it had one.
+    Removed {
+        note: Option<String>,
+    },
     /// The answer to `attach`: everything the agent has drawn so far (base64), to put on the
     /// screen before the `pty` frames that follow; `agent` is who is drawing it.
     Attached {

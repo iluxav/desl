@@ -57,7 +57,7 @@ enum Cmd {
         project: Option<String>,
         #[arg(long)]
         agent: Option<String>,
-        /// Not built yet; arrives with worktrees
+        /// Give the thread a git worktree of its own, on a branch desl/<thread>
         #[arg(long)]
         worktree: bool,
         /// A first prompt to send
@@ -75,7 +75,7 @@ enum Cmd {
         /// The event index to fork at (default: the newest)
         #[arg(long)]
         at: Option<u64>,
-        /// Not built yet; arrives with worktrees
+        /// Give the thread a git worktree of its own, on a branch desl/<thread>
         #[arg(long)]
         worktree: bool,
     },
@@ -179,12 +179,6 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
 
 fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
     let out = cli::Out { json: cli.json };
-    let no_worktree = |on: bool| {
-        if on {
-            anyhow::bail!("--worktree is not built yet; it arrives with worktrees. Run the command without it.")
-        }
-        Ok(())
-    };
     match cli.command.unwrap_or(Cmd::Attach) {
         Cmd::Attach => attach(paths),
         Cmd::Status => cli::status(paths, &out),
@@ -194,16 +188,10 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             ThreadCmd::Rename { thread, name } => cli::thread_rename(paths, &out, &thread, &name),
             ThreadCmd::Rm { thread } => cli::thread_rm(paths, &out, &thread),
         },
-        Cmd::New { project, agent, worktree, message } => {
-            no_worktree(worktree)?;
-            cli::new(paths, &out, project, agent, message)
-        }
+        Cmd::New { project, agent, worktree, message } => cli::new(paths, &out, project, agent, message, worktree),
         Cmd::Send { thread, prompt } => cli::send(paths, &out, &thread, &prompt),
         Cmd::Switch { thread, agent } => cli::switch(paths, &out, &thread, &agent),
-        Cmd::Fork { thread, agent, at, worktree } => {
-            no_worktree(worktree)?;
-            cli::fork(paths, &out, &thread, agent, at)
-        }
+        Cmd::Fork { thread, agent, at, worktree } => cli::fork(paths, &out, &thread, agent, at, worktree),
         Cmd::Model { thread, name, effort } => cli::model(paths, &out, &thread, name, effort),
         Cmd::Permissions { thread, mode } => cli::permissions(paths, &out, &thread, mode),
         Cmd::Brief { thread } => cli::brief(paths, &out, &thread),

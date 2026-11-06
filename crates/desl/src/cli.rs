@@ -168,19 +168,26 @@ pub fn thread_rename(paths: &Paths, out: &Out, thread: &str, name: &str) -> Resu
 pub fn thread_rm(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
-    conn.call(Command::RemoveThread { thread_id: t.id.clone() })?;
-    done(out, json!({ "thread_id": t.id }), format!("Removed {} and its history.", t.id));
+    let note = match conn.call(Command::RemoveThread { thread_id: t.id.clone() })? {
+        Reply::Removed { note } => note,
+        _ => None,
+    };
+    let line = match &note {
+        Some(n) => format!("Removed {} and its history. {n}", t.id),
+        None => format!("Removed {} and its history.", t.id),
+    };
+    done(out, json!({ "thread_id": t.id, "worktree": note }), line);
     Ok(())
 }
 
-pub fn new(paths: &Paths, out: &Out, project: Option<String>, agent: Option<String>, prompt: Option<String>) -> Result<()> {
+pub fn new(paths: &Paths, out: &Out, project: Option<String>, agent: Option<String>, prompt: Option<String>, worktree: bool) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let cwd = match project {
         // A registered project by id, else a directory.
         Some(p) => workspace(&mut conn)?.projects.iter().find(|x| x.id == p).map(|x| x.path.clone()).unwrap_or(p),
         None => std::env::current_dir()?.to_string_lossy().to_string(),
     };
-    let Reply::Created { thread_id } = conn.call(Command::NewThread { cwd, agent, prompt, beside: None })? else {
+    let Reply::Created { thread_id } = conn.call(Command::NewThread { cwd, agent, prompt, beside: None, worktree })? else {
         bail!("The desl daemon did not create the thread.")
     };
     done(out, json!({ "thread_id": thread_id }), thread_id.clone());
@@ -275,10 +282,10 @@ pub fn switch(paths: &Paths, out: &Out, thread: &str, agent: &str) -> Result<()>
     Ok(())
 }
 
-pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: Option<u64>) -> Result<()> {
+pub fn fork(paths: &Paths, out: &Out, thread: &str, agent: Option<String>, at: Option<u64>, worktree: bool) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
-    let Reply::Created { thread_id } = conn.call(Command::Fork { thread_id: t.id, agent, at })? else {
+    let Reply::Created { thread_id } = conn.call(Command::Fork { thread_id: t.id, agent, at, worktree })? else {
         bail!("The desl daemon did not create the fork.")
     };
     done(out, json!({ "thread_id": thread_id }), thread_id.clone());

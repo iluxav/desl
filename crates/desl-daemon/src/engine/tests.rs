@@ -271,7 +271,7 @@ fn a_prompt_becomes_a_turn_and_the_agent_is_marked_up_to_date() {
     r.prompt(&t, "Read src/auth/middleware.ts and explain it");
     assert_eq!(r.kinds(&t), ["user_message", "assistant_message", "usage"]);
     let thread = r.thread(&t);
-    assert_eq!((thread.status, thread.name.as_str(), thread.head), (Status::Idle, "middleware", 3));
+    assert_eq!((thread.status, thread.name.as_str(), thread.head), (Status::Idle, "Read src/auth/middleware.ts and explain it", 3));
     let b = &thread.bindings["claude"];
     assert_eq!((b.session_id.as_deref(), b.seen_up_to), (Some("claude-s1"), 3));
     assert_eq!(r.claude.lock().unwrap().payloads, vec!["Read src/auth/middleware.ts and explain it"]);

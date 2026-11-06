@@ -521,7 +521,7 @@ const STOP: &[&str] = &[
 ];
 
 /// Longest thread name, in characters. The sidebar is narrow.
-pub const MAX_NAME: usize = 12;
+pub const MAX_NAME: usize = 48;
 
 /// `src/auth/middleware.ts` names a thread `middleware`, not `src/auth/mid`.
 fn stem(word: &str) -> String {
@@ -530,8 +530,34 @@ fn stem(word: &str) -> String {
     no_ext.to_string()
 }
 
-/// A short name from the first prompt: the first meaningful word, lowercased.
+/// A thread's title from its first prompt: the first line, its spaces collapsed, cut at a
+/// word to at most [`MAX_NAME`] characters.
 pub fn derive_name(prompt: &str) -> String {
+    let line = prompt.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let words: Vec<&str> = line.split_whitespace().collect();
+    if words.is_empty() {
+        return "untitled".to_string();
+    }
+    let mut out = String::new();
+    for w in words {
+        let next = if out.is_empty() { w.chars().count() } else { out.chars().count() + 1 + w.chars().count() };
+        if next > MAX_NAME {
+            if out.is_empty() {
+                out = w.chars().take(MAX_NAME).collect();
+            }
+            break;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(w);
+    }
+    out
+}
+
+/// The one-word names desl gave threads before titles (until 2026-11-06), so a name that is
+/// still one of them can be replaced with a title.
+pub fn derive_word(prompt: &str) -> String {
     let words: Vec<String> = prompt
         .split(|c: char| c.is_whitespace() || matches!(c, ',' | '.' | ':' | ';' | '"' | '`'))
         .filter(|w| !w.is_empty())
@@ -543,7 +569,7 @@ pub fn derive_name(prompt: &str) -> String {
         .or_else(|| words.first())
         .map(|w| stem(w))
         .unwrap_or_else(|| "untitled".to_string());
-    pick.chars().take(MAX_NAME).collect()
+    pick.chars().take(12).collect()
 }
 
 #[cfg(test)]
@@ -614,9 +640,11 @@ mod tests {
     }
 
     #[test]
-    fn names_come_from_the_first_meaningful_word() {
-        assert_eq!(derive_name("Add refresh-token rotation to the auth middleware"), "refresh-toke");
-        assert_eq!(derive_name("Read src/auth/middleware.ts and explain it"), "middleware");
+    fn titles_are_the_first_line_cut_at_a_word() {
+        assert_eq!(derive_name("Add refresh-token rotation to the auth middleware"), "Add refresh-token rotation to the auth");
+        assert_eq!(derive_name("\n  Fix   the login\nmore detail"), "Fix the login");
+        assert_eq!(derive_name(&"x".repeat(60)), "x".repeat(48));
         assert_eq!(derive_name(""), "untitled");
+        assert_eq!(derive_word("Read src/auth/middleware.ts and explain it"), "middleware");
     }
 }

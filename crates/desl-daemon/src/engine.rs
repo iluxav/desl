@@ -221,7 +221,22 @@ type Outcome = Result<Reply, String>;
 impl Engine {
     pub fn new(store: Store, adapters: Vec<Arc<dyn Adapter>>, tx: Sender<Msg>) -> anyhow::Result<Engine> {
         let projects = store.projects()?;
-        let threads = store.threads()?;
+        let mut threads = store.threads()?;
+        // Threads named before titles carry one word from their first prompt: give them the title.
+        for t in threads.iter_mut().filter(|t| t.head > 0 && !t.name.contains(' ') && t.active_agent != SHELL) {
+            let first = store.events(&t.id, 1, t.head.min(50)).unwrap_or_default().into_iter().find_map(|e| match e.kind {
+                EventKind::UserMessage { text, .. } => Some(text),
+                _ => None,
+            });
+            if let Some(text) = first
+                && t.name == desl_ir::derive_word(&text)
+            {
+                t.name = derive_name(&text);
+                if let Err(e) = store.put_thread(t) {
+                    tracing::error!(thread = %t.id, "could not retitle the thread: {e:#}");
+                }
+            }
+        }
         let agents = detect(&adapters);
         let mut engine = Engine {
             store,

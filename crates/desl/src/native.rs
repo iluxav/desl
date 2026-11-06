@@ -364,7 +364,7 @@ impl Client {
         {
             let skip = self.side_skip();
             match layout::row_at(&self.projects, &self.threads, s, skip, m.y) {
-                Some(Row::Thread(id)) => {
+                Some(Row::Thread(id) | Row::Meta(id)) => {
                     self.side = None;
                     self.sub = None;
                     self.dirty = true;
@@ -643,6 +643,7 @@ impl Client {
             _ => None,
         };
         let pickable = |i: usize| matches!(rows.get(i), Some(Row::Thread(_) | Row::Sub(..)));
+        // A click or a cursor on a thread's second line means the thread.
         match key {
             SKey::Enter if matches!(rows.get(cursor), Some(Row::Sub(..))) => {
                 if let Some(Row::Sub(id, k)) = rows.get(cursor).cloned() {
@@ -703,6 +704,7 @@ impl Client {
             scrolled: self.scrolled,
             menu: None,
             sub: None,
+            now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();

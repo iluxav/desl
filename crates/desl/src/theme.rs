@@ -36,6 +36,10 @@ pub fn added() -> Style {
 pub fn removed() -> Style {
     if no_color() { Style::default() } else { Style::default().fg(Color::Red) }
 }
+/// Claude's own orange, for its mark.
+pub fn claude() -> Style {
+    if no_color() { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Rgb(217, 119, 87)) }
+}
 pub fn normal() -> Style {
     Style::default()
 }

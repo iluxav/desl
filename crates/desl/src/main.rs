@@ -193,7 +193,22 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
     }
 }
 
+/// `desl status | head` stops reading early. Like any Unix tool, desl then just stops: the
+/// print that found the pipe closed ends the process quietly instead of panicking.
+fn quiet_on_closed_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = payload.downcast_ref::<String>().map(String::as_str).or_else(|| payload.downcast_ref::<&str>().copied()).unwrap_or("");
+        if msg.contains("Broken pipe") {
+            std::process::exit(0);
+        }
+        default(info);
+    }));
+}
+
 fn main() {
+    quiet_on_closed_pipe();
     let cli = Cli::parse();
     let json = cli.json;
     let paths = Paths::resolve();

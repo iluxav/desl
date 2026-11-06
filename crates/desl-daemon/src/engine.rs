@@ -176,6 +176,9 @@ pub struct Engine {
     tails: HashMap<String, Tail>,
     /// Switches in progress, by thread.
     pending: HashMap<String, Pending>,
+    /// When the user last pressed enter in each thread's agent: a turn it starts shows in the
+    /// agent's files only a moment later.
+    entered: HashMap<String, Instant>,
     ticks: u64,
     pub stopping: bool,
 }
@@ -262,6 +265,7 @@ impl Engine {
             answers: term::Answers::default(),
             tails: HashMap::new(),
             pending: HashMap::new(),
+            entered: HashMap::new(),
             ticks: 0,
             stopping: false,
         };
@@ -1137,7 +1141,9 @@ impl Engine {
         let adapter = self.adapter(to).ok_or_else(|| format!("desl has no adapter for {to}."))?;
         // The last of what the agent wrote, so the copy is whole.
         self.poll_tail(thread_id);
-        if self.threads[i].status.busy() {
+        // A prompt sent a moment ago may not have reached the agent's files yet.
+        let just_sent = self.entered.get(thread_id).is_some_and(|t| t.elapsed() < Duration::from_secs(3));
+        if self.threads[i].status.busy() || just_sent {
             return Err(format!(
                 "{from} is still working, and a half-finished turn is never copied. Wait for it to finish, then press ctrl+b s again."
             ));
@@ -1523,6 +1529,9 @@ impl Engine {
             Command::Input { thread_id, data } => {
                 if let (Some((_, pty)), Some(bytes)) = (self.ptys.get_mut(&thread_id), b64::decode(&data)) {
                     pty.write(&bytes);
+                    if bytes.contains(&b'\r') || bytes.windows(4).any(|w| w == b"[13u" || w == b"13;1") {
+                        self.entered.insert(thread_id.clone(), Instant::now());
+                    }
                 }
                 return None;
             }

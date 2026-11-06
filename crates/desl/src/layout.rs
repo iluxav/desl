@@ -246,13 +246,21 @@ fn panel(focused: bool) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).border_style(if focused { theme::accent() } else { theme::muted() })
 }
 
-/// Each agent's mark, as its own interface draws it: Claude's orange `✻`, Codex's `>_`.
+/// Each agent's mark: with a Nerd Font, the Claude and OpenAI logos and a terminal; without,
+/// a one-cell badge in the agent's colour.
 pub fn agent_icon(agent: &str) -> (&'static str, Style) {
-    match agent {
-        "claude" => ("✻", theme::claude()),
-        "codex" => (">_", theme::bold()),
-        SHELL => ("$", theme::dim()),
-        _ => ("◆", theme::dim()),
+    use ratatui::style::Color;
+    let badge =
+        |fg: Color, bg: Color| if theme::nerd() { Style::default() } else { Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD) };
+    match (agent, theme::nerd()) {
+        ("claude", true) => ("\u{ec82}", theme::claude()),
+        ("codex", true) => ("\u{ec81}", theme::normal()),
+        (SHELL, true) => ("\u{ebca}", theme::dim()),
+        ("claude", false) => ("✻", badge(Color::Black, Color::Rgb(217, 119, 87))),
+        ("codex", false) => ("›", badge(Color::Black, Color::Rgb(220, 220, 220))),
+        (SHELL, false) => ("$", badge(Color::White, Color::Rgb(70, 70, 70))),
+        (_, true) => ("\u{ec20}", theme::dim()),
+        (_, false) => ("◆", theme::dim()),
     }
 }
 
@@ -287,7 +295,6 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             Row::Meta(_) => v.cursor == Some(i.wrapping_sub(1)),
             _ => false,
         };
-        let pick = |s: Style| if lit { theme::pill() } else { s };
         match row {
             Row::Gap => lines.push(Line::default()),
             Row::Project(id) => {
@@ -307,22 +314,38 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
                 let current = t.id == v.current;
-                // `▌ ● Fix the login redirect…`: the bar marks the thread on screen.
+                // The thread on screen is tinted across both its lines; the cursor lights them.
+                let base = if lit {
+                    theme::pill()
+                } else if current {
+                    theme::surface()
+                } else {
+                    Style::default()
+                };
+                let on = |s: Style| if lit { theme::pill() } else { base.patch(s) };
                 let title = if t.name.is_empty() { "New thread" } else { t.name.as_str() };
                 let title = truncate_end(title, w.saturating_sub(4));
-                let pad = w.saturating_sub(4 + title.width());
+                let pad = w.saturating_sub(3 + title.width());
                 lines.push(Line::from(vec![
-                    Span::styled(if current { "▌ " } else { "  " }, pick(theme::accent())),
-                    Span::styled(t.status.glyph().to_string(), pick(glyph_style(t.status))),
-                    Span::styled(" ", pick(Style::default())),
-                    Span::styled(title, pick(if current { theme::bold() } else { theme::normal() })),
-                    Span::styled(" ".repeat(pad + 1), pick(Style::default())),
+                    Span::styled(" ", base),
+                    Span::styled(t.status.glyph().to_string(), on(glyph_style(t.status))),
+                    Span::styled(" ", base),
+                    Span::styled(title, on(if current { theme::bold() } else { theme::normal() })),
+                    Span::styled(" ".repeat(pad), base),
                 ]));
             }
             Row::Meta(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
                 let current = t.id == v.current;
-                // `    ✻ claude · idle · 5m`
+                let base = if lit {
+                    theme::pill()
+                } else if current {
+                    theme::surface()
+                } else {
+                    Style::default()
+                };
+                let on = |s: Style| if lit { theme::pill() } else { base.patch(s) };
+                // `   ✻ claude · idle · 5m`
                 let (icon, icon_style) = agent_icon(&t.active_agent);
                 let mut meta = if t.active_agent == SHELL {
                     tilde(&t.cwd)
@@ -332,14 +355,14 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 if let Some(b) = t.git.branch.as_deref().filter(|b| *b != "main" && *b != "master") {
                     meta.push_str(&format!(" · {b}"));
                 }
-                let meta = truncate_end(&meta, w.saturating_sub(5 + icon.width()));
-                let pad = w.saturating_sub(5 + icon.width() + meta.width());
+                let meta = truncate_end(&meta, w.saturating_sub(6));
+                let pad = w.saturating_sub(5 + meta.width());
                 lines.push(Line::from(vec![
-                    Span::styled(if current { "▌   " } else { "    " }, pick(theme::accent())),
-                    Span::styled(icon, pick(icon_style)),
-                    Span::styled(" ", pick(Style::default())),
-                    Span::styled(meta, pick(theme::muted())),
-                    Span::styled(" ".repeat(pad + 1), pick(Style::default())),
+                    Span::styled("   ", base),
+                    Span::styled(icon, if lit { theme::pill() } else { base.patch(icon_style) }),
+                    Span::styled(" ", base),
+                    Span::styled(meta, on(theme::muted())),
+                    Span::styled(" ".repeat(pad), base),
                 ]));
             }
             Row::Sub(id, k) => {
@@ -351,23 +374,19 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                     (false, true) => ("●", theme::accent()),
                     (false, false) => ("○", theme::muted()),
                 };
+                let last = !matches!(rows.get(i + 1), Some(Row::Sub(next, _)) if next == id);
                 let what = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
                 let label = if s.kind == "general-purpose" || s.description.is_empty() { what } else { format!("{} · {what}", s.kind) };
                 let lit = v.cursor == Some(i);
+                let label = truncate_end(&label, w.saturating_sub(9));
+                let pad = w.saturating_sub(8 + label.width());
+                let pick = |st: Style| if lit { theme::pill() } else { st };
                 lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(glyph, if lit { theme::pill() } else { style }),
-                    Span::styled(" ", if lit { theme::pill() } else { Style::default() }),
-                    Span::styled(
-                        truncate_end(&label, w.saturating_sub(6)),
-                        if lit {
-                            theme::pill()
-                        } else if s.finished {
-                            theme::muted()
-                        } else {
-                            theme::dim()
-                        },
-                    ),
+                    Span::styled(if last { "   └─ " } else { "   ├─ " }, theme::muted()),
+                    Span::styled(glyph, pick(style)),
+                    Span::styled(" ", pick(Style::default())),
+                    Span::styled(label, pick(if s.finished { theme::muted() } else { theme::dim() })),
+                    Span::styled(" ".repeat(pad), pick(Style::default())),
                 ]));
             }
         }
@@ -824,10 +843,14 @@ mod tests {
         assert!(lines[0].contains("╭ ✻ Claude · /src/desl · opus · high ") && lines[0].contains("○ idle t-1a ╮"), "{s}");
         assert!(lines[1].contains("││ hello from the agent"), "{s}");
         assert!(lines[2].contains("│ desl  /src "), "{s}");
-        assert!(lines[3].contains("│ ▌ ○ fix the login "), "{s}");
-        assert!(lines[4].contains("│ ▌   ✻ claude · idle · now "), "{s}");
-        assert!(lines[5].contains("│   ◐ New thread "), "{s}");
-        assert!(lines[6].contains("│     ✻ claude · waiting · now "), "{s}");
+        assert!(lines[3].contains("│  ○ fix the login "), "{s}");
+        assert!(lines[4].contains("│    ✻ claude · idle · now "), "{s}");
+        assert!(lines[5].contains("│  ◐ New thread "), "{s}");
+        assert!(lines[6].contains("│    ✻ claude · waiting · now "), "{s}");
+        // The thread on screen is tinted across its row; the others are not.
+        let b = t.backend().buffer();
+        assert_ne!(b[(20, 3)].bg, Color::Reset, "{s}");
+        assert_eq!(b[(20, 5)].bg, Color::Reset, "{s}");
         assert!(lines[28].starts_with("╰"), "{s}");
         assert!(lines[29].contains(" ctrl+b   s switch agent"), "{s}");
         let before = t.backend().buffer().clone();

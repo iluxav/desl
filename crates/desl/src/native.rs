@@ -78,6 +78,23 @@ fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
     answers
 }
 
+/// Whether to draw Nerd Font icons: `DESL_ICONS=nerd` or `text` says so; otherwise yes when a
+/// Nerd Font is installed here and the terminal is local (over SSH, the font is the other end's).
+fn nerd_font() -> bool {
+    match std::env::var("DESL_ICONS").as_deref() {
+        Ok("nerd") => return true,
+        Ok("text") => return false,
+        _ => {}
+    }
+    if std::env::var_os("SSH_CONNECTION").is_some() {
+        return false;
+    }
+    std::process::Command::new("fc-list")
+        .args([":", "family"])
+        .output()
+        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("Nerd Font"))
+}
+
 /// The one request in flight that changes what is on screen.
 enum Busy {
     Switch(u64),
@@ -917,6 +934,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         });
     }
     let answers = probe(&rx);
+    crate::theme::set_surface_from(answers.bg.as_deref(), answers.fg.as_deref());
+    crate::theme::set_nerd(nerd_font());
     out(SCREEN_ON);
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
     let pane = layout::areas(cols, rows, true).pane;

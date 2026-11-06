@@ -151,7 +151,7 @@ permission, it showed the approval above.
 
 `write_session(cwd, events)` writes the thread's conversation as a new session of the
 receiving agent and returns its id, file and length; the daemon starts reading the file at that
-length, so the copy is never read back into the log. Built on the `phase0/proto-n` findings
+length, so the copy is never read back into the log. Built on the native-switch prototype's findings
 (see "Copying a conversation into the other agent's session file"); both writers have
 round-trip tests (written, then read back by the same adapter's reader).
 
@@ -362,8 +362,7 @@ codex exec -s workspace-write [resume <thread-id>] --json --skip-git-repo-check 
 ## Session files (Prototype B)
 
 Prototype B read the agents' own transcripts instead of driving a headless stream. It was not
-chosen and was removed on 2026-11-04; its parsers (`phase0/proto-a/src/transcript/`) and fixtures
-(`phase0/fixtures/transcripts/`) are in the repository's first commit. The findings stay here
+chosen and was removed on 2026-11-04; its parsers and fixtures are in the repository's history. The findings stay here
 because they describe the agents, not the prototype.
 
 ### Claude Code 2.1.312
@@ -443,7 +442,7 @@ What it takes:
   active writer`, and a new `codex resume` forks the thread. desl must write a Codex file before the
   daemon has the thread open, or go through the app-server itself.
 
-Later the same day, for `phase0/proto-n`:
+Later the same day, for the native-switch prototype:
 
 - **A session written from nothing resumes in both agents**, so no throwaway turn is needed: a
   Claude file of chained lines with `parentUuid: null` on the first, and a Codex rollout whose
@@ -464,23 +463,6 @@ Later the same day, for `phase0/proto-n`:
 
 Not tested: long threads (context size), Codex's own
 `apply_patch` and MCP calls copied into Claude, and how either format moves in the next release.
-
-## Prototype dependencies
-
-The crates the phase 0 prototype in `phase0/` uses. The crates of desl itself are named in the
-stack paragraph of `SPEC.md`.
-
-| Crate | Version | Why |
-| --- | --- | --- |
-| `ratatui` (with its `crossterm`) | 0.30 | The interface. In the spec's stack. |
-| `serde`, `serde_json` | 1 | Agent streams, the host protocol, the log. In the spec's stack. |
-| `pulldown-cmark` | 0.13, default features off | Parses an answer's markdown (tables, nested lists, links). Added 2026-11-04 after the hand-written renderer was judged poor. Not in the spec's stack; phase 1 needs a markdown parser named there. |
-| `chrono` | 0.4, `clock` only | The status-bar clock. |
-| `unicode-width` | 0.2 | Column widths for wrapping. |
-| `anyhow` | 1 | Error context in the binaries. |
-
-`portable-pty` 0.9 and `vt100` 0.18 served Prototype B's panes and left with it; `proto-n` uses them again (with `crossterm` 0.29 for raw mode and `chrono` for timestamps).
-
 
 ## Subagents (Claude Code 2.1.318)
 

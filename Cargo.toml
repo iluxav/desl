@@ -8,8 +8,6 @@ members = [
     "crates/adapters/claude",
     "crates/adapters/codex",
 ]
-# The phase 0 prototype is its own workspace, kept only as the reference for the client.
-exclude = ["phase0"]
 
 [workspace.package]
 version = "0.1.0"

@@ -22,15 +22,15 @@ The experience is the product. Every tool in this space already has the technolo
 
 ## Phases
 
-- **Phase 0 (done 2026-11-04, reversed 2026-11-05): the experience prototype.** Prototype A (desl renders the conversation from headless agents) won first; the author reversed it for the native route after `phase0/proto-n` showed a seamless switch between the agents' own interfaces. The reasons are in the phase 0 outcome in `SPEC.md`.
-- **Phase 1 (now): the real thing**, in Rust (ratatui, crossterm, portable-pty, vt100, rusqlite, clap, serde, tracing; the stack paragraph of `SPEC.md` has the full list), on the native route: the switch behaves as in `phase0/proto-n`, the overlays look like Prototype A. The author is the only tester.
+- **Phase 0 (done 2026-11-04, reversed 2026-11-05): the experience prototype.** Prototype A (desl renders the conversation from headless agents) won first; the author reversed it for the native route after a prototype showed a seamless switch between the agents' own interfaces. The reasons are in the phase 0 outcome in `SPEC.md`; the prototypes are in the git history.
+- **Phase 1 (now): the real thing**, in Rust (ratatui, crossterm, portable-pty, vt100, rusqlite, clap, serde, tracing; the stack paragraph of `SPEC.md` has the full list), on the native route. The author is the only tester.
 - **Phase 2: panes and worktrees. Phase 3: reach.** See the roadmap in `SPEC.md`.
 
 ## Layout
 
 ```
 crates/
-  desl/            binary: client TUI + CLI (thin; talks to the daemon over the socket)
+  desl/            binary: the client (sidebar, agent pane through vt100) and the CLI; talks to the daemon over the socket
   desl-daemon/     thread engine, store, projector, approval broker, git service, PTY host, event bus
   desl-proto/      the daemon protocol (versioned, documented in docs/protocol.md)
   desl-ir/         the event IR and Thread/Binding types
@@ -39,9 +39,9 @@ crates/
     codex/         fixtures/, replay tests, the Codex adapter
     pty/           the raw PTY adapter (phase 2)
 docs/
-  protocol.md  adapters.md  keys.md (generated)  CHANGELOG.md  phase0-decisions.md
-phase0/            proto-n, the reference for the native switch; proto-a, the look of the overlays; its own workspace, not part of the build
-SPEC.md  AGENTS.md  CLAUDE.md  README.md
+  protocol.md  adapters.md  CHANGELOG.md
+.github/workflows/ ci.yml (make check), release.yml (builds and publishes on a v* tag)
+SPEC.md  AGENTS.md  CLAUDE.md  README.md  install.sh  Makefile
 ```
 
 ## How to work
@@ -49,7 +49,7 @@ SPEC.md  AGENTS.md  CLAUDE.md  README.md
 - Start each task by stating which spec section it serves and which feel-bar moment it protects.
 - Keep changes small and reviewable. One behaviour per change.
 - Run `make check` (`cargo clippy -- -D warnings`, `cargo fmt --check`, `cargo test`) before declaring anything done; the performance suite joins it when it exists.
-- Expected outputs are files: adapter IR (`fixtures/*.ir.json`), briefs (`goldens/`), screens (`snapshots/`), `docs/keys.md`. `DESL_BLESS=1 cargo test` rewrites them after a deliberate change, and the diff is reviewed like code.
+- Expected outputs are files: adapter IR (`fixtures/*.ir.json`) and briefs (`goldens/`). `DESL_BLESS=1 cargo test` rewrites them after a deliberate change, and the diff is reviewed like code.
 - When a decision in "Open questions" comes up, resolve it in `SPEC.md` first, then implement.
 - Never add a dependency without noting it in `docs/adapters.md` or the stack paragraph of `SPEC.md`.
 - Never mention "Drover" anywhere; it was a working label that collided with existing tools.

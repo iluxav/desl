@@ -159,15 +159,12 @@ pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     let mut last: Option<&str> = None;
     for t in order(projects, threads) {
         if last != Some(t.project_id.as_str()) {
-            // Two blank rows between projects, one between threads: a terminal has no
-            // smaller space than a row.
+            // A blank row between projects; threads sit row on row.
             if last.is_some() {
-                out.extend([Row::Gap, Row::Gap]);
+                out.push(Row::Gap);
             }
             last = Some(t.project_id.as_str());
             out.push(Row::Project(t.project_id.clone()));
-        } else {
-            out.push(Row::Gap);
         }
         out.push(Row::Thread(t.id.clone()));
         let n = t.subagents.len();
@@ -927,14 +924,14 @@ mod tests {
         let r = rows(&projects, &threads);
         assert_eq!(r[1], Row::Thread("t-1".into()));
         assert_eq!(r[2], Row::Sub("t-1".into(), 2), "the newest four only");
-        assert_eq!((&r[6], &r[7]), (&Row::Gap, &Row::Thread("t-2".into())), "a blank row between threads");
+        assert_eq!(r[6], Row::Thread("t-2".into()), "no blank row between threads");
         let a = areas(120, 30, true);
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 2), Some(Row::Sub("t-1".into(), 2)));
         threads[2].subagents.clear();
         let r = rows(&projects, &threads);
         assert_eq!(r[0], Row::Project("a".into()));
-        assert_eq!(r[2], Row::Gap);
-        assert_eq!((&r[4], &r[5], &r[6]), (&Row::Gap, &Row::Gap, &Row::Project("b".into())), "two between projects");
+        assert_eq!(r[2], Row::Thread("t-2".into()));
+        assert_eq!((&r[3], &r[4]), (&Row::Gap, &Row::Project("b".into())), "one between projects");
         let a = areas(120, 30, true);
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 1), Some(Row::Thread("t-1".into())));
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP), Some(Row::Project("a".into())));
@@ -991,13 +988,13 @@ mod tests {
         assert!(lines[1].contains("││ hello from the agent"), "{s}");
         assert!(lines[2].contains("│ desl  /src "), "{s}");
         assert!(lines[3].contains("│  ✻ fix the login ") && lines[3].contains("now  ││"), "{s}");
-        assert!(lines[5].contains("│  ✻ New thread "), "{s}");
+        assert!(lines[4].contains("│  ✻ New thread "), "{s}");
         assert!(!s.contains("claude ·"), "the logo says the agent: {s}");
         // The thread on screen is tinted across its row; the others are not.
         let b = t.backend().buffer();
         assert_ne!(b[(20, 3)].bg, Color::Reset, "{s}");
-        assert_eq!(b[(20, 5)].bg, Color::Reset, "{s}");
-        assert_eq!(b[(3, 5)].fg, Color::Yellow, "a waiting thread's logo is the warning colour");
+        assert_eq!(b[(20, 4)].bg, Color::Reset, "{s}");
+        assert_eq!(b[(3, 4)].fg, Color::Yellow, "a waiting thread's logo is the warning colour");
         // A subagent in the pane takes the tint from its thread.
         let mut with_sub = threads.clone();
         with_sub[0].subagents = vec![desl_ir::Subagent {

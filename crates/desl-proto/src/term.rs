@@ -226,6 +226,42 @@ pub fn replace_screen(output: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// The terminal modes an agent has set that an overlay must put back: whether it draws on the
+/// alternate screen, and whether it hid the cursor. Read from what it drew, oldest first.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Modes {
+    pub alternate: bool,
+    pub cursor_hidden: bool,
+}
+
+impl Modes {
+    /// Follows the private-mode sets and resets (`CSI ? n h` / `CSI ? n l`) in `b`.
+    pub fn track(&mut self, b: &[u8]) {
+        let mut i = 0;
+        while i + 2 < b.len() {
+            if b[i] != 0x1b || b[i + 1] != b'[' || b[i + 2] != b'?' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 3;
+            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b';') {
+                j += 1;
+            }
+            if j < b.len() && (b[j] == b'h' || b[j] == b'l') {
+                let on = b[j] == b'h';
+                for n in std::str::from_utf8(&b[i + 3..j]).unwrap_or("").split(';') {
+                    match n {
+                        "1049" | "1047" | "47" => self.alternate = on,
+                        "25" => self.cursor_hidden = !on,
+                        _ => {}
+                    }
+                }
+            }
+            i = j;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -248,5 +284,16 @@ mod tests {
         assert!(a.take(b"\x1b]11;rgb:1a1a/1b1b/2626\x1b\\\x1b[?1u\x1b[?62;22c"));
         assert_eq!(a.bg.as_deref(), Some("\x1b]11;rgb:1a1a/1b1b/2626\x1b\\"));
         assert_eq!(a.kitty.as_deref(), Some("\x1b[?1u"));
+    }
+
+    #[test]
+    fn modes_follow_the_last_set_or_reset() {
+        let mut m = Modes::default();
+        m.track(b"x\x1b[?1049h\x1b[?25l\x1b[?2026h");
+        assert_eq!(m, Modes { alternate: true, cursor_hidden: true });
+        m.track(b"\x1b[?1049;25h");
+        assert_eq!(m, Modes { alternate: true, cursor_hidden: false });
+        m.track(b"\x1b[?1049l");
+        assert!(!m.alternate);
     }
 }

@@ -11,6 +11,7 @@ mod input;
 mod keymap;
 mod model;
 mod native;
+mod overlay;
 mod picker;
 mod rawkeys;
 mod theme;

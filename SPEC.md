@@ -177,7 +177,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix l` | Back to the thread shown before | tmux |
 | `prefix ,` | Rename this thread | tmux |
 | `prefix i` | Agent, native session id, model, worktree | desl |
-| `prefix x` | Close this thread's agent (the thread is kept and reopens on demand) | tmux |
+| `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |
 | `prefix ?` | Help overlay | lazygit |

@@ -25,6 +25,7 @@ pub enum Action {
     Jump(usize),
     Last,
     Sidebar,
+    Close,
     Detach,
     Help,
 }
@@ -40,6 +41,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Threads", "p", "Previous thread"),
     ("Threads", "1…9", "Jump to thread n"),
     ("Threads", "l", "Back to the thread shown before"),
+    ("Threads", "x", "Close this thread: its agent or shell ends"),
     ("desl", "b", "Hide or show the sidebar"),
     ("desl", "d", "Detach; the agents keep working"),
     ("desl", "?", "This help"),
@@ -57,6 +59,7 @@ pub fn action(c: char) -> Option<Action> {
         'p' => Action::Prev,
         'l' => Action::Last,
         'b' => Action::Sidebar,
+        'x' => Action::Close,
         'd' => Action::Detach,
         '?' => Action::Help,
         '1'..='9' => Action::Jump(c as usize - '0' as usize),
@@ -352,7 +355,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ("o", "open dir"),
             ("w", "threads"),
             ("n p", "next prev"),
-            ("b", "sidebar"),
+            ("x", "close"),
             ("?", "help"),
             ("d", "detach"),
         ] {

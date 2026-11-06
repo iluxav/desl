@@ -127,6 +127,8 @@ struct Client {
     agents: Vec<AgentInfo>,
     /// The new-thread menu's cursor while it is open.
     menu: Option<usize>,
+    /// The thread `prefix x` asks to close, until the user answers y or n.
+    closing: Option<String>,
 }
 
 /// What a new-thread menu row starts: an agent's id, or [`SHELL`].
@@ -212,7 +214,7 @@ impl Client {
                 self.mouse(m);
                 continue;
             }
-            let ours = self.side.is_some() || self.help || self.menu.is_some();
+            let ours = self.side.is_some() || self.help || self.menu.is_some() || self.closing.is_some();
             if ours && self.armed.is_none() {
                 // Keys rawkeys leaves whole: a lone escape, and arrows in application mode.
                 if rest == [0x1b] {
@@ -384,7 +386,19 @@ impl Client {
         if a != Action::New {
             self.menu = None;
         }
+        self.closing = None;
         match a {
+            Action::Close => {
+                self.side = None;
+                let what = match self.threads.iter().find(|t| t.id == self.thread_id) {
+                    Some(t) if t.active_agent == SHELL => format!("the shell {}", t.name),
+                    Some(t) => format!("{} · {}", t.active_agent, if t.name.is_empty() { "new" } else { t.name.as_str() }),
+                    None => self.thread_id.clone(),
+                };
+                let note = if self.agent == SHELL { "" } else { " The agent keeps the conversation in its own history." };
+                self.notice(&format!("Close {} ({what})?{note}  y close · any other key keeps it", self.thread_id));
+                self.closing = Some(self.thread_id.clone());
+            }
             Action::Threads if self.side.is_some() => self.side = None,
             Action::Threads => {
                 if !self.sidebar_on {
@@ -529,6 +543,12 @@ impl Client {
         self.dirty = true;
         if self.help {
             self.help = false;
+            return;
+        }
+        if let Some(id) = self.closing.take() {
+            if matches!(key, SKey::Char('y' | 'Y')) {
+                self.link.request(Command::RemoveThread { thread_id: id });
+            }
             return;
         }
         if self.menu.is_some() {
@@ -711,7 +731,17 @@ impl Client {
                     None => self.threads.push(*thread),
                 }
             }
-            Change::ThreadRemoved { thread_id } => self.threads.retain(|t| t.id != thread_id),
+            Change::ThreadRemoved { thread_id } => {
+                self.threads.retain(|t| t.id != thread_id);
+                // The thread on screen was closed: the pane moves on, and desl ends with the last.
+                if thread_id == self.thread_id && self.busy.is_none() {
+                    let next = self.previous.clone().filter(|p| self.threads.iter().any(|t| t.id == *p));
+                    match next.or_else(|| self.ordered().into_iter().next()) {
+                        Some(id) => self.go(id),
+                        None => return Some("That was the last thread. Run desl to start a new one.".to_string()),
+                    }
+                }
+            }
             Change::Project { project } => match self.projects.iter_mut().find(|p| p.id == project.id) {
                 Some(p) => *p = project,
                 None => self.projects.push(project),
@@ -815,6 +845,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         scrolled: 0,
         agents: ws.agents,
         menu: None,
+        closing: None,
     };
     c.screen_from(&replay);
     c.title();

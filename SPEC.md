@@ -172,7 +172,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
 | `prefix f` | Fork from here: a menu of the agents, the thread's own marked; a new thread `t-7f3a/1` opens with the conversation so far copied into a new session of the one picked, keeping the parent's model and effort choices | desl |
 | `prefix c` | New thread in this project: a menu of the agents and the user's shell, the cursor on the project's default (`j`/`k`, `enter`, `1`…`9`, `esc`); from a shell, in the shell's directory, which becomes a project | tmux |
-| `prefix o` | Open a directory: a shell beside this project to `cd` to it, then `prefix c` | desl |
+| `prefix o` | Open a directory: a fuzzy finder over known projects, zoxide's directories and git repositories under home, or a typed path; a shell opens there, then `prefix c` | fzf, zoxide |
 | `prefix w` | Move the keys to the sidebar's thread list | tmux |
 | `prefix n` / `prefix p` | Next / previous thread | tmux |
 | `prefix 1`…`prefix 9` | Jump to thread n in the list | tmux |

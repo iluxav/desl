@@ -55,7 +55,7 @@ desl owns one key, the prefix: `ctrl+space`. Every other key goes to the agent.
 | --- | --- |
 | `s` | Switch this thread to the other agent. desl copies the conversation into a new session of Claude or Codex and the screen changes in one frame. |
 | `c` | New thread: a menu of Claude, Codex and your shell. `w` in the menu gives it a git worktree of its own. |
-| `o` | Open another directory: a shell to `cd` to it, then `c` starts an agent there. |
+| `o` | Open a directory: type part of its name and pick it from your projects, recent directories (zoxide) and git repositories, or type a path (`tab` completes). A shell opens there; `c` then starts an agent in it. |
 | `f` | Fork this conversation into a new thread, on either agent. |
 | `w` | Move into the sidebar (`j`/`k`, `enter`, `esc`). A click works too. |
 | `n` `p` `1`…`9` `l` | Next, previous, by number, the one before. |

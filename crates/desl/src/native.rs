@@ -3,7 +3,8 @@
 //! every key goes to it except the prefix and the key after it.
 
 use crate::conn::{Conn, Link};
-use crate::layout::{self, Action, Areas, Menu, MenuItem, Row, SubView, View};
+use crate::finder::Finder;
+use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, Row, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Event, Project, SHELL, Status, Thread};
@@ -152,6 +153,8 @@ struct Client {
     agents: Vec<AgentInfo>,
     /// The new-thread menu's cursor while it is open.
     menu: Option<usize>,
+    /// `prefix o`: the directory finder while it is open.
+    finder: Option<Finder>,
     /// The thread `prefix x` asks to close, until the user answers y or n.
     closing: Option<String>,
     /// A subagent's conversation shown in the pane.
@@ -267,6 +270,7 @@ impl Client {
             let ours = self.side.is_some()
                 || self.help
                 || self.menu.is_some()
+                || self.finder.is_some()
                 || self.closing.is_some()
                 || self.sub.is_some()
                 || self.renaming.is_some()
@@ -393,9 +397,10 @@ impl Client {
                     self.dirty = true;
                 }
             }
-            if m.press && !m.motion() && m.wheel().is_none() && (self.side.is_some() || self.menu.is_some()) {
+            if m.press && !m.motion() && m.wheel().is_none() && (self.side.is_some() || self.menu.is_some() || self.finder.is_some()) {
                 self.side = None;
                 self.menu = None;
+                self.finder = None;
                 self.dirty = true;
             }
             return;
@@ -460,6 +465,9 @@ impl Client {
         if a != Action::New {
             self.menu = None;
         }
+        if a != Action::Open {
+            self.finder = None;
+        }
         self.sub = None;
         self.closing = None;
         match a {
@@ -494,21 +502,11 @@ impl Client {
                     self.prefix_label
                 ));
             }
+            Action::Open if self.finder.is_some() => self.finder = None,
             Action::Open => {
-                // From beside the current project, the usual place to find another one.
-                let here = self.threads.iter().find(|t| t.id == self.thread_id).map(|t| PathBuf::from(&t.cwd));
-                let start = here.as_deref().and_then(|p| p.parent()).map(|p| p.to_string_lossy().into_owned());
-                let cwd = start.or_else(|| std::env::var("HOME").ok()).unwrap_or_else(|| "/".into());
-                let command = Command::NewThread {
-                    cwd,
-                    agent: Some(SHELL.into()),
-                    prompt: None,
-                    beside: Some(self.thread_id.clone()),
-                    worktree: false,
-                };
-                let id = self.link.request(command);
-                self.busy = Some(Busy::Create(id));
-                self.notice(&format!("cd to the directory, then press {} c to start an agent there.", self.prefix_label));
+                self.side = None;
+                let known: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
+                self.finder = Some(Finder::new(&known));
             }
             Action::Switch => {
                 self.side = None;
@@ -697,6 +695,54 @@ impl Client {
         }
     }
 
+    /// Typing filters, arrows or ctrl+n/p move, tab completes a path, enter opens a shell there.
+    fn finder_key(&mut self, key: SKey) {
+        let Some(f) = &mut self.finder else { return };
+        let n = f.matches().len();
+        match key {
+            SKey::Close => self.finder = None,
+            SKey::Down | SKey::Char('\x0e') => f.cursor = (f.cursor + 1).min(n.saturating_sub(1)),
+            SKey::Up | SKey::Char('\x10') => f.cursor = f.cursor.saturating_sub(1),
+            SKey::Char('\t') => f.complete(),
+            SKey::Back => {
+                f.query.pop();
+                f.cursor = 0;
+            }
+            // ctrl+u clears, ctrl+w takes back a word, as in a shell.
+            SKey::Char('\x15') => {
+                f.query.clear();
+                f.cursor = 0;
+            }
+            SKey::Char('\x17') => {
+                let keep = f.query.trim_end_matches('/').rfind(['/', ' ']).map_or(0, |i| i + 1);
+                f.query.truncate(keep);
+                f.cursor = 0;
+            }
+            SKey::Char(c) if !c.is_control() => {
+                f.query.push(c);
+                f.cursor = 0;
+            }
+            SKey::Enter => {
+                let Some((dir, _)) = f.matches().get(f.cursor).cloned() else {
+                    return self.notice("No directory matches. Type a path like ~/src/app, or esc to cancel.");
+                };
+                let shown = f.tilde(&dir);
+                self.finder = None;
+                let command = Command::NewThread {
+                    cwd: dir.to_string_lossy().into_owned(),
+                    agent: Some(SHELL.into()),
+                    prompt: None,
+                    beside: None,
+                    worktree: false,
+                };
+                let id = self.link.request(command);
+                self.busy = Some(Busy::Create(id));
+                self.notice(&format!("A shell in {shown}. Press {} c to start an agent here.", self.prefix_label));
+            }
+            SKey::Char(_) => {}
+        }
+    }
+
     /// Shows subagent `k` of `thread_id` in the pane.
     fn open_sub(&mut self, thread_id: &str, k: usize) {
         let Some(s) = self.threads.iter().find(|t| t.id == thread_id).and_then(|t| t.subagents.get(k)) else { return };
@@ -728,6 +774,9 @@ impl Client {
 
     /// A running subagent's view is read again every second; a working thread's logo pulses.
     fn tick(&mut self) {
+        if self.finder.as_mut().is_some_and(Finder::poll) {
+            self.dirty = true;
+        }
         if self.sidebar_on
             && self.threads.iter().any(|t| t.status == Status::Working)
             && self.painted.elapsed() >= Duration::from_millis(120)
@@ -749,6 +798,9 @@ impl Client {
         if self.help {
             self.help = false;
             return;
+        }
+        if self.finder.is_some() {
+            return self.finder_key(key);
         }
         if let Some(sub) = &mut self.sub {
             match key {
@@ -858,6 +910,7 @@ impl Client {
             help: self.help,
             scrolled: self.scrolled,
             menu: None,
+            finder: None,
             sub: None,
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
             shown_sub: self.sub.as_ref().map(|s| (s.thread_id.as_str(), s.id.as_str())),
@@ -897,7 +950,15 @@ impl Client {
             let max = sub_lines.len().saturating_sub(a.pane.height as usize);
             SubView { title, running, lines: &sub_lines, scroll: sub.scroll.min(max) }
         });
-        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), sub: sub_view, ..view };
+        let finder_rows: Vec<(String, &'static str)> =
+            self.finder.as_ref().map(|f| f.matches().iter().map(|(p, k)| (f.tilde(p), k.note())).collect()).unwrap_or_default();
+        let finder = self.finder.as_ref().map(|f| FinderView {
+            query: &f.query,
+            rows: &finder_rows,
+            cursor: f.cursor.min(finder_rows.len().saturating_sub(1)),
+            scanning: f.scanning(),
+        });
+        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), sub: sub_view, finder, ..view };
         let screen = self.vt.screen();
         let _ = self.term.draw(|f| layout::draw(f, &view, &a, screen));
         let next = self.term.backend().buffer().clone();
@@ -906,6 +967,7 @@ impl Client {
         let (row, col) = screen.cursor_position();
         if self.side.is_none()
             && self.menu.is_none()
+            && self.finder.is_none()
             && self.sub.is_none()
             && self.info.is_none()
             && self.renaming.is_none()
@@ -1156,6 +1218,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         scrolled: 0,
         agents: ws.agents,
         menu: None,
+        finder: None,
         closing: None,
         sub: None,
         forking: false,

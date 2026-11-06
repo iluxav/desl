@@ -5,6 +5,7 @@
 
 mod cli;
 mod conn;
+mod finder;
 mod layout;
 mod model;
 mod native;

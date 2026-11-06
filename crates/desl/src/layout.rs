@@ -41,7 +41,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "i", "Info: agent, session ids, model, directory"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
     ("Threads", "c", "New thread: pick Claude, Codex or a shell"),
-    ("Threads", "o", "Open a directory: a shell to cd into it, then c"),
+    ("Threads", "o", "Open a directory: type to find it; a shell opens there"),
     ("Threads", "n", "Next thread"),
     ("Threads", "p", "Previous thread"),
     ("Threads", "1…9", "Jump to thread n"),
@@ -217,6 +217,15 @@ pub struct Menu<'a> {
     pub cursor: usize,
 }
 
+/// `prefix o`: the query, and the directories that match it, as `~/x` with where each is from.
+pub struct FinderView<'a> {
+    pub query: &'a str,
+    pub rows: &'a [(String, &'static str)],
+    pub cursor: usize,
+    /// Still looking for repositories under the home directory.
+    pub scanning: bool,
+}
+
 pub struct View<'a> {
     pub projects: &'a [Project],
     pub threads: &'a [Thread],
@@ -232,6 +241,7 @@ pub struct View<'a> {
     /// Lines scrolled back in the agent's screen, 0 when following it.
     pub scrolled: usize,
     pub menu: Option<Menu<'a>>,
+    pub finder: Option<FinderView<'a>>,
     pub sub: Option<SubView<'a>>,
     /// Milliseconds since the epoch, for ages.
     pub now: i64,
@@ -513,6 +523,15 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
         Line::from(spans)
+    } else if v.finder.is_some() {
+        let mut spans = vec![Span::raw("  ")];
+        for (k, what) in
+            [("type", "filter"), ("↑↓", "move"), ("tab", "complete a path"), ("enter", "open a shell there"), ("esc", "cancel")]
+        {
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+        }
+        Line::from(spans)
     } else if v.menu.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("w", "own worktree"), ("esc", "cancel")] {
@@ -604,6 +623,46 @@ fn info(f: &mut Frame, rows: &[(String, String)], area: Rect) {
         Paragraph::new(lines),
         Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), inner.height.saturating_sub(1)),
     );
+}
+
+/// A box over the pane: the query on top, the matching directories under it, the cursor's lit.
+fn finder(f: &mut Frame, v: &FinderView, area: Rect) {
+    let w = 76.min(area.width);
+    let h = 24.min(area.height);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 4, w, h);
+    let count = if v.scanning { format!(" {} · looking… ", v.rows.len()) } else { format!(" {} ", v.rows.len()) };
+    let block = panel(true)
+        .title(Line::from(Span::styled(" Open a directory ", theme::bold())))
+        .title(Line::from(Span::styled(count, theme::dim())).right_aligned());
+    let inner = block.inner(r);
+    f.render_widget(Clear, r);
+    f.render_widget(block, r);
+    let inner = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+    let iw = inner.width as usize;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("❯ ", theme::accent()),
+            Span::styled(v.query.to_string(), theme::normal()),
+            Span::styled("▏", theme::accent()),
+            if v.query.is_empty() { Span::styled("a name, or a path like ~/src/", theme::muted()) } else { Span::raw("") },
+        ]),
+        Line::from(Span::styled("─".repeat(iw), theme::muted())),
+    ];
+    let room = (inner.height as usize).saturating_sub(2);
+    if v.rows.is_empty() {
+        let why = if v.scanning { "Looking…" } else { "No directory matches. Type a path, like ~/src/app." };
+        lines.push(Line::from(Span::styled(format!(" {why}"), theme::dim())));
+    }
+    let skip = v.cursor.saturating_sub(room.saturating_sub(1));
+    for (i, (path, note)) in v.rows.iter().enumerate().skip(skip).take(room) {
+        let lit = i == v.cursor;
+        let note_w = note.width();
+        let path = truncate_start(path, iw.saturating_sub(note_w + 4));
+        let gap = iw.saturating_sub(path.width() + note_w + 2);
+        let (ps, ns) = if lit { (theme::pill(), theme::pill()) } else { (theme::normal(), theme::dim()) };
+        lines.push(Line::from(vec![Span::styled(format!(" {path}{}", " ".repeat(gap)), ps), Span::styled(format!("{note} "), ns)]));
+    }
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A small box in the middle of the pane: numbered choices, the cursor's lit.
@@ -701,6 +760,9 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
     footer(f, v, a.footer);
     if let Some(m) = &v.menu {
         menu(f, m, a.pane);
+    }
+    if let Some(fv) = &v.finder {
+        finder(f, fv, a.pane);
     }
     if let Some(rows) = v.info {
         info(f, rows, a.pane);
@@ -910,6 +972,7 @@ mod tests {
             help: false,
             scrolled: 0,
             menu: None,
+            finder: None,
             sub: None,
             now: 0,
             shown_sub: None,
@@ -958,6 +1021,7 @@ mod tests {
             help: false,
             scrolled: 0,
             menu: None,
+            finder: None,
             sub: None,
             now: 0,
             shown_sub: Some(("t-1a", "s1")),

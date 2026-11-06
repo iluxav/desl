@@ -78,6 +78,13 @@ fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
     answers
 }
 
+/// Where a working logo is in its pulse, 0 to 1: one slow breath every 1.6 seconds.
+fn pulse() -> f32 {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()) % 1600;
+    let phase = ms as f32 / 1600.0 * std::f32::consts::TAU;
+    (phase.sin() + 1.0) / 2.0
+}
+
 /// Whether to draw Nerd Font icons: `DESL_ICONS=nerd` or `text` says so; otherwise yes when a
 /// Nerd Font is installed here and the terminal is local (over SSH, the font is the other end's).
 fn nerd_font() -> bool {
@@ -399,7 +406,7 @@ impl Client {
         {
             let skip = self.side_skip();
             match layout::row_at(&self.projects, &self.threads, s, skip, m.y) {
-                Some(Row::Thread(id) | Row::Meta(id)) => {
+                Some(Row::Thread(id)) => {
                     self.side = None;
                     self.sub = None;
                     self.dirty = true;
@@ -713,8 +720,14 @@ impl Client {
         Some((t, t.subagents.iter().find(|s| s.id == sub.id)?))
     }
 
-    /// A running subagent's view is read again every second.
+    /// A running subagent's view is read again every second; a working thread's logo pulses.
     fn tick(&mut self) {
+        if self.sidebar_on
+            && self.threads.iter().any(|t| t.status == Status::Working)
+            && self.painted.elapsed() >= Duration::from_millis(120)
+        {
+            self.dirty = true;
+        }
         let running = self.sub_meta().is_some_and(|(t, s)| !s.finished && t.status.busy());
         if let Some(sub) = &self.sub
             && running
@@ -844,6 +857,7 @@ impl Client {
             shown_sub: self.sub.as_ref().map(|s| (s.thread_id.as_str(), s.id.as_str())),
             renaming: self.renaming.as_deref(),
             info: self.info.as_deref(),
+            pulse: pulse(),
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();

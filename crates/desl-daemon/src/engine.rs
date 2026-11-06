@@ -136,6 +136,16 @@ impl Pending {
     }
 }
 
+/// A prompt being typed into an agent's own interface: the text first, enter a tick later, so
+/// the agent never takes the enter as part of a paste.
+struct Typing {
+    text: String,
+    typed: Option<Instant>,
+}
+
+/// A prompt typed into an agent that has not started a turn by then is given up on.
+const TURN_START_LIMIT: Duration = Duration::from_secs(30);
+
 /// The lines of the screen's bottom that are checked for a question from the agent.
 const ASKING_ROWS: usize = 14;
 
@@ -179,6 +189,10 @@ pub struct Engine {
     /// When the user last pressed enter in each thread's agent: a turn it starts shows in the
     /// agent's files only a moment later.
     entered: HashMap<String, Instant>,
+    /// A prompt from the CLI on its way into an agent's own interface, by thread.
+    typing: HashMap<String, Typing>,
+    /// Prompts typed into an agent whose turn has not shown in its files yet, by thread.
+    awaiting_turn: HashMap<String, Instant>,
     ticks: u64,
     pub stopping: bool,
 }
@@ -266,6 +280,8 @@ impl Engine {
             tails: HashMap::new(),
             pending: HashMap::new(),
             entered: HashMap::new(),
+            typing: HashMap::new(),
+            awaiting_turn: HashMap::new(),
             ticks: 0,
             stopping: false,
         };
@@ -1056,7 +1072,10 @@ impl Engine {
                     }
                     self.append(thread_id, kind);
                 }
-                Reading::Working => self.threads[i].status = Status::Working,
+                Reading::Working => {
+                    self.threads[i].status = Status::Working;
+                    self.awaiting_turn.remove(thread_id);
+                }
                 Reading::Idle => self.threads[i].status = Status::Idle,
                 // Chosen in the agent's own interface: the agent's next session starts the same.
                 Reading::Settings { model, effort } => {
@@ -1082,6 +1101,67 @@ impl Engine {
         }
         self.refresh_subagents(thread_id);
         self.check_asking(thread_id);
+        // The turn ended: the next queued prompt goes in.
+        if let Ok(i) = self.idx(thread_id)
+            && self.threads[i].status == Status::Idle
+            && !self.threads[i].queued.is_empty()
+            && !self.typing.contains_key(thread_id)
+            && let Ok(Some(text)) = self.store.queue_pop(thread_id)
+        {
+            self.threads[i].queued.remove(0);
+            self.type_prompt(thread_id, text);
+        }
+    }
+
+    /// Puts `text` on its way into the thread's agent's own interface, as if typed there.
+    fn type_prompt(&mut self, thread_id: &str, text: String) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        self.typing.insert(thread_id.to_string(), Typing { text, typed: None });
+        self.threads[i].status = Status::Working;
+        self.persist(thread_id);
+        self.deliver(thread_id);
+    }
+
+    /// Types a waiting prompt once the agent is ready for it and not asking something; enter
+    /// follows a tick later.
+    fn deliver(&mut self, thread_id: &str) {
+        let Some(ty) = self.typing.get_mut(thread_id) else { return };
+        let Some((_, pty)) = self.ptys.get_mut(thread_id) else {
+            self.typing.remove(thread_id);
+            return;
+        };
+        match ty.typed {
+            Some(at) if at.elapsed() >= Duration::from_millis(150) => {
+                pty.write(b"\r");
+                self.typing.remove(thread_id);
+                self.entered.insert(thread_id.to_string(), Instant::now());
+                self.awaiting_turn.insert(thread_id.to_string(), Instant::now());
+            }
+            Some(_) => {}
+            None if pty.ready() => {
+                let asking = self.adapters.iter().find(|a| a.id() == pty.agent).is_some_and(|a| a.waiting(&pty.tail_text(ASKING_ROWS)));
+                if asking {
+                    // Its own question comes first: the thread waits for the user.
+                    if let Ok(i) = self.idx(thread_id)
+                        && self.threads[i].status != Status::Waiting
+                    {
+                        self.threads[i].status = Status::Waiting;
+                        self.persist(thread_id);
+                    }
+                    return;
+                }
+                let text = ty.text.clone();
+                // Lines after the first would each send the prompt: they go as one paste.
+                let bytes = if text.contains('\n') && pty.bracketed_paste() {
+                    format!("\x1b[200~{text}\x1b[201~").into_bytes()
+                } else {
+                    text.replace('\n', " ").into_bytes()
+                };
+                pty.write(&bytes);
+                ty.typed = Some(Instant::now());
+            }
+            None => {}
+        }
     }
 
     /// The helpers the thread's agent started in its current session, from the agent's files,
@@ -1326,6 +1406,22 @@ impl Engine {
         let ready: Vec<String> = self.pending.iter().filter(|(_, p)| p.ready()).map(|(id, _)| id.clone()).collect();
         for id in ready {
             self.finish_switch(&id);
+        }
+        let typing: Vec<String> = self.typing.keys().cloned().collect();
+        for id in typing {
+            self.deliver(&id);
+        }
+        let stale: Vec<String> =
+            self.awaiting_turn.iter().filter(|(_, t)| t.elapsed() >= TURN_START_LIMIT).map(|(id, _)| id.clone()).collect();
+        for id in stale {
+            self.awaiting_turn.remove(&id);
+            if let Ok(i) = self.idx(&id)
+                && self.threads[i].status == Status::Working
+            {
+                tracing::warn!(thread = %id, "the agent took a prompt but started no turn");
+                self.threads[i].status = Status::Idle;
+                self.persist(&id);
+            }
         }
         self.ticks += 1;
         if !self.ticks.is_multiple_of(TICKS_PER_SECOND) {
@@ -1684,7 +1780,14 @@ impl Engine {
         if text.is_empty() {
             return Err("The prompt is empty. Type something to send.".to_string());
         }
-        if self.threads[i].status.busy() {
+        let agent = self.threads[i].active_agent.clone();
+        if agent == SHELL {
+            return Err("A shell thread has no agent to prompt. Start one with ctrl+b c, or desl new.".to_string());
+        }
+        // An agent desl runs in its own interface gets the prompt typed there; the headless
+        // turn is left for agents without one.
+        let native = self.adapter(&agent).is_some_and(|a| a.session_reader(Path::new(&self.threads[i].cwd)).is_some());
+        if self.threads[i].status.busy() || self.typing.contains_key(thread_id) {
             self.store
                 .queue_push(thread_id, text, now())
                 .map_err(|e| format!("Could not queue the prompt ({e:#}). Send it again when the agent is idle."))?;
@@ -1692,7 +1795,14 @@ impl Engine {
             self.persist(thread_id);
             return Ok(Reply::Sent { queued: true });
         }
-        self.usable(&self.threads[i].active_agent)?;
+        self.usable(&agent)?;
+        if native {
+            if !self.ptys.contains_key(thread_id) {
+                self.start_pty(i, 40, 120)?;
+            }
+            self.type_prompt(thread_id, text.to_string());
+            return Ok(Reply::Sent { queued: false });
+        }
         self.dispatch(thread_id, text, None);
         Ok(Reply::Sent { queued: false })
     }
@@ -1932,7 +2042,7 @@ impl Engine {
             self.persist(&shell);
         }
         if let Some(text) = prompt.map(str::trim).filter(|t| !t.is_empty()) {
-            self.dispatch(&id, text, None);
+            self.prompt(&id, text)?;
         }
         Ok(Reply::Created { thread_id: id })
     }

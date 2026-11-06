@@ -7,6 +7,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use std::io::{Read, Write};
 use std::num::NonZeroU16;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 /// How much of an agent's output is kept for a client that attaches (SPEC.md "Process hygiene").
 pub const KEEP: usize = 8 * 1024 * 1024;
@@ -19,6 +20,8 @@ pub struct Pty {
     /// Everything the agent drew, oldest first, at most [`KEEP`] bytes.
     log: Vec<u8>,
     pub agent: String,
+    started: Instant,
+    last_output: Option<Instant>,
 }
 
 fn nz(n: u16) -> NonZeroU16 {
@@ -79,11 +82,14 @@ impl Pty {
             screen: vt100::Parser::new(nz(rows), nz(cols), 0),
             log: Vec::new(),
             agent: agent.to_string(),
+            started: Instant::now(),
+            last_output: None,
         })
     }
 
     /// Records what the agent drew.
     pub fn took(&mut self, bytes: &[u8]) {
+        self.last_output = Some(Instant::now());
         self.screen.process(bytes);
         self.log.extend_from_slice(bytes);
         if self.log.len() > KEEP {
@@ -91,6 +97,18 @@ impl Pty {
             let cut = self.log.len() - KEEP * 3 / 4;
             self.log.drain(..cut);
         }
+    }
+
+    /// Started, drawn and quiet: ready for keys. Never longer than 15 seconds.
+    pub fn ready(&self) -> bool {
+        (self.started.elapsed() >= Duration::from_millis(1200)
+            && self.last_output.is_some_and(|t| t.elapsed() >= Duration::from_millis(600)))
+            || self.started.elapsed() >= Duration::from_secs(15)
+    }
+
+    /// The program asked for pastes to be marked (`CSI ? 2004 h`).
+    pub fn bracketed_paste(&self) -> bool {
+        self.screen.screen().bracketed_paste()
     }
 
     pub fn log(&self) -> &[u8] {

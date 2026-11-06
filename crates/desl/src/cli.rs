@@ -252,13 +252,19 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
             ServerFrame::Event { change: Change::Thread { thread } } if thread.id == t.id && sent => match thread.status {
                 Status::Working => {}
                 Status::Waiting => {
-                    let what = thread.pending_approval.map(|p| p.summary).unwrap_or_default();
+                    let what = thread.pending_approval.map(|p| p.summary);
                     if out.json {
                         out.value(&json!({ "status": "waiting", "approval": what }));
-                    } else {
+                    } else if let Some(what) = what {
                         eprintln!(
                             "{} is waiting for approval: {what}. `desl approve {}` or `desl deny {}` answers it.",
                             thread.active_agent, t.id, t.id
+                        );
+                    } else {
+                        // The agent asks in its own interface: that is where it is answered.
+                        eprintln!(
+                            "{} is asking something before it goes on. Run `desl` and answer it in its own screen.",
+                            thread.active_agent
                         );
                     }
                     return Ok(());

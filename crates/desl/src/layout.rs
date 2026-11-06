@@ -4,7 +4,7 @@
 
 use crate::theme;
 use crate::ui::text::truncate_end;
-use desl_ir::{Project, Status, Thread};
+use desl_ir::{Project, SHELL, Status, Thread};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 pub enum Action {
     Switch,
     New,
+    Open,
     Threads,
     Next,
     Prev,
@@ -33,7 +34,8 @@ pub enum Action {
 pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "s", "Switch this thread to the other agent"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
-    ("Threads", "c", "New thread in this project"),
+    ("Threads", "c", "New agent thread here (from a shell: where it is)"),
+    ("Threads", "o", "Open a directory: a shell to cd into it, then c"),
     ("Threads", "n", "Next thread"),
     ("Threads", "p", "Previous thread"),
     ("Threads", "1…9", "Jump to thread n"),
@@ -50,6 +52,7 @@ pub fn action(c: char) -> Option<Action> {
         's' => Action::Switch,
         'w' => Action::Threads,
         'c' => Action::New,
+        'o' => Action::Open,
         'n' => Action::Next,
         'p' => Action::Prev,
         'l' => Action::Last,
@@ -214,7 +217,8 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 let current = t.id == v.current;
                 let highlighted = v.cursor == Some(i);
                 let name = if t.name.is_empty() { "new" } else { t.name.as_str() };
-                let text = truncate_end(&format!("{} · {name}", t.active_agent), w.saturating_sub(6));
+                let label = if t.active_agent == SHELL { name.to_string() } else { format!("{} · {name}", t.active_agent) };
+                let text = truncate_end(&label, w.saturating_sub(6));
                 let pad = w.saturating_sub(5 + text.width());
                 let (mark, text_style) = match (highlighted, current) {
                     (true, _) => ("   ", theme::pill()),
@@ -240,7 +244,9 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
 
 fn header(f: &mut Frame, v: &View, area: Rect) {
     let Some(t) = v.threads.iter().find(|t| t.id == v.current) else { return };
-    let path = v.projects.iter().find(|p| p.id == t.project_id).map_or(t.cwd.clone(), |p| tilde(&p.path));
+    // A shell's header names where it started; an agent's, its project.
+    let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
+    let path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
     let binding = t.bindings.get(v.agent);
     let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
     if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
@@ -251,7 +257,7 @@ fn header(f: &mut Frame, v: &View, area: Rect) {
     } else {
         Span::styled(format!("{} {} ", t.id, t.status.word()), glyph_style(t.status))
     };
-    let agent = agent_title(v.agent);
+    let agent = if v.agent == SHELL { t.name.clone() } else { agent_title(v.agent) };
     let tail = if model.is_empty() { 0 } else { model.width() + 3 };
     let room = (area.width as usize).saturating_sub(right.content.width() + agent.width() + tail + 7).max(8);
     let mut left = vec![
@@ -276,9 +282,16 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
         Line::from(Span::styled(" j/k move · enter open · 1-9 jump · esc back to the agent", theme::muted()))
     } else {
         let mut spans = vec![Span::styled(" ctrl+b ", if v.prefix_armed { theme::pill() } else { theme::accent() })];
-        for (k, what) in
-            [("s", "switch agent"), ("c", "new"), ("w", "threads"), ("n/p", "next/prev"), ("b", "sidebar"), ("?", "help"), ("d", "detach")]
-        {
+        for (k, what) in [
+            ("s", "switch agent"),
+            ("c", "new"),
+            ("o", "open dir"),
+            ("w", "threads"),
+            ("n/p", "next/prev"),
+            ("b", "sidebar"),
+            ("?", "help"),
+            ("d", "detach"),
+        ] {
             spans.push(Span::styled(format!(" {k} "), theme::bold()));
             spans.push(Span::styled(format!("{what} "), theme::muted()));
         }

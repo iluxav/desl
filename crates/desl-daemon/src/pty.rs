@@ -129,6 +129,17 @@ impl Pty {
         self.screen.screen_mut().set_size(nz(rows), nz(cols));
     }
 
+    /// The directory the program is in now: where a shell has `cd`-ed to.
+    pub fn cwd(&self) -> Option<std::path::PathBuf> {
+        let pid = self.child.process_id()?;
+        if let Ok(p) = std::fs::read_link(format!("/proc/{pid}/cwd")) {
+            return Some(p);
+        }
+        // No /proc (macOS): lsof prints the cwd as a line starting with `n`.
+        let out = std::process::Command::new("lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).output().ok()?;
+        String::from_utf8_lossy(&out.stdout).lines().find_map(|l| l.strip_prefix('n')).map(std::path::PathBuf::from)
+    }
+
     /// The agent's exit status, once it has one.
     pub fn exit_code(&mut self) -> Option<u32> {
         self.child.try_wait().ok().flatten().map(|s| s.exit_code())
@@ -185,5 +196,21 @@ mod tests {
         }
         assert!(String::from_utf8_lossy(pty.log()).contains("got hello"), "{:?}", String::from_utf8_lossy(pty.log()));
         assert!(pty.cursor().0 >= 2);
+    }
+
+    #[test]
+    fn a_shell_says_where_it_has_gone() {
+        let launch = Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "cd /tmp && printf 'there\\n' && sleep 5".into()],
+            env_remove: Vec::new(),
+            keep: Vec::new(),
+            session_id: None,
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let pty = Pty::spawn("shell", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        let _ = rx.recv_timeout(Duration::from_secs(5));
+        let tmp = Path::new("/tmp").canonicalize().unwrap();
+        assert_eq!(pty.cwd().and_then(|p| p.canonicalize().ok()), Some(tmp));
     }
 }

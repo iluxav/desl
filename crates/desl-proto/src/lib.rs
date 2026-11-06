@@ -110,10 +110,16 @@ pub enum Command {
         agent: Option<String>,
         at: Option<u64>,
     },
+    /// `agent` "shell" opens a shell instead of an agent.
     NewThread {
         cwd: String,
         agent: Option<String>,
         prompt: Option<String>,
+        /// The thread the user is on. A shell opens in that thread's project, at `cwd`. When
+        /// `beside` is itself a shell, a new agent opens where that shell is now, as a project
+        /// of its own, and the shell moves into that project.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        beside: Option<String>,
     },
     Rename {
         thread_id: String,

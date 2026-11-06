@@ -136,7 +136,9 @@ The workspace screen, in the style of Herdr and T3 Code in a terminal: projects 
   terminal title: desl · claude · t-7f3a · 1 waiting
 ```
 
-**Sidebar.** Every project, its path written with `~`, and under it each thread with its status glyph, agent and short name, in a fixed order (project, then oldest first) that `prefix n`, `prefix p` and `prefix 1`…`9` follow. The shown thread is marked `▌`. A click opens a thread; `prefix w` gives the sidebar the keys (`j`/`k` move, `enter` opens, `esc` returns to the agent); `prefix b` hides it and gives the agent the width. Phase 2 adds subagents nested under their thread and shell threads.
+**Sidebar.** Every project, its path written with `~`, and under it each thread with its status glyph, agent and short name, in a fixed order (project, then oldest first) that `prefix n`, `prefix p` and `prefix 1`…`9` follow. The shown thread is marked `▌`. A click opens a thread; `prefix w` gives the sidebar the keys (`j`/`k` move, `enter` opens, `esc` returns to the agent); `prefix b` hides it and gives the agent the width. A shell thread is listed by its shell's name (`bash`). Phase 2 adds subagents nested under their thread.
+
+**Opening a project.** Any directory is a project: its git root when it has one, else the directory itself. `prefix o` opens the user's own shell (`$SHELL`, with their whole environment) in the pane, in the directory above the current project; the user `cd`s with the tools they know, and `prefix c` registers where the shell is as a project and starts the default agent there, and the shell moves under that project. A shell that exits is removed. When the shown thread's program ends, the pane moves to the thread shown before; desl ends only when no thread is left to show.
 
 **Header.** The project, the agent, and its model and effort as the thread's session last used them; on the right the thread id and status, or, while scrolled back, how far.
 
@@ -168,7 +170,8 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | --- | --- | --- |
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
 | `prefix f` | Fork from here: pick the agent, a new thread opens with the conversation so far | desl |
-| `prefix c` | New thread in this project, on the default agent | tmux |
+| `prefix c` | New thread in this project, on the default agent; from a shell, in the shell's directory, which becomes a project | tmux |
+| `prefix o` | Open a directory: a shell beside this project to `cd` to it, then `prefix c` | desl |
 | `prefix w` | Move the keys to the sidebar's thread list | tmux |
 | `prefix n` / `prefix p` | Next / previous thread | tmux |
 | `prefix 1`…`prefix 9` | Jump to thread n in the list | tmux |

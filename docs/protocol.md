@@ -51,7 +51,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `answer` | `thread_id`, `call_id?`, `decision` | `done` | Answers the pending approval: `allow`, `deny` or `always`. |
 | `switch` | `thread_id`, `agent` | `done` | The brief goes out with the next prompt. |
 | `fork` | `thread_id`, `agent?`, `at?` | `created {thread_id}` | A new thread with the history up to event `at` (the newest when absent). |
-| `new_thread` | `cwd`, `agent?`, `prompt?` | `created {thread_id}` | |
+| `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`; from a shell `beside`, the agent opens where the shell is, as its own project, and the shell joins it |
 | `rename` | `thread_id`, `name` | `done` | |
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
 | `brief` | `thread_id`, `to?` | `brief {to, text, token_estimate, turns, delta, needed}` | What a switch to `to` would send now. `needed` is false when `to` has seen everything. |

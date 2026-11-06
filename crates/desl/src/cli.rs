@@ -180,7 +180,7 @@ pub fn new(paths: &Paths, out: &Out, project: Option<String>, agent: Option<Stri
         Some(p) => workspace(&mut conn)?.projects.iter().find(|x| x.id == p).map(|x| x.path.clone()).unwrap_or(p),
         None => std::env::current_dir()?.to_string_lossy().to_string(),
     };
-    let Reply::Created { thread_id } = conn.call(Command::NewThread { cwd, agent, prompt })? else {
+    let Reply::Created { thread_id } = conn.call(Command::NewThread { cwd, agent, prompt, beside: None })? else {
         bail!("The desl daemon did not create the thread.")
     };
     done(out, json!({ "thread_id": thread_id }), thread_id.clone());

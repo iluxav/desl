@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+/// The `active_agent` of a thread that runs the user's shell instead of an agent.
+pub const SHELL: &str = "shell";
+
 /// The status words, used identically in the sidebar, the CLI and notifications.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "lowercase")]

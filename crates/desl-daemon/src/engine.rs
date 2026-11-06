@@ -10,9 +10,9 @@
 use crate::pty::Pty;
 use crate::store::Store;
 use crate::{git, projector};
-use desl_ir::adapter::{Adapter, AdapterEvent, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn};
+use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn};
 use desl_ir::{
-    Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, Status, Thread, derive_name,
+    Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status, Thread, derive_name,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, term,
@@ -178,6 +178,23 @@ pub struct Engine {
     pending: HashMap<String, Pending>,
     ticks: u64,
     pub stopping: bool,
+}
+
+/// The user's own shell, with their whole environment: it is theirs, not an agent's.
+fn shell_launch() -> Launch {
+    Launch {
+        program: std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "bash".into()),
+        args: Vec::new(),
+        env_remove: Vec::new(),
+        keep: std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()).collect(),
+        session_id: None,
+    }
+}
+
+/// The shell's name for the sidebar: `bash`, `zsh`.
+fn shell_name() -> String {
+    let program = shell_launch().program;
+    Path::new(&program).file_name().map_or(program.clone(), |n| n.to_string_lossy().into_owned())
 }
 
 pub fn now() -> i64 {
@@ -798,22 +815,34 @@ impl Engine {
     fn start_pty(&mut self, i: usize, rows: u16, cols: u16) -> Result<(), String> {
         let t = &self.threads[i];
         let (thread_id, agent) = (t.id.clone(), t.active_agent.clone());
-        self.usable(&agent)?;
-        let adapter = self.adapter(&agent).ok_or_else(|| format!("desl has no adapter for {agent}."))?;
-        let binding = t.bindings.get(&agent);
-        let open = match binding.and_then(|b| b.session_id.clone()) {
-            // A session that never had a turn has no file, and its agent cannot resume it.
-            Some(id) if adapter.session_file(Path::new(&t.cwd), Some(&id), UNIX_EPOCH).is_none() => Open::New { session_id: Some(id) },
-            Some(session_id) => Open::Resume { session_id },
-            None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
+        let shell = agent == SHELL;
+        let adapter = if shell {
+            None
+        } else {
+            self.usable(&agent)?;
+            Some(self.adapter(&agent).ok_or_else(|| format!("desl has no adapter for {agent}."))?)
         };
-        let launch = adapter.launch(&LaunchOpts {
-            cwd: t.cwd.clone().into(),
-            open,
-            model: binding.and_then(|b| b.model_choice.clone()),
-            effort: binding.and_then(|b| b.effort_choice.clone()),
-            permission_mode: t.permission_mode,
-        });
+        let binding = t.bindings.get(&agent);
+        let launch = match &adapter {
+            None => shell_launch(),
+            Some(adapter) => {
+                let open = match binding.and_then(|b| b.session_id.clone()) {
+                    // A session that never had a turn has no file, and its agent cannot resume it.
+                    Some(id) if adapter.session_file(Path::new(&t.cwd), Some(&id), UNIX_EPOCH).is_none() => {
+                        Open::New { session_id: Some(id) }
+                    }
+                    Some(session_id) => Open::Resume { session_id },
+                    None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
+                };
+                adapter.launch(&LaunchOpts {
+                    cwd: t.cwd.clone().into(),
+                    open,
+                    model: binding.and_then(|b| b.model_choice.clone()),
+                    effort: binding.and_then(|b| b.effort_choice.clone()),
+                    permission_mode: t.permission_mode,
+                })
+            }
+        };
         self.generation += 1;
         let generation = self.generation;
         let (out_tx, exit_tx) = (self.tx.clone(), self.tx.clone());
@@ -833,7 +862,7 @@ impl Engine {
         )?;
         tracing::info!(thread = %thread_id, agent = %agent, args = ?launch.args, "started the agent's interface");
         self.ptys.insert(thread_id.clone(), (generation, pty));
-        if let Some(reader) = adapter.session_reader(Path::new(&t.cwd)) {
+        if let Some(reader) = adapter.as_ref().and_then(|a| a.session_reader(Path::new(&t.cwd))) {
             let read_before = binding.is_some_and(|b| b.file_offset > 0);
             self.tails.insert(
                 thread_id.clone(),
@@ -1164,6 +1193,20 @@ impl Engine {
         tracing::info!(thread = %thread_id, to = %p.to, "switched");
     }
 
+    fn remove_thread(&mut self, thread_id: &str) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        // Dropping the sessions ends their processes.
+        self.live.remove(thread_id);
+        self.ptys.remove(thread_id);
+        self.tails.remove(thread_id);
+        self.pending.remove(thread_id);
+        if let Err(e) = self.store.delete_thread(thread_id) {
+            tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
+        }
+        self.threads.remove(i);
+        self.broadcast(Change::ThreadRemoved { thread_id: thread_id.to_string() });
+    }
+
     fn showing(&self, thread_id: &str) -> Vec<ClientId> {
         self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect()
     }
@@ -1197,12 +1240,17 @@ impl Engine {
         self.ptys.remove(thread_id);
         tracing::info!(thread = %thread_id, ?code, "the agent's interface ended");
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
+        let was_shell = self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL);
         let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
             if let Some(c) = self.clients.get_mut(&client) {
                 c.shows = None;
             }
+        }
+        // A shell that exited is gone: there is nothing to come back to.
+        if was_shell {
+            self.remove_thread(thread_id);
         }
     }
 
@@ -1304,7 +1352,9 @@ impl Engine {
             Command::Answer { thread_id, call_id, decision } => self.answer(&thread_id, call_id.as_deref(), decision),
             Command::Switch { thread_id, agent } => self.switch(&thread_id, &agent),
             Command::Fork { thread_id, agent, at } => self.fork(&thread_id, agent.as_deref(), at),
-            Command::NewThread { cwd, agent, prompt } => self.new_thread(&cwd, agent.as_deref(), prompt.as_deref()),
+            Command::NewThread { cwd, agent, prompt, beside } => {
+                self.new_thread(&cwd, agent.as_deref(), prompt.as_deref(), beside.as_deref())
+            }
             Command::Rename { thread_id, name } => self.idx(&thread_id).and_then(|i| {
                 let name: String = name.trim().chars().take(MAX_NAME).collect();
                 if name.is_empty() {
@@ -1314,17 +1364,8 @@ impl Engine {
                 self.persist(&thread_id);
                 Ok(Reply::Done)
             }),
-            Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
-                // Dropping the sessions ends their processes.
-                self.live.remove(&thread_id);
-                self.ptys.remove(&thread_id);
-                self.tails.remove(&thread_id);
-                self.pending.remove(&thread_id);
-                if let Err(e) = self.store.delete_thread(&thread_id) {
-                    tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
-                }
-                self.threads.remove(i);
-                self.broadcast(Change::ThreadRemoved { thread_id: thread_id.clone() });
+            Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|_| {
+                self.remove_thread(&thread_id);
                 Reply::Done
             }),
             Command::Brief { thread_id, to } => self.idx(&thread_id).and_then(|i| {
@@ -1647,6 +1688,9 @@ impl Engine {
 
     /// SPEC.md switch algorithm, step 1. The brief goes out with the next prompt (steps 3 to 5).
     fn switch(&mut self, thread_id: &str, to: &str) -> Outcome {
+        if self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL) {
+            return Err("A shell has no conversation to switch. Press ctrl+b c to start an agent in its directory.".into());
+        }
         if self.ptys.contains_key(thread_id) {
             return self.switch_native(thread_id, to);
         }
@@ -1717,8 +1761,28 @@ impl Engine {
         Ok(Reply::Created { thread_id: id })
     }
 
-    fn new_thread(&mut self, cwd: &str, agent: Option<&str>, prompt: Option<&str>) -> Outcome {
-        let project_id = self.project_for(Path::new(cwd))?;
+    fn new_thread(&mut self, cwd: &str, agent: Option<&str>, prompt: Option<&str>, beside: Option<&str>) -> Outcome {
+        let beside = beside.and_then(|id| self.idx(id).ok());
+        if agent == Some(SHELL) {
+            // In the project of the thread the user is on, at `cwd`, to find a directory from.
+            let project_id = match beside {
+                Some(b) => self.threads[b].project_id.clone(),
+                None => self.project_for(Path::new(cwd))?,
+            };
+            let id = self.create_thread(&project_id, SHELL)?;
+            let i = self.idx(&id)?;
+            if Path::new(cwd).is_dir() {
+                self.threads[i].cwd = cwd.to_string();
+            }
+            self.threads[i].name = shell_name();
+            self.persist(&id);
+            return Ok(Reply::Created { thread_id: id });
+        }
+        // From a shell: where the shell is now becomes the project, and the shell joins it.
+        let from_shell = beside.filter(|&b| self.threads[b].active_agent == SHELL).map(|b| self.threads[b].id.clone());
+        let here = from_shell.as_ref().and_then(|id| self.ptys.get(id)).and_then(|(_, p)| p.cwd());
+        let dir = here.clone().unwrap_or_else(|| cwd.into());
+        let project_id = self.project_for(&dir)?;
         let agent = match agent {
             Some(a) => {
                 self.usable(a)?;
@@ -1727,6 +1791,12 @@ impl Engine {
             None => self.default_agent(&project_id)?,
         };
         let id = self.create_thread(&project_id, &agent)?;
+        if let (Some(shell), Some(dir)) = (from_shell, here) {
+            let i = self.idx(&shell)?;
+            self.threads[i].project_id = project_id.clone();
+            self.threads[i].cwd = dir.to_string_lossy().into_owned();
+            self.persist(&shell);
+        }
         if let Some(text) = prompt.map(str::trim).filter(|t| !t.is_empty()) {
             self.dispatch(&id, text, None);
         }

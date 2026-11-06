@@ -6,7 +6,7 @@ use crate::conn::{Conn, Link};
 use crate::layout::{self, Action, Areas, Row, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
-use desl_ir::{Project, Status, Thread};
+use desl_ir::{Project, SHELL, Status, Thread};
 use desl_proto::{Change, Command, Reply, ServerFrame, b64, read_frame, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -375,6 +375,19 @@ impl Client {
                 let rows = layout::rows(&self.projects, &self.threads);
                 self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
             }
+            Action::Switch if self.agent == SHELL => {
+                self.notice("A shell has no conversation to switch. Press ctrl+b c to start an agent where it is.");
+            }
+            Action::Open => {
+                // From beside the current project, the usual place to find another one.
+                let here = self.threads.iter().find(|t| t.id == self.thread_id).map(|t| PathBuf::from(&t.cwd));
+                let start = here.as_deref().and_then(|p| p.parent()).map(|p| p.to_string_lossy().into_owned());
+                let cwd = start.or_else(|| std::env::var("HOME").ok()).unwrap_or_else(|| "/".into());
+                let command = Command::NewThread { cwd, agent: Some(SHELL.into()), prompt: None, beside: Some(self.thread_id.clone()) };
+                let id = self.link.request(command);
+                self.busy = Some(Busy::Create(id));
+                self.notice("cd to the directory, then press ctrl+b c to start an agent there.");
+            }
             Action::Switch => {
                 self.side = None;
                 let to = if self.agent == "claude" { "codex" } else { "claude" };
@@ -390,7 +403,8 @@ impl Client {
                     .map(|t| self.projects.iter().find(|p| p.id == t.project_id).map_or(t.cwd.clone(), |p| p.path.clone()));
                 match cwd {
                     Some(cwd) => {
-                        let id = self.link.request(Command::NewThread { cwd, agent: None, prompt: None });
+                        let command = Command::NewThread { cwd, agent: None, prompt: None, beside: Some(self.thread_id.clone()) };
+                        let id = self.link.request(command);
                         self.busy = Some(Busy::Create(id));
                     }
                     None => self.notice("desl does not know this thread's project yet. Try again in a moment."),
@@ -527,7 +541,17 @@ impl Client {
                 self.dirty = true;
             }
             ServerFrame::PtyEnded { thread_id, .. } if thread_id == self.thread_id => {
-                return Some(format!("{} ended. Run desl to open the thread again; it resumes the same conversation.", self.agent));
+                let name = if self.agent == SHELL { "The shell".to_string() } else { self.agent.clone() };
+                // Another thread takes the pane; desl ends only with the last one.
+                let others: Vec<String> = self.ordered().into_iter().filter(|id| *id != thread_id).collect();
+                let next = self.previous.clone().filter(|p| others.contains(p)).or_else(|| others.first().cloned());
+                match next {
+                    Some(id) if self.busy.is_none() => {
+                        self.go(id);
+                        self.notice(&format!("{name} in {thread_id} ended."));
+                    }
+                    _ => return Some(format!("{name} ended. Run desl to open the thread again.")),
+                }
             }
             ServerFrame::PtyReplace { thread_id, agent, data } if thread_id == self.thread_id => {
                 self.screen_from(&b64::decode(&data).unwrap_or_default());

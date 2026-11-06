@@ -855,7 +855,7 @@ impl App {
 
     pub fn new_thread(&mut self) {
         let cwd = Some(self.thread().meta.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| self.cwd.to_string_lossy().to_string());
-        self.request(Command::NewThread { cwd, agent: None, prompt: None }, Pending::Created);
+        self.request(Command::NewThread { cwd, agent: None, prompt: None, beside: None }, Pending::Created);
     }
 
     pub fn jump_to(&mut self, idx: usize) {

@@ -225,6 +225,8 @@ pub struct View<'a> {
     pub sub: Option<SubView<'a>>,
     /// Milliseconds since the epoch, for ages.
     pub now: i64,
+    /// The subagent shown in the pane, (thread, subagent id): its row takes the tint.
+    pub shown_sub: Option<(&'a str, &'a str)>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -313,7 +315,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             }
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
-                let current = t.id == v.current;
+                let current = t.id == v.current && v.shown_sub.is_none();
                 // The thread on screen is tinted across both its lines; the cursor lights them.
                 let base = if lit {
                     theme::pill()
@@ -336,7 +338,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             }
             Row::Meta(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
-                let current = t.id == v.current;
+                let current = t.id == v.current && v.shown_sub.is_none();
                 let base = if lit {
                     theme::pill()
                 } else if current {
@@ -378,14 +380,24 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 let what = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
                 let label = if s.kind == "general-purpose" || s.description.is_empty() { what } else { format!("{} · {what}", s.kind) };
                 let lit = v.cursor == Some(i);
+                let shown = v.shown_sub == Some((id.as_str(), s.id.as_str()));
                 let label = truncate_end(&label, w.saturating_sub(9));
                 let pad = w.saturating_sub(8 + label.width());
-                let pick = |st: Style| if lit { theme::pill() } else { st };
+                // The subagent in the pane is tinted like a thread on screen, its text brightened.
+                let base = if shown { theme::surface() } else { Style::default() };
+                let pick = |st: Style| if lit { theme::pill() } else { base.patch(st) };
+                let text = if shown {
+                    theme::bold()
+                } else if s.finished {
+                    theme::muted()
+                } else {
+                    theme::dim()
+                };
                 lines.push(Line::from(vec![
                     Span::styled(if last { "   └─ " } else { "   ├─ " }, theme::muted()),
                     Span::styled(glyph, pick(style)),
                     Span::styled(" ", pick(Style::default())),
-                    Span::styled(label, pick(if s.finished { theme::muted() } else { theme::dim() })),
+                    Span::styled(label, pick(text)),
                     Span::styled(" ".repeat(pad), pick(Style::default())),
                 ]));
             }
@@ -833,6 +845,7 @@ mod tests {
             menu: None,
             sub: None,
             now: 0,
+            shown_sub: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
@@ -851,6 +864,31 @@ mod tests {
         let b = t.backend().buffer();
         assert_ne!(b[(20, 3)].bg, Color::Reset, "{s}");
         assert_eq!(b[(20, 5)].bg, Color::Reset, "{s}");
+        // A subagent in the pane takes the tint from its thread.
+        let mut with_sub = threads.clone();
+        with_sub[0].subagents =
+            vec![desl_ir::Subagent { id: "s1".into(), kind: "Explore".into(), description: "look".into(), finished: true, started_at: 0 }];
+        let mut t2 = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let v2 = View {
+            projects: &projects,
+            threads: &with_sub,
+            current: "t-1a",
+            cursor: None,
+            skip: 0,
+            agent: "claude",
+            prefix_armed: false,
+            notice: None,
+            help: false,
+            scrolled: 0,
+            menu: None,
+            sub: None,
+            now: 0,
+            shown_sub: Some(("t-1a", "s1")),
+        };
+        t2.draw(|f| draw(f, &v2, &a, vt.screen())).unwrap();
+        let b2 = t2.backend().buffer();
+        assert_eq!(b2[(20, 3)].bg, Color::Reset, "the thread gives up the tint");
+        assert_ne!(b2[(20, 5)].bg, Color::Reset, "the subagent's row has it");
         assert!(lines[28].starts_with("╰"), "{s}");
         assert!(lines[29].contains(" ctrl+b   s switch agent"), "{s}");
         let before = t.backend().buffer().clone();

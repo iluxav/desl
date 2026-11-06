@@ -722,6 +722,7 @@ impl Client {
             menu: None,
             sub: None,
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
+            shown_sub: self.sub.as_ref().map(|s| (s.thread_id.as_str(), s.id.as_str())),
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();

@@ -137,6 +137,14 @@ impl Adapter for Codex {
         session::file(cwd, session_id, since)
     }
 
+    fn subagents(&self, cwd: &std::path::Path, session_id: &str) -> Vec<desl_ir::Subagent> {
+        session::subagents(cwd, session_id)
+    }
+
+    fn subagent_events(&self, cwd: &std::path::Path, _session_id: &str, agent_id: &str) -> Vec<desl_ir::EventKind> {
+        session::subagent_events(cwd, agent_id)
+    }
+
     fn session_reader(&self, cwd: &std::path::Path) -> Option<Box<dyn SessionReader>> {
         Some(Box::new(session::Reader::new(cwd)))
     }

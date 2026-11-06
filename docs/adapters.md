@@ -490,4 +490,12 @@ Claude keeps each subagent of session `<id>` beside the session file, in `<id>/s
 `description`, `toolUseId`, `spawnDepth`, `requestShape` (`foreground` or `background`) and
 `pickedEffortModel`; `"finished": true` is added when the subagent is done (watched live
 2026-11-06). A subagent whose turn was stopped stays unfinished, so desl shows one as running
-only while its thread is busy. Codex records none that desl reads.
+only while its thread is busy.
+
+Codex (0.166) keeps a subagent as a session of its own: a rollout whose `session_meta` has
+`parent_thread_id` and `source.subagent.thread_spawn` (`parent_thread_id`, `depth`,
+`agent_nickname` such as `Feynman`, `agent_role`). The parent records the spawn as an
+`item_completed` event whose item is `CollabAgentToolCall` with `tool: spawn_agent`, `prompt`
+(the task), and `receiver_agents` (`thread_id`, `agent_nickname`); later `wait` items report
+`agents_states`. desl reads spawns from the parent's file as it grows, and a subagent is done
+when its own file's last `task_started` is followed by `task_complete` or `turn_aborted`.

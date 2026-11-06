@@ -327,6 +327,122 @@ fn write_in(home: &Path, cwd: &Path, events: &[EventKind]) -> Result<(String, Pa
     Ok((id, path, out.len() as u64))
 }
 
+/// What desl knows of one session's subagents, read a little more each time it is asked.
+#[derive(Default)]
+struct Spawns {
+    path: Option<PathBuf>,
+    offset: u64,
+    partial: Vec<u8>,
+    found: Vec<desl_ir::Subagent>,
+    /// Each subagent's own session file, once found.
+    files: std::collections::HashMap<String, PathBuf>,
+}
+
+fn spawns() -> &'static std::sync::Mutex<std::collections::HashMap<String, Spawns>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Spawns>>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// The subagents in one session line: Codex records a spawn as a `CollabAgentToolCall` item
+/// (`tool: spawn_agent`) naming each new agent's session (`receiver_agents`), with its task.
+fn spawned(line: &str) -> Vec<desl_ir::Subagent> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return Vec::new() };
+    let p = &v["payload"];
+    let item = &p["item"];
+    if p["type"] != "item_completed" || item["type"] != "CollabAgentToolCall" || item["tool"] != "spawn_agent" {
+        return Vec::new();
+    }
+    let prompt = item["prompt"].as_str().unwrap_or("").lines().next().unwrap_or("").to_string();
+    let when = p["completed_at_ms"].as_i64().or_else(|| p["started_at_ms"].as_i64()).unwrap_or(0);
+    item["receiver_agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|a| {
+            Some(desl_ir::Subagent {
+                id: a["thread_id"].as_str()?.to_string(),
+                kind: a["agent_nickname"].as_str().or_else(|| a["agent_role"].as_str()).unwrap_or("agent").to_string(),
+                description: prompt.clone(),
+                finished: false,
+                started_at: when,
+            })
+        })
+        .collect()
+}
+
+/// Whether a subagent's own session has ended its last task.
+fn finished(path: &Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let mut done = false;
+    for line in text.lines() {
+        if line.contains("\"task_started\"") {
+            done = false;
+        } else if line.contains("\"task_complete\"") || line.contains("\"turn_aborted\"") {
+            done = true;
+        }
+    }
+    done
+}
+
+/// The subagents session `session_id` spawned, oldest first.
+pub fn subagents(cwd: &Path, session_id: &str) -> Vec<desl_ir::Subagent> {
+    use std::io::{Read, Seek, SeekFrom};
+    let _ = cwd;
+    let mut cache = spawns().lock().unwrap_or_else(|e| e.into_inner());
+    let s = cache.entry(session_id.to_string()).or_default();
+    if s.path.is_none() {
+        s.path = file(Path::new(""), Some(session_id), std::time::UNIX_EPOCH).map(|(_, p)| p);
+    }
+    let Some(path) = s.path.clone() else { return Vec::new() };
+    if let Ok(mut f) = std::fs::File::open(&path)
+        && f.seek(SeekFrom::Start(s.offset)).is_ok()
+    {
+        let mut more = Vec::new();
+        if f.read_to_end(&mut more).is_ok() {
+            s.offset += more.len() as u64;
+            s.partial.extend_from_slice(&more);
+            let end = s.partial.iter().rposition(|b| *b == b'\n').map_or(0, |n| n + 1);
+            let whole: Vec<u8> = s.partial.drain(..end).collect();
+            for line in String::from_utf8_lossy(&whole).lines() {
+                for sub in spawned(line) {
+                    if !s.found.iter().any(|f| f.id == sub.id) {
+                        s.found.push(sub);
+                    }
+                }
+            }
+        }
+    }
+    let waiting: Vec<String> = s.found.iter().filter(|f| !f.finished && !s.files.contains_key(&f.id)).map(|f| f.id.clone()).collect();
+    if !waiting.is_empty() {
+        for p in rollouts() {
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            if let Some(id) = waiting.iter().find(|id| name.contains(id.as_str())) {
+                s.files.insert(id.clone(), p);
+            }
+        }
+    }
+    for sub in s.found.iter_mut().filter(|f| !f.finished) {
+        if let Some(p) = s.files.get(&sub.id) {
+            sub.finished = finished(p);
+        }
+    }
+    s.found.clone()
+}
+
+/// What subagent `agent_id` said and did, read from its own session file.
+pub fn subagent_events(cwd: &Path, agent_id: &str) -> Vec<EventKind> {
+    let Some((_, path)) = file(cwd, Some(agent_id), std::time::UNIX_EPOCH) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(path) else { return Vec::new() };
+    let mut reader = Reader::new(cwd);
+    text.lines()
+        .flat_map(|l| reader.line(l))
+        .filter_map(|r| match r {
+            Reading::Event(kind) => Some(kind),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +522,25 @@ mod tests {
             }
         }
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_spawn_names_its_subagents_and_their_task() {
+        let line = r#"{"type":"event_msg","payload":{"type":"item_completed","completed_at_ms":5,"item":{"type":"CollabAgentToolCall","tool":"spawn_agent","prompt":"Research ARTEX\nin depth","receiver_thread_ids":["01a1"],"receiver_agents":[{"thread_id":"01a1","agent_nickname":"Feynman"}]}}}"#;
+        let got = spawned(line);
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            (got[0].id.as_str(), got[0].kind.as_str(), got[0].description.as_str(), got[0].started_at),
+            ("01a1", "Feynman", "Research ARTEX", 5)
+        );
+        assert!(spawned(&line.replace("spawn_agent", "wait")).is_empty());
+        let dir = std::env::temp_dir().join(format!("desl-codex-sub-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("rollout-x-01a1.jsonl");
+        std::fs::write(&f, "{\"payload\":{\"type\":\"task_started\"}}\n").unwrap();
+        assert!(!finished(&f));
+        std::fs::write(&f, "{\"payload\":{\"type\":\"task_started\"}}\n{\"payload\":{\"type\":\"task_complete\"}}\n").unwrap();
+        assert!(finished(&f));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -121,26 +121,25 @@ Identifiers: thread ids are short, typeable and prefixed, in the style of git sh
 The workspace screen, in the style of Herdr and T3 Code in a terminal: projects and their threads on the left, the shown thread's agent on the right under a one-line header, and the common keys along the bottom. The agent runs its own interface in a terminal the daemon owns; desl draws it through its own terminal emulator into the pane, and passes the user's keys straight to it, so the agent's colours, keys, dialogs and mouse are its own. desl owns one key, the prefix. It must read well at 80×24 and scale to 300×80 without changing shape; below 70 columns the sidebar steps aside.
 
 ```
-┌────────────────────────────┬────────────────────────────────────────────────────────┐
-│ projects  1 waiting        │ ~/src/api · Claude · opus with high effort  t-7f3a idle│
-│                            │ ▐▛███▛█   Claude Code v2.1.318                          │
-│ ▾ ~/src/api                │                                                        │
-│ ▌ ● claude · auth          │ ❯ Add refresh-token rotation to the auth middleware    │
-│   ◐ codex · tests          │   Read 2 files                                         │
-│   ○ claude · docs          │ ● Rotation is in. Want me to add the revocation list?  │
-│ ▾ ~/src/web                │                                                        │
-│   ○ claude · new           │ ❯ _                                                    │
-├────────────────────────────┴────────────────────────────────────────────────────────┤
-│ ctrl+b  s switch agent  c new  w threads  n/p next/prev  b sidebar  ? help  d detach│
-└─────────────────────────────────────────────────────────────────────────────────────┘
+╭ Projects ───── 1 waiting ╮╭ Claude · ~/src/api · opus · high ──────────── ○ idle t-7f3a ╮
+│                          ││ ▐▛███▛█   Claude Code v2.1.318                               │
+│ api  ~/src               ││                                                              │
+│ ▌ ● claude  auth         ││ ❯ Add refresh-token rotation to the auth middleware          │
+│   ◐ codex   tests        ││   Read 2 files                                               │
+│   ○ bash                 ││ ● Rotation is in. Want me to add the revocation list?        │
+│                          ││                                                              │
+│ web  ~/src               ││ ❯ _                                                          │
+│   ○ claude  new          ││                                                              │
+╰──────────────────────────╯╰──────────────────────────────────────────────────────────────╯
+   ctrl+b   s switch agent   c new   o open dir   w threads   n p next prev   ? help
   terminal title: desl · claude · t-7f3a · 1 waiting
 ```
 
-**Sidebar.** Every project, its path written with `~`, and under it each thread with its status glyph, agent and short name, in a fixed order (project, then oldest first) that `prefix n`, `prefix p` and `prefix 1`…`9` follow. The shown thread is marked `▌`. A click opens a thread; `prefix w` gives the sidebar the keys (`j`/`k` move, `enter` opens, `esc` returns to the agent); `prefix b` hides it and gives the agent the width. A shell thread is listed by its shell's name (`bash`). Phase 2 adds subagents nested under their thread.
+**Panels.** Two rounded panels in the style of lazygit, with a column of padding inside; the one that has the keys has an accent border. **Sidebar.** Every project, its folder's name with the directory it lives in dimmer beside it, and under it each thread with its status glyph, agent and short name, in a fixed order (project, then oldest first) that `prefix n`, `prefix p` and `prefix 1`…`9` follow. The shown thread is marked `▌`. A click opens a thread; `prefix w` gives the sidebar the keys (`j`/`k` move, `enter` opens, `esc` returns to the agent); `prefix b` hides it and gives the agent the width. A shell thread is listed by its shell's name (`bash`). Phase 2 adds subagents nested under their thread.
 
 **Opening a project.** Any directory is a project: its git root when it has one, else the directory itself. `prefix o` opens the user's own shell (`$SHELL`, with their whole environment) in the pane, in the directory above the current project; the user `cd`s with the tools they know, and `prefix c` registers where the shell is as a project and starts the default agent there, and the shell moves under that project. A shell that exits is removed. When the shown thread's program ends, the pane moves to the thread shown before; desl ends only when no thread is left to show.
 
-**Header.** The project, the agent, and its model and effort as the thread's session last used them; on the right the thread id and status, or, while scrolled back, how far.
+**Header.** The agent panel's top border: the agent, the project, and its model and effort as the thread's session last used them; on the right the thread's status and id, or, while scrolled back, how far.
 
 **Key line.** The common keys after the prefix, lit while the prefix is armed; a notice from desl (why a switch did not happen, say) takes its place until the next key. Never drawn over the agent.
 

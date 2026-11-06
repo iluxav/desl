@@ -10,7 +10,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 /// What a key after the prefix does.
@@ -34,7 +34,7 @@ pub enum Action {
 pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "s", "Switch this thread to the other agent"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
-    ("Threads", "c", "New agent thread here (from a shell: where it is)"),
+    ("Threads", "c", "New agent thread (in a shell: its directory)"),
     ("Threads", "o", "Open a directory: a shell to cd into it, then c"),
     ("Threads", "n", "Next thread"),
     ("Threads", "p", "Previous thread"),
@@ -101,35 +101,40 @@ pub fn truncate_start(s: &str, width: usize) -> String {
     out.iter().rev().collect()
 }
 
-/// Where everything goes on a terminal of this size.
+/// Where everything goes on a terminal of this size: two rounded panels, the sidebar and the
+/// agent's, over one line of keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Areas {
+    /// The sidebar's panel, borders included.
     pub sidebar: Option<Rect>,
-    pub header: Rect,
-    /// The agent's screen: its terminal is exactly this size.
+    /// The agent's panel, borders included; its top border carries the header.
+    pub main: Rect,
+    /// The agent's screen inside the panel, a column of padding each side: its terminal is
+    /// exactly this size.
     pub pane: Rect,
     pub footer: Rect,
 }
 
-/// The sidebar takes a quarter of the width, 24 to 36 columns, and steps aside below 70.
+/// The sidebar takes a fifth of the width, 28 to 40 columns, and steps aside below 80.
 pub fn areas(cols: u16, rows: u16, sidebar: bool) -> Areas {
-    let side_w = if sidebar && cols >= 70 { (cols / 4).clamp(24, 36) } else { 0 };
-    let right_x = if side_w > 0 { side_w + 1 } else { 0 };
-    let right_w = cols.saturating_sub(right_x).max(1);
-    let body_h = rows.saturating_sub(2).max(1);
+    let side_w = if sidebar && cols >= 80 { (cols / 5).clamp(28, 40) } else { 0 };
+    let body_h = rows.saturating_sub(1).max(3);
+    let main = Rect::new(side_w, 0, cols.saturating_sub(side_w).max(5), body_h);
     Areas {
         sidebar: (side_w > 0).then(|| Rect::new(0, 0, side_w, body_h)),
-        header: Rect::new(right_x, 0, right_w, 1),
-        pane: Rect::new(right_x, 1, right_w, body_h.saturating_sub(1).max(1)),
+        main,
+        pane: Rect::new(main.x + 2, main.y + 1, main.width.saturating_sub(4).max(1), main.height.saturating_sub(2).max(1)),
         footer: Rect::new(0, rows.saturating_sub(1), cols, 1),
     }
 }
 
-/// One line of the sidebar: a project, or a thread that a click or `enter` opens.
+/// One line of the sidebar: a project, a thread that a click or `enter` opens, or the space
+/// between two projects.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Row {
     Project(String),
     Thread(String),
+    Gap,
 }
 
 pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
@@ -137,6 +142,9 @@ pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     let mut last: Option<&str> = None;
     for t in order(projects, threads) {
         if last != Some(t.project_id.as_str()) {
+            if last.is_some() {
+                out.push(Row::Gap);
+            }
             last = Some(t.project_id.as_str());
             out.push(Row::Project(t.project_id.clone()));
         }
@@ -145,17 +153,20 @@ pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     out
 }
 
-/// Sidebar lines above the first row: the title and a blank line.
+/// Sidebar lines above the first row: the border and a line of padding.
 const SIDE_TOP: u16 = 2;
 
 /// The first row shown, so `keep` (an index into [`rows`]) stays in view.
 pub fn side_skip(total: usize, keep: usize, area: Rect) -> usize {
-    let room = area.height.saturating_sub(SIDE_TOP) as usize;
+    let room = area.height.saturating_sub(SIDE_TOP + 1) as usize;
     if total <= room { 0 } else { (keep + 1).saturating_sub(room).min(total - room) }
 }
 
 /// The thread at sidebar line `y` (terminal row), if any.
 pub fn thread_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usize, y: u16) -> Option<String> {
+    if y + 1 >= area.y + area.height {
+        return None;
+    }
     let i = (y.checked_sub(area.y + SIDE_TOP)? as usize) + skip;
     match rows(projects, threads).get(i) {
         Some(Row::Thread(id)) => Some(id.clone()),
@@ -172,7 +183,7 @@ pub struct View<'a> {
     pub skip: usize,
     pub agent: &'a str,
     pub prefix_armed: bool,
-    /// A sentence for the user, shown in the footer until the next key.
+    /// A sentence for the user, shown in the key line until the next key.
     pub notice: Option<&'a str>,
     pub help: bool,
     /// Lines scrolled back in the agent's screen, 0 when following it.
@@ -183,7 +194,7 @@ fn glyph_style(s: Status) -> Style {
     match s {
         Status::Working => theme::accent(),
         Status::Waiting => theme::warning(),
-        Status::Idle | Status::Detached => theme::muted(),
+        Status::Idle | Status::Detached => theme::dim(),
         Status::Failed => theme::critical(),
     }
 }
@@ -193,107 +204,138 @@ fn agent_title(agent: &str) -> String {
     c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
+/// A rounded panel, its border lit when it has the keys.
+fn panel(focused: bool) -> Block<'static> {
+    Block::bordered().border_type(BorderType::Rounded).border_style(if focused { theme::accent() } else { theme::muted() })
+}
+
 fn sidebar(f: &mut Frame, v: &View, area: Rect) {
-    let w = area.width as usize;
     let waiting = v.threads.iter().filter(|t| t.status == Status::Waiting).count();
-    let mut lines: Vec<Line<'static>> = vec![
-        Line::from(vec![
-            Span::styled(" projects", theme::bold()),
-            Span::styled(if waiting > 0 { format!("  {waiting} waiting") } else { String::new() }, theme::warning()),
-        ]),
-        Line::default(),
-    ];
+    let mut block = panel(v.cursor.is_some()).title(Line::from(Span::styled(" Projects ", theme::bold())));
+    if waiting > 0 {
+        block = block.title(Line::from(Span::styled(format!(" {waiting} waiting "), theme::warning())).right_aligned());
+    }
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    // A line of padding at the top, a column each side.
+    let body = Rect::new(inner.x + 1, inner.y + 1, inner.width.saturating_sub(2), inner.height.saturating_sub(1));
+    let w = body.width as usize;
+    let agent_w = v.threads.iter().filter(|t| t.active_agent != SHELL).map(|t| t.active_agent.width()).max().unwrap_or(0);
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, row) in rows(v.projects, v.threads).into_iter().enumerate().skip(v.skip) {
         match row {
+            Row::Gap => lines.push(Line::default()),
             Row::Project(id) => {
-                let path = v.projects.iter().find(|p| p.id == id).map_or(id.clone(), |p| tilde(&p.path));
-                lines.push(Line::from(vec![
-                    Span::styled(" ▾ ", theme::muted()),
-                    Span::styled(truncate_start(&path, w.saturating_sub(4)), theme::bold()),
-                ]));
+                // The folder's name, then dimmer where it lives: `desl  ~/Projects`.
+                let path = v.projects.iter().find(|p| p.id == id).map_or(id.clone(), |p| p.path.clone());
+                let p = std::path::Path::new(&path);
+                let name = p.file_name().map_or(path.clone(), |n| n.to_string_lossy().into_owned());
+                let parent = p.parent().map(|d| tilde(&d.to_string_lossy())).unwrap_or_default();
+                let name = truncate_end(&name, w);
+                let room = w.saturating_sub(name.width() + 2);
+                let mut spans = vec![Span::styled(name, theme::bold())];
+                if room >= 6 && !parent.is_empty() {
+                    spans.push(Span::styled(format!("  {}", truncate_start(&parent, room)), theme::muted()));
+                }
+                lines.push(Line::from(spans));
             }
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == id) else { continue };
                 let current = t.id == v.current;
                 let highlighted = v.cursor == Some(i);
                 let name = if t.name.is_empty() { "new" } else { t.name.as_str() };
-                let label = if t.active_agent == SHELL { name.to_string() } else { format!("{} · {name}", t.active_agent) };
-                let text = truncate_end(&label, w.saturating_sub(6));
-                let pad = w.saturating_sub(5 + text.width());
-                let (mark, text_style) = match (highlighted, current) {
-                    (true, _) => ("   ", theme::pill()),
-                    (false, true) => (" ▌ ", theme::bold()),
-                    (false, false) => ("   ", theme::dim()),
-                };
+                let (agent, name) =
+                    if t.active_agent == SHELL { (String::new(), name) } else { (format!("{:<agent_w$}  ", t.active_agent), name) };
+                // `▌ ● claude  name`: the bar marks the thread on screen.
+                let room = w.saturating_sub(4 + agent.width());
+                let name = truncate_end(name, room);
+                let pad = room.saturating_sub(name.width());
                 let fill = if highlighted { theme::pill() } else { Style::default() };
+                let pick = |s: Style| if highlighted { theme::pill() } else { s };
                 lines.push(Line::from(vec![
-                    Span::styled(mark, theme::accent()),
-                    Span::styled(t.status.glyph().to_string(), if highlighted { theme::pill() } else { glyph_style(t.status) }),
+                    Span::styled(if current { "▌ " } else { "  " }, pick(theme::accent())),
+                    Span::styled(t.status.glyph().to_string(), pick(glyph_style(t.status))),
                     Span::styled(" ", fill),
-                    Span::styled(text, text_style),
+                    Span::styled(agent, pick(theme::dim())),
+                    Span::styled(name, pick(if current { theme::bold() } else { theme::normal() })),
                     Span::styled(" ".repeat(pad), fill),
                 ]));
             }
         }
     }
-    f.render_widget(Paragraph::new(lines), area);
-    let rule = Rect::new(area.x + area.width, area.y, 1, area.height);
-    let bar: Vec<Line<'static>> = (0..area.height).map(|_| Line::from(Span::styled("│", theme::muted()))).collect();
-    f.render_widget(Paragraph::new(bar), rule);
+    f.render_widget(Paragraph::new(lines), body);
 }
 
-fn header(f: &mut Frame, v: &View, area: Rect) {
-    let Some(t) = v.threads.iter().find(|t| t.id == v.current) else { return };
-    // A shell's header names where it started; an agent's, its project.
-    let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-    let path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
-    let binding = t.bindings.get(v.agent);
-    let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
-    if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
-        model = if model.is_empty() { format!("{e} effort") } else { format!("{model} with {e} effort") };
+/// The agent's panel: its border, with the project, agent and model on top and the thread's
+/// id and status on the right.
+fn main_panel(f: &mut Frame, v: &View, area: Rect) {
+    let mut block = panel(v.cursor.is_none() && !v.help);
+    if let Some(t) = v.threads.iter().find(|t| t.id == v.current) {
+        // A shell's header names where it started; an agent's, its project.
+        let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
+        let path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        let binding = t.bindings.get(v.agent);
+        let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
+        if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
+            model = if model.is_empty() { format!("{e} effort") } else { format!("{model} · {e}") };
+        }
+        let right = if v.scrolled > 0 {
+            Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", v.scrolled), theme::warning()))
+        } else {
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled(t.status.glyph().to_string(), glyph_style(t.status)),
+                Span::styled(format!(" {} ", t.status.word()), theme::dim()),
+                Span::styled(format!("{} ", t.id), theme::muted()),
+            ])
+        };
+        let agent = if v.agent == SHELL { t.name.clone() } else { agent_title(v.agent) };
+        let tail = if model.is_empty() { 0 } else { model.width() + 3 };
+        let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + 10).max(8);
+        let mut left = vec![
+            Span::raw(" "),
+            Span::styled(agent, theme::accent().add_modifier(Modifier::BOLD)),
+            Span::styled(" · ", theme::muted()),
+            Span::styled(truncate_start(&path, room), theme::normal()),
+        ];
+        if !model.is_empty() {
+            left.push(Span::styled(" · ", theme::muted()));
+            left.push(Span::styled(model, theme::dim()));
+        }
+        left.push(Span::raw(" "));
+        block = block.title(Line::from(left)).title(right.right_aligned());
     }
-    let right = if v.scrolled > 0 {
-        Span::styled(format!("↑ {} lines · wheel down to follow ", v.scrolled), theme::warning())
-    } else {
-        Span::styled(format!("{} {} ", t.id, t.status.word()), glyph_style(t.status))
-    };
-    let agent = if v.agent == SHELL { t.name.clone() } else { agent_title(v.agent) };
-    let tail = if model.is_empty() { 0 } else { model.width() + 3 };
-    let room = (area.width as usize).saturating_sub(right.content.width() + agent.width() + tail + 7).max(8);
-    let mut left = vec![
-        Span::styled(format!(" {}", truncate_start(&path, room)), theme::normal()),
-        Span::styled(" · ", theme::muted()),
-        Span::styled(agent, theme::accent().add_modifier(Modifier::BOLD)),
-    ];
-    if !model.is_empty() {
-        left.push(Span::styled(" · ", theme::muted()));
-        left.push(Span::styled(model, theme::dim()));
-    }
-    let used: usize = left.iter().map(|s| s.content.width()).sum::<usize>() + right.content.width();
-    left.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
-    left.push(right);
-    f.render_widget(Paragraph::new(Line::from(left)).style(Style::default().add_modifier(Modifier::UNDERLINED)), area);
+    f.render_widget(block, area);
 }
 
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
-        Line::from(Span::styled(format!(" {n}"), theme::warning()))
+        Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
     } else if v.cursor.is_some() {
-        Line::from(Span::styled(" j/k move · enter open · 1-9 jump · esc back to the agent", theme::muted()))
+        let mut spans = vec![Span::raw("  ")];
+        for (k, what) in [("j/k", "move"), ("enter", "open"), ("1-9", "jump"), ("esc", "back to the agent")] {
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+        }
+        Line::from(spans)
     } else {
-        let mut spans = vec![Span::styled(" ctrl+b ", if v.prefix_armed { theme::pill() } else { theme::accent() })];
+        let mut spans = vec![
+            Span::raw("  "),
+            Span::styled(" ctrl+b ", if v.prefix_armed { theme::pill() } else { theme::accent().add_modifier(Modifier::BOLD) }),
+            Span::raw("  "),
+        ];
         for (k, what) in [
             ("s", "switch agent"),
             ("c", "new"),
             ("o", "open dir"),
             ("w", "threads"),
-            ("n/p", "next/prev"),
+            ("n p", "next prev"),
             ("b", "sidebar"),
             ("?", "help"),
             ("d", "detach"),
         ] {
-            spans.push(Span::styled(format!(" {k} "), theme::bold()));
-            spans.push(Span::styled(format!("{what} "), theme::muted()));
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
         Line::from(spans)
     };
@@ -301,22 +343,32 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
 }
 
 fn help(f: &mut Frame, area: Rect) {
-    let h = (KEYS.len() as u16 + 9).min(area.height);
-    let w = 62.min(area.width);
-    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
-    let mut lines: Vec<Line<'static>> = vec![Line::from(Span::styled(" keys, after ctrl+b", theme::bold())), Line::default()];
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let mut group = "";
     for (g, key, what) in KEYS {
         if *g != group {
+            if !group.is_empty() {
+                lines.push(Line::default());
+            }
             group = g;
-            lines.push(Line::from(Span::styled(format!(" {g}"), theme::muted().add_modifier(Modifier::BOLD))));
+            lines.push(Line::from(Span::styled(g.to_string(), theme::bold())));
         }
-        lines.push(Line::from(vec![Span::styled(format!("   {key:<8}"), theme::accent()), Span::raw(what.to_string())]));
+        lines.push(Line::from(vec![Span::styled(format!("  {key:<8}"), theme::accent()), Span::raw(what.to_string())]));
     }
     lines.push(Line::default());
-    lines.push(Line::from(Span::styled("   Every other key goes to the agent. Any key closes this.", theme::dim())));
+    lines.push(Line::from(Span::styled("Every other key goes to the agent. Any key closes this.", theme::dim())));
+    // Borders, and a line of padding above.
+    let h = (lines.len() as u16 + 3).min(area.height);
+    let w = 64.min(area.width);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    let block = panel(true).title(Line::from(Span::styled(" Keys, after ctrl+b ", theme::bold())));
+    let inner = block.inner(r);
     f.render_widget(Clear, r);
-    f.render_widget(Paragraph::new(lines).block(Block::bordered().border_style(theme::muted())), r);
+    f.render_widget(block, r);
+    f.render_widget(
+        Paragraph::new(lines),
+        Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), inner.height.saturating_sub(1)),
+    );
 }
 
 fn colour(c: vt100::Color) -> Color {
@@ -331,8 +383,11 @@ fn colour(c: vt100::Color) -> Color {
 pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
     for r in 0..area.height {
         for c in 0..area.width {
-            let Some(cell) = screen.cell(r, c) else { continue };
             let out = &mut buf[(area.x + c, area.y + r)];
+            let Some(cell) = screen.cell(r, c) else {
+                out.reset();
+                continue;
+            };
             if cell.is_wide_continuation() {
                 out.reset();
                 continue;
@@ -358,12 +413,12 @@ pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
     }
 }
 
-/// Draws everything but the agent's screen, which [`pane`] copies in.
+/// Draws the screen: the panels, then the agent's screen copied into its pane.
 pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
     if let Some(s) = a.sidebar {
         sidebar(f, v, s);
     }
-    header(f, v, a.header);
+    main_panel(f, v, a.main);
     pane(f.buffer_mut(), a.pane, screen);
     footer(f, v, a.footer);
     if v.help {
@@ -514,27 +569,29 @@ mod tests {
         assert_eq!(ids, ["t-1", "t-2", "t-3"]);
         let r = rows(&projects, &threads);
         assert_eq!(r[0], Row::Project("a".into()));
-        assert_eq!(r[3], Row::Project("b".into()));
-        let a = areas(100, 30, true);
+        assert_eq!(r[3], Row::Gap);
+        assert_eq!(r[4], Row::Project("b".into()));
+        let a = areas(120, 30, true);
         assert_eq!(thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 1), Some("t-1".into()));
         assert_eq!(thread_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP), None);
     }
 
     #[test]
     fn the_layout_gives_the_agent_what_the_chrome_leaves() {
-        let a = areas(100, 30, true);
-        assert_eq!(a.sidebar, Some(Rect::new(0, 0, 25, 28)));
-        assert_eq!(a.pane, Rect::new(26, 1, 74, 27));
-        assert_eq!(a.footer, Rect::new(0, 29, 100, 1));
-        assert_eq!(areas(60, 20, true).sidebar, None);
-        assert_eq!(areas(100, 30, false).pane.width, 100);
+        let a = areas(150, 40, true);
+        assert_eq!(a.sidebar, Some(Rect::new(0, 0, 30, 39)));
+        assert_eq!(a.main, Rect::new(30, 0, 120, 39));
+        assert_eq!(a.pane, Rect::new(32, 1, 116, 37));
+        assert_eq!(a.footer, Rect::new(0, 39, 150, 1));
+        assert_eq!(areas(79, 24, true).sidebar, None);
+        assert_eq!(areas(100, 30, false).pane.width, 96);
     }
 
     #[test]
     fn the_screen_reads_at_100_by_30_and_paints_only_what_changed() {
         let projects = [project("desl")];
         let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), thread("t-2b", "desl", 2, Status::Waiting, "")];
-        let a = areas(100, 30, true);
+        let a = areas(120, 30, true);
         let mut vt = vt100::Parser::new(a.pane.height.try_into().unwrap(), a.pane.width.try_into().unwrap(), 0);
         vt.process(b"\x1b[1mhello\x1b[0m from the agent");
         let mut v = View {
@@ -549,17 +606,19 @@ mod tests {
             help: false,
             scrolled: 0,
         };
-        let mut t = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
         let s = screen(&t);
-        assert!(s.contains(" projects  1 waiting"), "{s}");
-        assert!(s.contains(" ▾ /src/desl"), "{s}");
         assert_eq!(truncate_start("/tmp/a/b/demo", 8), "…/b/demo");
-        assert!(s.contains(" ▌ ○ claude · fix the l…"), "{s}");
-        assert!(s.contains("◐ claude · new"), "{s}");
-        assert!(s.contains("│ /src/desl · Claude · opus with high effort"), "{s}");
-        assert!(s.contains("│hello from the agent"), "{s}");
-        assert!(s.lines().last().unwrap().contains("ctrl+b  s switch agent"), "{s}");
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].starts_with("╭ Projects ") && lines[0].contains("1 waiting"), "{s}");
+        assert!(lines[0].contains("╭ Claude · /src/desl · opus · high ") && lines[0].contains("○ idle t-1a ╮"), "{s}");
+        assert!(lines[1].contains("││ hello from the agent"), "{s}");
+        assert!(lines[2].contains("│ desl  /src "), "{s}");
+        assert!(lines[3].contains("│ ▌ ○ claude  fix the log…"), "{s}");
+        assert!(lines[4].contains("│   ◐ claude  new"), "{s}");
+        assert!(lines[28].starts_with("╰"), "{s}");
+        assert!(lines[29].contains(" ctrl+b   s switch agent"), "{s}");
         let before = t.backend().buffer().clone();
         let full = String::from_utf8(paint(None, &before)).unwrap();
         assert!(full.contains("\x1b[2J") && full.contains("hello"), "{full:?}");

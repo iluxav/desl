@@ -6,6 +6,7 @@ version = 4
 name = "adapter-claude"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "desl-ir",
  "serde_json",
 ]
@@ -14,6 +15,7 @@ dependencies = [
 name = "adapter-codex"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "desl-ir",
  "serde_json",
 ]
@@ -465,6 +467,7 @@ dependencies = [
  "serde",
  "serde_json",
  "unicode-width",
+ "vt100",
 ]
 
 [[package]]

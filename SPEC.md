@@ -24,9 +24,9 @@ desl (say diesel) is a single-binary terminal workspace that runs many coding ag
 
 These five scenarios are the acceptance script. Each must work exactly as written, with no step added.
 
-**First run.** The user runs `curl -fsSL https://desl.dev/install.sh | sh`, then `desl` inside a repo. desl starts the daemon in the background, detects `claude` and `codex` on PATH and whether each is logged in, registers the repo as a project, and opens one thread on the default agent: the agent's own interface, full screen, exactly as if the user had typed `claude`. The terminal title reads `desl · claude · t-7f3a`. Total time under ten seconds; nothing to configure. If no agent is found, desl says which ones it supports and how to install each, then exits cleanly.
+**First run.** The user runs `curl -fsSL https://desl.dev/install.sh | sh`, then `desl` inside a repo. desl starts the daemon in the background, detects `claude` and `codex` on PATH and whether each is logged in, registers the repo as a project, and opens one thread on the default agent: the projects and their threads on the left, and on the right the agent's own interface, exactly as if the user had typed `claude`, under a one-line header naming the project, agent and model. The terminal title reads `desl · claude · t-7f3a`. Total time under ten seconds; nothing to configure. If no agent is found, desl says which ones it supports and how to install each, then exits cleanly.
 
-**The daily loop.** The user types into the agent's own prompt and everything on screen is the agent's own: its streaming, its tool calls, its approval dialogs, its `/` commands, skills and MCP servers, its scrollback and mouse wheel. desl owns only the prefix key. When the agent asks a question or for approval, the thread turns `waiting`: if the user is looking at another thread the bell fires once and the title gains `1 waiting`. `prefix c` opens a second thread, `prefix n` / `prefix p` move between threads, and `prefix w` opens the thread list over the screen, with every thread's status, agent and age and the waiting ones at the top; closing it puts the screen back exactly as it was.
+**The daily loop.** The user types into the agent's own prompt and everything on screen is the agent's own: its streaming, its tool calls, its approval dialogs, its `/` commands, skills and MCP servers, its mouse wheel. desl owns only the prefix key. When the agent asks a question or for approval, the thread turns `waiting`: its glyph in the sidebar changes, and if the user is looking at another thread the bell fires once and the title gains `1 waiting`. `prefix c` opens a second thread, `prefix n` / `prefix p` move between threads, a click on a thread in the sidebar opens it, and `prefix w` moves the keys into the sidebar (`j`/`k`, `enter`, `esc`).
 
 **Switch.** Mid-thread, the user presses `prefix s`. desl copies the conversation so far into a new session of the other agent, starts that agent out of sight, and once it has drawn the conversation the screen changes to it in one frame: the same prompts, replies and tool calls, now in Codex's interface. The title says `codex`. The next prompt goes to Codex, which answers it knowing everything that came before. `prefix s` again copies the turns Codex added back into a new Claude session the same way. The user never sees a native session id.
 
@@ -34,7 +34,7 @@ These five scenarios are the acceptance script. Each must work exactly as writte
 
 **Detach and return.** `prefix d` detaches; all agents keep working. From another machine, `ssh box && desl` reattaches to the same workspace with every thread where it was, the screen and its scrollback included. `desl status` from any shell prints the thread list as text; `desl wait t-7f3a` blocks until that thread needs attention, for use in scripts.
 
-Throughout, three things are always true: the current agent and thread are in the terminal title, the thread list shows each thread's agent and git branch, and `prefix ?` shows every key desl owns.
+Throughout, three things are always true: the current project, agent and model are in the header, every thread and its status are in the sidebar, and the bottom line shows the common keys, with `prefix ?` for all of them.
 
 ## The feel bar
 
@@ -43,9 +43,9 @@ Nine named moments. Each is a testable experience target, scored by the author i
 1. **First reply in ten seconds.** From a finished install to a first agent reply, a new user reads nothing, configures nothing, and is never asked a question they do not understand.
 2. **Keys you already know.** A user who knows tmux and Claude Code discovers switch, fork, detach and the waiting list within ten minutes, unprompted, and never hits a key that does something surprising.
 3. **Switching feels like changing the model.** `prefix s` shows no seam: the other agent opens on the whole conversation, never on a blank screen; the next reply answers the user's question with that history in mind; the user never sees or types a native session id.
-4. **Nothing moves under your eyes.** desl never draws over the agent unasked. A switch, a thread change or a reattach replaces the screen in one frame: no blank frame, no half-drawn screen, no flicker.
+4. **Nothing moves under your eyes.** desl never draws over the agent's pane unasked. A switch, a thread change or a reattach replaces the screen in one frame: no blank frame, no half-drawn screen, no flicker.
 5. **Waiting is impossible to miss and impossible to be nagged by.** One bell, one mark in the title, one place at the top of the thread list. Never a modal from desl, never a repeat, never a notification for something already answered.
-6. **The agent is the hero.** The screen is the agent's own interface; desl's chrome appears only when the user calls it with the prefix and leaves without a trace.
+6. **The agent is the hero.** The pane is the agent's own interface, as large as the chrome allows; desl's chrome is a quiet frame around it: a sidebar, a header line and a key line, and the sidebar hides with `prefix b`.
 7. **Coming back is instant.** Reattach from any device restores the exact screen, scroll positions and focus in under a second, and every agent is where it was.
 8. **Errors read like a colleague.** Every error says what happened and what to do next, in one line, in plain words, with a key to press. No stack traces, no codes without text.
 9. **Leaving is always safe.** Quitting detaches. Closing the terminal detaches. Killing the process loses nothing. The user never has to think about whether it is safe to stop.
@@ -61,7 +61,7 @@ Every design decision is tested against these eight rules. When two conflict, th
 1. **Nothing is ever lost.** Thread state is an append-only log on disk. A crash, a killed terminal or a dead agent process never loses a message, a diff or a decision. Recovery is automatic and silent.
 2. **Zero to useful in ten seconds.** First run detects installed agents, detects the repo in the current directory, and opens a thread. No config file, no wizard, no account.
 3. **Borrow, never invent.** Keys, words and commands come from tmux, lazygit, fzf, Claude Code and Codex. A new concept gets a new word only when no community word fits. Users should guess right the first time.
-4. **The agent is the star.** The agent's own interface fills the screen. desl's chrome is an overlay called with the prefix: one accent colour, no banners, no animation that does not carry information.
+4. **The agent is the star.** The agent's own interface fills the pane. desl's chrome is a frame around it in the style of Herdr and T3 Code: one accent colour, no banners, no animation that does not carry information.
 5. **Interrupt the agent, never the app.** Every key without the prefix belongs to the agent, `ctrl+c` included. Quitting desl is a deliberate command, and the daemon keeps running regardless.
 6. **Everything is scriptable.** Every action desl owns exists as a CLI subcommand with `--json` output. Agents can drive desl through the same interface a human uses.
 7. **Fast by default.** Keys reach the agent with no delay a person could notice; a switch or a thread change lands in one frame. Performance is a feature with a budget, not a cleanup phase.
@@ -118,47 +118,45 @@ Identifiers: thread ids are short, typeable and prefixed, in the style of git sh
 
 ## Interface design
 
-The agent's own interface fills the terminal. desl passes the agent's output straight to the terminal and the user's keys straight to the agent, so the agent's scrollback, mouse wheel, colours, keys and dialogs are its own and behave as they do without desl. desl owns one key, the prefix, and draws only when the user calls it. It must read well at 80×24 and scale to 300×80 without changing shape.
+The workspace screen, in the style of Herdr and T3 Code in a terminal: projects and their threads on the left, the shown thread's agent on the right under a one-line header, and the common keys along the bottom. The agent runs its own interface in a terminal the daemon owns; desl draws it through its own terminal emulator into the pane, and passes the user's keys straight to it, so the agent's colours, keys, dialogs and mouse are its own. desl owns one key, the prefix. It must read well at 80×24 and scale to 300×80 without changing shape; below 70 columns the sidebar steps aside.
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ ▐▛███▛█   Claude Code v2.1.318                                           │
-│                                                                          │
-│ ❯ Add refresh-token rotation to the auth middleware                      │
-│   Read 2 files                                                           │
-│ ● Rotation is in. Want me to add the revocation list?                    │
-│                                                                          │
-│ ❯ _                                                                      │
-└──────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────┬────────────────────────────────────────────────────────┐
+│ projects  1 waiting        │ ~/src/api · Claude · opus with high effort  t-7f3a idle│
+│                            │ ▐▛███▛█   Claude Code v2.1.318                          │
+│ ▾ ~/src/api                │                                                        │
+│ ▌ ● claude · auth          │ ❯ Add refresh-token rotation to the auth middleware    │
+│   ◐ codex · tests          │   Read 2 files                                         │
+│   ○ claude · docs          │ ● Rotation is in. Want me to add the revocation list?  │
+│ ▾ ~/src/web                │                                                        │
+│   ○ claude · new           │ ❯ _                                                    │
+├────────────────────────────┴────────────────────────────────────────────────────────┤
+│ ctrl+b  s switch agent  c new  w threads  n/p next/prev  b sidebar  ? help  d detach│
+└─────────────────────────────────────────────────────────────────────────────────────┘
   terminal title: desl · claude · t-7f3a · 1 waiting
 ```
 
-**Terminal title.** Always `desl · <agent> · <thread>`, with `· n waiting` while other threads need the user and `· switching to codex…` while a switch is being prepared. This is the only chrome that is always present.
+**Sidebar.** Every project, its path written with `~`, and under it each thread with its status glyph, agent and short name, in a fixed order (project, then oldest first) that `prefix n`, `prefix p` and `prefix 1`…`9` follow. The shown thread is marked `▌`. A click opens a thread; `prefix w` gives the sidebar the keys (`j`/`k` move, `enter` opens, `esc` returns to the agent); `prefix b` hides it and gives the agent the width. Phase 2 adds subagents nested under their thread and shell threads.
 
-**Thread list.** `prefix w` opens it over the screen, in the style of tmux's `choose-tree` and lazygit's lists: projects that collapse, each thread with a status glyph, its id, a short name derived from its first prompt, its agent, git branch and age, and a `WAITING` group at the top. `j`/`k` move, `enter` opens the thread, `/` filters, `r` renames, `esc` closes. It is drawn on the terminal's alternate screen, so closing it restores the agent's screen and scrollback untouched.
+**Header.** The project, the agent, and its model and effort as the thread's session last used them; on the right the thread id and status, or, while scrolled back, how far.
 
-```
-┌ threads ──────────────────────────────────────────────────────────────┐
-│ WAITING                                                               │
-│   ◐ t-91c2  tests   codex   main ↑2   2m                              │
-│ ▾ api (3)                                                             │
-│   ● t-7f3a  auth    claude  auth      now                             │
-│   ○ t-04be  docs    claude  main      1h                              │
-│ ▸ web (1)                                                             │
-└────────────────────────────────── enter open · s switch · ? help ─────┘
-```
+**Key line.** The common keys after the prefix, lit while the prefix is armed; a notice from desl (why a switch did not happen, say) takes its place until the next key. Never drawn over the agent.
 
-**Changing what is on screen.** A switch, a thread change and a reattach all work the same way: the agent to be shown has been drawing into a hidden terminal kept by the daemon, and desl replaces the screen with that terminal's output, scrollback included, inside one synchronized-output frame (`CSI ? 2026 h … l`). The old screen stays until the new one is complete; there is no blank or half-drawn frame. While the new agent is getting ready, keys typed are held and delivered to it.
+**Scrolling.** The wheel over the pane goes to the agent when it asked for the mouse, and moves an agent on the alternate screen as its arrow keys; otherwise it scrolls desl's own scrollback of the agent's output (10,000 lines), and the next key typed returns to the bottom. Holding shift selects text with the terminal's own selection.
 
-**Approvals and questions** are the agent's own dialogs, answered in the agent's own way. desl only notices them (see Agent adapters) to mark the thread `waiting`, ring the bell for a thread that is not on screen, and sort it to the top of the list.
+**Terminal title.** Always `desl · <agent> · <thread>`, with `· n waiting` while other threads need the user.
 
-**Errors and notices** from desl appear as a one-line strip at the bottom of the thread list, which opens for them, never drawn over the agent; `esc` dismisses.
+**Changing what is on screen.** A switch, a thread change and a reattach all work the same way: the agent to be shown has been drawing into a hidden terminal kept by the daemon, desl replays that output into a fresh emulator for the pane, and paints only the cells that differ, inside one synchronized-output frame (`CSI ? 2026 h … l`). The old screen stays until the new one is complete; there is no blank or half-drawn frame. While the new agent is getting ready, keys typed are held and delivered to it.
+
+**Approvals and questions** are the agent's own dialogs, answered in the agent's own way. desl only notices them (see Agent adapters) to mark the thread `waiting` in the sidebar and ring the bell for a thread that is not on screen.
+
+**Errors and notices** from desl appear in the key line, never drawn over the agent, until the next key.
 
 **Visual language.** One accent colour (default: the terminal's blue), one warning, one critical, three greys. Status glyphs: `●` working, `◐` waiting, `○` idle, `✕` failed, `⊝` detached, with the words always available for screen readers and `NO_COLOR`. Rounded box drawing where the terminal supports it, falling back to ASCII. No emoji in chrome. Respect the terminal's own palette by default; built-in themes (`default`, `mono`, `catppuccin`, `gruvbox`, `solarized`) are opt-in.
 
-**Splits (phase 2).** `prefix %` and `prefix "` show two threads side by side, as in tmux. A split draws the agents through desl's own terminal emulator, so inside a split the scrollback is desl's (`prefix [`, the wheel) rather than the terminal's; `prefix z` zooms back to full screen and the terminal's own scrollback. Shell panes work the same way.
+**Splits (phase 2).** `prefix %` and `prefix "` show two threads side by side in the pane, as in tmux, through the same emulator; `prefix z` zooms one back. Shell panes work the same way.
 
-**Help.** `prefix ?` opens an overlay listing the keys desl owns, grouped by purpose, in the style of lazygit, with one row saying that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
+**Help.** `prefix ?` opens a box over the pane listing the keys desl owns, grouped by purpose, in the style of lazygit, with one row saying that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
 
 ## Commands, keybindings and CLI
 
@@ -171,13 +169,14 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
 | `prefix f` | Fork from here: pick the agent, a new thread opens with the conversation so far | desl |
 | `prefix c` | New thread in this project, on the default agent | tmux |
-| `prefix w` | Thread list | tmux |
+| `prefix w` | Move the keys to the sidebar's thread list | tmux |
 | `prefix n` / `prefix p` | Next / previous thread | tmux |
 | `prefix 1`…`prefix 9` | Jump to thread n in the list | tmux |
 | `prefix l` | Back to the thread shown before | tmux |
 | `prefix ,` | Rename this thread | tmux |
 | `prefix i` | Agent, native session id, model, worktree | desl |
 | `prefix x` | Close this thread's agent (the thread is kept and reopens on demand) | tmux |
+| `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |
 | `prefix ?` | Help overlay | lazygit |
 | `prefix prefix` | Send the prefix key to the agent | tmux |
@@ -427,7 +426,7 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 | Binary size, stripped | < 25 MB |
 | Store growth | < 1 KB per event excluding tool output blobs |
 
-**Rendering.** The agent draws; desl forwards its bytes as they arrive and never rewrites them. Screen replacements are one synchronized-output frame. Overlays are drawn on the alternate screen and leave nothing behind. Resize goes to the agent's PTY at once and to hidden PTYs debounced at 50 ms.
+**Rendering.** The agent draws into desl's emulator; desl paints the changed cells at most once per 12 ms, each paint one synchronized-output frame, and passes the agent's key-mode requests (kitty keyboard, modifyOtherKeys, bracketed paste, focus reports) to the real terminal. desl answers the agent's questions to its terminal (cursor position, colours, attributes) from the user's terminal's answers, probed once. Resize goes to the agent's PTY at once and to hidden PTYs debounced at 50 ms.
 
 **Crash safety.** The store is written in WAL mode with one transaction per event, so nothing that reached the screen as an event is lost; a daemon crash mid-turn loses at most the in-flight assistant delta, and the thread says so and resumes its native session on the next prompt. Agent process crashes are detected within one second, marked `failed` with the exit reason, and offered a one-key restart that resumes the native session. Client crashes lose nothing. `desl doctor` checks store integrity and can rebuild indexes.
 

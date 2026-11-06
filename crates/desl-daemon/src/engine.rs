@@ -802,6 +802,8 @@ impl Engine {
         let adapter = self.adapter(&agent).ok_or_else(|| format!("desl has no adapter for {agent}."))?;
         let binding = t.bindings.get(&agent);
         let open = match binding.and_then(|b| b.session_id.clone()) {
+            // A session that never had a turn has no file, and its agent cannot resume it.
+            Some(id) if adapter.session_file(Path::new(&t.cwd), Some(&id), UNIX_EPOCH).is_none() => Open::New { session_id: Some(id) },
             Some(session_id) => Open::Resume { session_id },
             None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
         };

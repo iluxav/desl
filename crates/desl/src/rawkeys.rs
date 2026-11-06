@@ -77,6 +77,51 @@ pub fn is_prefix(k: &Key) -> bool {
     k.ctrl && k.code == Some(u32::from(b'b')) && !k.noise
 }
 
+/// A mouse report in SGR encoding (`CSI < b ; x ; y M|m`), which desl asks the terminal for.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Mouse {
+    /// The button code: 0-2 buttons, 64/65 wheel up/down, +32 for motion, +4/8/16 modifiers.
+    pub button: u16,
+    /// Column and row on the whole terminal, from 0.
+    pub x: u16,
+    pub y: u16,
+    /// False for a release (`m`).
+    pub press: bool,
+}
+
+impl Mouse {
+    pub fn wheel(&self) -> Option<bool> {
+        match self.button & !(4 | 8 | 16) {
+            64 => Some(true),
+            65 => Some(false),
+            _ => None,
+        }
+    }
+    pub fn motion(&self) -> bool {
+        self.button & 32 != 0
+    }
+    /// This report for a program whose screen starts at (`left`, `top`), in the encoding it asked
+    /// for: SGR, or the original X10 bytes (which cannot say which button was released).
+    pub fn encode(&self, left: u16, top: u16, sgr: bool) -> Vec<u8> {
+        let (x, y) = (self.x.saturating_sub(left) + 1, self.y.saturating_sub(top) + 1);
+        if sgr {
+            return format!("\x1b[<{};{x};{y}{}", self.button, if self.press { 'M' } else { 'm' }).into_bytes();
+        }
+        let b = if self.press { self.button } else { 3 | (self.button & !3) };
+        let byte = |n: u16| u8::try_from((n + 32).min(255)).unwrap_or(255);
+        vec![0x1b, b'[', b'M', byte(b), byte(x), byte(y)]
+    }
+}
+
+/// The mouse report at the start of `b` and its length.
+pub fn mouse(b: &[u8]) -> Option<(Mouse, usize)> {
+    let rest = b.strip_prefix(b"\x1b[<")?;
+    let end = rest.iter().position(|c| *c == b'M' || *c == b'm')?;
+    let mut it = std::str::from_utf8(&rest[..end]).ok()?.split(';').map(|n| n.parse::<u16>().ok());
+    let (button, x, y) = (it.next()??, it.next()??, it.next()??);
+    Some((Mouse { button, x: x.saturating_sub(1), y: y.saturating_sub(1), press: rest[end] == b'M' }, 3 + end + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,5 +156,16 @@ mod tests {
         let k = keys("sé".as_bytes());
         assert_eq!(k.len(), 2);
         assert_eq!(k[0].code, Some(115));
+    }
+
+    #[test]
+    fn mouse_reports_are_read_and_moved_into_a_pane() {
+        let (m, n) = mouse(b"\x1b[<65;40;12Mrest").unwrap();
+        assert_eq!(n, 12);
+        assert_eq!(m, Mouse { button: 65, x: 39, y: 11, press: true });
+        assert_eq!(m.wheel(), Some(false));
+        assert_eq!(m.encode(30, 2, true), b"\x1b[<65;10;10M");
+        assert_eq!(m.encode(30, 2, false), vec![0x1b, b'[', b'M', 65 + 32, 10 + 32, 10 + 32]);
+        assert!(mouse(b"\x1b[<0;1").is_none());
     }
 }

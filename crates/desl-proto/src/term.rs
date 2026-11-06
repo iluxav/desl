@@ -212,7 +212,7 @@ pub fn replies(chunk: &[u8], answers: &Answers, cursor: (u16, u16)) -> Vec<u8> {
 /// Puts the terminal back the way an agent may have changed it: main screen, mouse, paste, focus
 /// and keyboard modes off, cursor shown, colours reset.
 pub const RESET: &[u8] =
-    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[<10u\x1b[=0u\x1b[0m\x1b[?25h";
+    b"\x1b[?1049l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?2004l\x1b[?1004l\x1b[<10u\x1b[=0u\x1b[>4;0m\x1b[0m\x1b[?25h";
 
 /// A whole new screen in one synchronized frame: the terminal reset and cleared, scrollback
 /// included, then `output` without its queries.
@@ -262,6 +262,40 @@ impl Modes {
     }
 }
 
+/// The sequences in `b` that set how the terminal sends keys and pastes: the kitty keyboard
+/// protocol's push, pop and set (`CSI > u`, `CSI < u`, `CSI = u`), modifyOtherKeys
+/// (`CSI > 4 ; n m`), bracketed paste and focus reports. desl draws the agent through its own
+/// screen, so these are passed to the real terminal for the agent's keys to arrive as it asked.
+pub fn key_modes(b: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] != 0x1b || b[i + 1] != b'[' {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 2;
+        while j < b.len() && (0x20..=0x3f).contains(&b[j]) {
+            j += 1;
+        }
+        if j >= b.len() {
+            break;
+        }
+        let params = &b[i + 2..j];
+        let keep = match b[j] {
+            b'u' => matches!(params.first(), Some(b'>' | b'<' | b'=')),
+            b'm' => params.starts_with(b">4"),
+            b'h' | b'l' => params == b"?2004" || params == b"?1004",
+            _ => false,
+        };
+        if keep {
+            out.extend_from_slice(&b[i..=j]);
+        }
+        i = j + 1;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +329,11 @@ mod tests {
         assert_eq!(m, Modes { alternate: true, cursor_hidden: false });
         m.track(b"\x1b[?1049l");
         assert!(!m.alternate);
+    }
+
+    #[test]
+    fn key_modes_are_picked_out_of_drawing() {
+        let b = b"\x1b[31mhi\x1b[>1u\x1b[?u\x1b[?2004h\x1b[>4;2m\x1b[2J\x1b[<u";
+        assert_eq!(key_modes(b), b"\x1b[>1u\x1b[?2004h\x1b[>4;2m\x1b[<u");
     }
 }

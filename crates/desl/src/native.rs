@@ -1,21 +1,22 @@
-//! The client on the native route (SPEC.md "Interface design"): the shown thread's agent draws
-//! straight onto this terminal and gets every key, except the prefix and the key after it.
-//! desl draws only its overlays, on the alternate screen, and the terminal title.
+//! The client on the native route (SPEC.md "Interface design"). The shown thread's agent runs
+//! its own interface, drawn through desl's terminal emulator into the pane beside the sidebar;
+//! every key goes to it except the prefix and the key after it.
 
 use crate::conn::{Conn, Link};
-use crate::overlay::{self, Action, ListView, Row};
-use crate::rawkeys;
+use crate::layout::{self, Action, Areas, Row, View};
+use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Project, Status, Thread};
 use desl_proto::{Change, Command, Reply, ServerFrame, b64, read_frame, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer;
 use ratatui::crossterm::terminal;
-use ratatui::layout::Rect;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+use vt100::{MouseProtocolEncoding, MouseProtocolMode};
 
 enum Msg {
     Stdin(Vec<u8>),
@@ -29,8 +30,8 @@ fn out(b: &[u8]) {
     let _ = o.flush();
 }
 
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+fn nz(n: u16) -> std::num::NonZeroU16 {
+    std::num::NonZeroU16::new(n.max(1)).unwrap_or(std::num::NonZeroU16::MIN)
 }
 
 /// The terminal in raw mode for as long as this lives, put back however the client ends.
@@ -50,8 +51,17 @@ impl Drop for Raw {
     }
 }
 
-/// Asks the terminal what agents will ask it, so the daemon can answer for it while no client
-/// shows an agent. Gives up after half a second; a terminal that answers nothing is fine.
+/// The alternate screen, button and wheel reports in SGR encoding.
+const SCREEN_ON: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l";
+/// Puts the terminal's key modes back to plain before the next agent sets its own.
+const KEYS_PLAIN: &[u8] = b"\x1b[<10u\x1b[>4;0m\x1b[?2004l\x1b[?1004l";
+/// Lines of the agent's output kept for scrolling back.
+const SCROLLBACK: usize = 10_000;
+/// At most one paint per this long; output in between is drawn together.
+const FRAME: Duration = Duration::from_millis(12);
+
+/// Asks the terminal what agents will ask it. Gives up after half a second; a terminal that
+/// answers nothing is fine.
 fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
     let mut answers = term::Answers::default();
     out(term::PROBE);
@@ -68,26 +78,6 @@ fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
     answers
 }
 
-/// What the agent drew while an overlay covered it is kept up to this much; past it, closing
-/// the overlay asks the daemon for the whole screen again.
-const COVERED_MAX: usize = 4 * 1024 * 1024;
-
-enum Kind {
-    /// The row of the list that is highlighted.
-    List(usize),
-    Help,
-}
-
-struct Overlay {
-    kind: Kind,
-    /// Drawn in memory and painted whole: ratatui talking to the terminal itself would ask it
-    /// where the cursor is, and the answer would go to the stdin reader.
-    term: Terminal<TestBackend>,
-    /// The agent was on the alternate screen already, so the overlay drew over it there and
-    /// closing it needs the agent's screen from the daemon.
-    over_alternate: bool,
-}
-
 /// The one request in flight that changes what is on screen.
 enum Busy {
     Switch(u64),
@@ -95,8 +85,8 @@ enum Busy {
     Create(u64),
 }
 
-/// A key the overlays understand, from whichever encoding the terminal used.
-enum OKey {
+/// A key the sidebar understands, from whichever encoding the terminal used.
+enum SKey {
     Up,
     Down,
     Enter,
@@ -112,23 +102,35 @@ struct Client {
     threads: Vec<Thread>,
     /// The thread shown before this one, for `prefix l`.
     previous: Option<String>,
-    modes: term::Modes,
-    rows: u16,
+    answers: term::Answers,
+    /// The agent's screen, as desl's emulator keeps it.
+    vt: vt100::Parser,
     cols: u16,
+    rows: u16,
+    sidebar_on: bool,
+    term: Terminal<TestBackend>,
+    /// What the terminal shows now, for painting only what changes.
+    shown: Option<Buffer>,
+    dirty: bool,
+    painted: Instant,
     armed: Option<Vec<u8>>,
     /// The key after the prefix was taken: swallow its release report too.
     swallow: bool,
     busy: Option<Busy>,
     /// Keys typed while `busy`, for the agent on screen once it is done.
     held: Vec<u8>,
-    /// A sentence is in the title until the next key.
-    notice: bool,
-    overlay: Option<Overlay>,
-    covered: Vec<u8>,
-    covered_overflow: bool,
+    notice: Option<String>,
+    /// The highlighted sidebar row while the sidebar has the keys.
+    side: Option<usize>,
+    help: bool,
+    scrolled: usize,
 }
 
 impl Client {
+    fn areas(&self) -> Areas {
+        layout::areas(self.cols, self.rows, self.sidebar_on)
+    }
+
     fn title(&self) {
         let waiting = self.threads.iter().filter(|t| t.status == Status::Waiting && t.id != self.thread_id).count();
         let tail = if waiting > 0 { format!(" · {waiting} waiting") } else { String::new() };
@@ -136,48 +138,76 @@ impl Client {
     }
 
     fn notice(&mut self, text: &str) {
-        out(format!("\x1b]0;desl · {} · {text}\x07", self.agent).as_bytes());
-        self.notice = true;
+        self.notice = Some(text.to_string());
+        self.dirty = true;
+    }
+
+    /// A fresh screen for the agent now shown, with everything it drew so far.
+    fn screen_from(&mut self, replay: &[u8]) {
+        let pane = self.areas().pane;
+        self.vt = vt100::Parser::new(nz(pane.height), nz(pane.width), SCROLLBACK);
+        self.vt.process(replay);
+        let mut modes = KEYS_PLAIN.to_vec();
+        modes.extend_from_slice(&term::key_modes(replay));
+        out(&modes);
+        self.scrolled = 0;
+        self.dirty = true;
+    }
+
+    fn input(&mut self, keys: &[u8]) {
+        if !keys.is_empty() {
+            self.link.request(Command::Input { thread_id: self.thread_id.clone(), data: b64::encode(keys) });
+        }
     }
 
     fn send_keys(&mut self, keys: Vec<u8>) {
         if keys.is_empty() {
             return;
         }
+        if self.scrolled > 0 {
+            self.scrolled = 0;
+            self.dirty = true;
+        }
         if self.busy.is_some() {
             self.held.extend_from_slice(&keys);
         } else {
-            self.link.request(Command::Input { thread_id: self.thread_id.clone(), data: b64::encode(&keys) });
+            self.input(&keys);
         }
     }
 
     fn release_held(&mut self) {
         if !self.held.is_empty() && self.busy.is_none() {
             let keys = std::mem::take(&mut self.held);
-            self.send_keys(keys);
+            self.input(&keys);
         }
     }
 
     /// What the terminal sent. Returns the farewell when the user detached.
     fn stdin(&mut self, b: &[u8]) -> Option<String> {
-        if self.notice {
-            self.notice = false;
-            self.title();
+        if self.notice.take().is_some() {
+            self.dirty = true;
         }
         let mut to_agent: Vec<u8> = Vec::new();
         let mut at = 0;
         while at < b.len() {
             let rest = &b[at..];
-            if self.overlay.is_some() && self.armed.is_none() {
+            if let Some((m, n)) = rawkeys::mouse(rest) {
+                at += n;
+                self.send_keys(std::mem::take(&mut to_agent));
+                self.mouse(m);
+                continue;
+            }
+            let ours = self.side.is_some() || self.help;
+            if ours && self.armed.is_none() {
                 // Keys rawkeys leaves whole: a lone escape, and arrows in application mode.
                 if rest == [0x1b] {
-                    self.overlay_key(OKey::Close);
+                    self.side_key(SKey::Close);
                     break;
                 }
                 if rest.len() >= 3 && rest[0] == 0x1b && rest[1] == b'O' {
                     match rest[2] {
-                        b'A' => self.overlay_key(OKey::Up),
-                        b'B' => self.overlay_key(OKey::Down),
+                        b'A' => self.side_key(SKey::Up),
+                        b'B' => self.side_key(SKey::Down),
                         _ => {}
                     }
                     at += 3;
@@ -185,7 +215,7 @@ impl Client {
                 }
             }
             let Some((k, n)) = rawkeys::next(rest) else {
-                if self.overlay.is_none() {
+                if !ours {
                     to_agent.extend_from_slice(rest);
                 }
                 break;
@@ -198,13 +228,12 @@ impl Client {
                     continue;
                 }
                 self.swallow = true;
+                self.dirty = true;
                 if rawkeys::is_prefix(&k) {
-                    if self.overlay.is_none() {
-                        to_agent.extend_from_slice(&raw);
-                    }
+                    to_agent.extend_from_slice(&raw);
                     continue;
                 }
-                match k.code.and_then(char::from_u32).and_then(overlay::action) {
+                match k.code.and_then(char::from_u32).and_then(layout::action) {
                     Some(a) => {
                         self.send_keys(std::mem::take(&mut to_agent));
                         if let Some(bye) = self.act(a) {
@@ -213,7 +242,7 @@ impl Client {
                     }
                     None => {
                         self.swallow = false;
-                        if self.overlay.is_none() {
+                        if !ours {
                             to_agent.extend_from_slice(&prefix);
                             to_agent.extend_from_slice(&raw);
                         }
@@ -221,27 +250,28 @@ impl Client {
                 }
                 continue;
             }
-            if k.noise && (self.swallow || self.overlay.is_some()) {
+            if k.noise && (self.swallow || ours) {
                 continue;
             }
             self.swallow = false;
             if rawkeys::is_prefix(&k) {
                 self.armed = Some(raw);
+                self.dirty = true;
                 continue;
             }
-            if self.overlay.is_some() {
+            if ours {
                 let key = match k.code {
-                    Some(13) => OKey::Enter,
-                    Some(27) => OKey::Close,
+                    Some(13) => SKey::Enter,
+                    Some(27) => SKey::Close,
                     Some(c) => match char::from_u32(c) {
-                        Some(ch) => OKey::Char(ch),
+                        Some(ch) => SKey::Char(ch),
                         None => continue,
                     },
-                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"A") => OKey::Up,
-                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"B") => OKey::Down,
+                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"A") => SKey::Up,
+                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"B") => SKey::Down,
                     None => continue,
                 };
-                self.overlay_key(key);
+                self.side_key(key);
                 continue;
             }
             to_agent.extend_from_slice(&raw);
@@ -250,41 +280,114 @@ impl Client {
         None
     }
 
+    fn mouse(&mut self, m: Mouse) {
+        let a = self.areas();
+        let inside = |r: ratatui::layout::Rect| m.x >= r.x && m.x < r.x + r.width && m.y >= r.y && m.y < r.y + r.height;
+        if inside(a.pane) {
+            let screen = self.vt.screen();
+            let wants = match screen.mouse_protocol_mode() {
+                MouseProtocolMode::None => false,
+                MouseProtocolMode::Press => m.press && !m.motion(),
+                MouseProtocolMode::PressRelease => !m.motion(),
+                MouseProtocolMode::ButtonMotion | MouseProtocolMode::AnyMotion => true,
+            };
+            if wants && self.scrolled == 0 {
+                let sgr = screen.mouse_protocol_encoding() == MouseProtocolEncoding::Sgr;
+                let bytes = m.encode(a.pane.x, a.pane.y, sgr);
+                self.input(&bytes);
+            } else if let Some(up) = m.wheel() {
+                if screen.alternate_screen() && self.scrolled == 0 {
+                    // A full-screen program without the mouse: the wheel is its arrow keys.
+                    let arrow: &[u8] = match (up, screen.application_cursor()) {
+                        (true, true) => b"\x1bOA",
+                        (true, false) => b"\x1b[A",
+                        (false, true) => b"\x1bOB",
+                        (false, false) => b"\x1b[B",
+                    };
+                    self.input(&arrow.repeat(3));
+                } else {
+                    self.scrolled = if up { self.scrolled + 3 } else { self.scrolled.saturating_sub(3) };
+                    self.dirty = true;
+                }
+            }
+            if m.press && !m.motion() && m.wheel().is_none() && self.side.is_some() {
+                self.side = None;
+                self.dirty = true;
+            }
+            return;
+        }
+        if let Some(s) = a.sidebar
+            && inside(s)
+            && m.press
+            && !m.motion()
+            && m.button & 3 == 0
+            && m.wheel().is_none()
+        {
+            let skip = self.side_skip();
+            if let Some(id) = layout::thread_at(&self.projects, &self.threads, s, skip, m.y) {
+                self.side = None;
+                self.dirty = true;
+                if id != self.thread_id && self.busy.is_none() {
+                    self.go(id);
+                }
+            }
+        }
+    }
+
+    fn side_skip(&self) -> usize {
+        let Some(s) = self.areas().sidebar else { return 0 };
+        let rows = layout::rows(&self.projects, &self.threads);
+        let keep = self.side.unwrap_or_else(|| rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
+        layout::side_skip(rows.len(), keep, s)
+    }
+
     fn ordered(&self) -> Vec<String> {
-        overlay::order(&self.projects, &self.threads).iter().map(|t| t.id.clone()).collect()
+        layout::order(&self.projects, &self.threads).iter().map(|t| t.id.clone()).collect()
     }
 
     fn act(&mut self, a: Action) -> Option<String> {
-        if a == Action::Detach {
-            return Some("Detached. The agents keep working; run desl to come back.".to_string());
+        self.dirty = true;
+        match a {
+            Action::Detach => return Some("Detached. The agents keep working; run desl to come back.".to_string()),
+            Action::Help => {
+                self.help = !self.help;
+                return None;
+            }
+            Action::Sidebar => {
+                self.sidebar_on = !self.sidebar_on;
+                self.side = None;
+                self.relayout();
+                return None;
+            }
+            _ => {}
         }
         if self.busy.is_some() {
             return None;
         }
+        self.help = false;
         match a {
-            Action::List if matches!(self.overlay, Some(Overlay { kind: Kind::List(_), .. })) => self.close_overlay(),
-            Action::Help if matches!(self.overlay, Some(Overlay { kind: Kind::Help, .. })) => self.close_overlay(),
-            Action::List => {
-                let rows = overlay::rows(&self.projects, &self.threads);
-                let at = rows.iter().rposition(|r| matches!(r, Row::Thread { id, .. } if *id == self.thread_id)).unwrap_or(0);
-                self.open_overlay(Kind::List(at));
-            }
-            Action::Help => self.open_overlay(Kind::Help),
-            Action::Switch => {
-                self.close_overlay();
-                if self.busy.is_none() {
-                    let to = if self.agent == "claude" { "codex" } else { "claude" };
-                    out(format!("\x1b]0;desl · switching to {to}…\x07").as_bytes());
-                    let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
-                    self.busy = Some(Busy::Switch(id));
+            Action::Threads if self.side.is_some() => self.side = None,
+            Action::Threads => {
+                if !self.sidebar_on {
+                    self.sidebar_on = true;
+                    self.relayout();
                 }
+                let rows = layout::rows(&self.projects, &self.threads);
+                self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
+            }
+            Action::Switch => {
+                self.side = None;
+                let to = if self.agent == "claude" { "codex" } else { "claude" };
+                self.notice(&format!("Switching to {to}…"));
+                let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
+                self.busy = Some(Busy::Switch(id));
             }
             Action::New => {
                 let cwd = self
                     .threads
                     .iter()
                     .find(|t| t.id == self.thread_id)
-                    .and_then(|t| self.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone()).or(Some(t.cwd.clone())));
+                    .map(|t| self.projects.iter().find(|p| p.id == t.project_id).map_or(t.cwd.clone(), |p| p.path.clone()));
                 match cwd {
                     Some(cwd) => {
                         let id = self.link.request(Command::NewThread { cwd, agent: None, prompt: None });
@@ -304,125 +407,108 @@ impl Client {
                 }
             }
             Action::Jump(n) => match self.ordered().get(n - 1) {
-                Some(id) if *id == self.thread_id => self.close_overlay(),
+                Some(id) if *id == self.thread_id => self.side = None,
                 Some(id) => self.go(id.clone()),
-                None => self.notice(&format!("There is no thread {n}. Press ctrl+b w for the list.")),
+                None => self.notice(&format!("There is no thread {n}.")),
             },
             Action::Last => match self.previous.clone().filter(|id| self.threads.iter().any(|t| t.id == *id)) {
                 Some(id) => self.go(id),
                 None => self.notice("No thread was shown before this one."),
             },
-            Action::Detach => {}
+            Action::Detach | Action::Help | Action::Sidebar => {}
         }
         None
     }
 
-    /// Shows `thread_id`. An open overlay stays until the new screen replaces it in one frame.
+    /// Shows `thread_id` in the pane once the daemon sends what its agent drew.
     fn go(&mut self, thread_id: String) {
-        let id = self.link.request(Command::Attach {
-            thread_id: thread_id.clone(),
-            rows: self.rows,
-            cols: self.cols,
-            answers: term::Answers::default(),
-        });
+        let pane = self.areas().pane;
+        let command = Command::Attach { thread_id: thread_id.clone(), rows: pane.height, cols: pane.width, answers: self.answers.clone() };
+        let id = self.link.request(command);
         self.busy = Some(Busy::Attach(id, thread_id));
     }
 
-    fn overlay_key(&mut self, key: OKey) {
-        let cursor = match &self.overlay {
-            Some(Overlay { kind: Kind::List(c), .. }) => *c,
-            Some(_) => return self.close_overlay(),
-            None => return,
-        };
-        let rows = overlay::rows(&self.projects, &self.threads);
+    fn side_key(&mut self, key: SKey) {
+        self.dirty = true;
+        if self.help {
+            self.help = false;
+            return;
+        }
+        let Some(cursor) = self.side else { return };
+        let rows = layout::rows(&self.projects, &self.threads);
         let thread_at = |i: usize| match rows.get(i) {
-            Some(Row::Thread { id, .. }) => Some(id.clone()),
+            Some(Row::Thread(id)) => Some(id.clone()),
             _ => None,
         };
-        let moved = match key {
-            OKey::Close | OKey::Char('q') => return self.close_overlay(),
-            OKey::Down | OKey::Char('j') => (cursor + 1..rows.len()).find(|&i| thread_at(i).is_some()),
-            OKey::Up | OKey::Char('k') => (0..cursor).rev().find(|&i| thread_at(i).is_some()),
-            OKey::Enter => {
-                match thread_at(cursor) {
-                    Some(id) if id == self.thread_id => self.close_overlay(),
-                    Some(id) if self.busy.is_none() => self.go(id),
-                    _ => {}
+        match key {
+            SKey::Close | SKey::Char('q') => self.side = None,
+            SKey::Down | SKey::Char('j') => {
+                if let Some(i) = (cursor + 1..rows.len()).find(|&i| thread_at(i).is_some()) {
+                    self.side = Some(i);
                 }
-                return;
             }
-            OKey::Char(c @ '1'..='9') => {
+            SKey::Up | SKey::Char('k') => {
+                if let Some(i) = (0..cursor).rev().find(|&i| thread_at(i).is_some()) {
+                    self.side = Some(i);
+                }
+            }
+            SKey::Enter => match thread_at(cursor) {
+                Some(id) if id == self.thread_id => self.side = None,
+                Some(id) if self.busy.is_none() => self.go(id),
+                _ => {}
+            },
+            SKey::Char(c @ '1'..='9') => {
                 self.act(Action::Jump(c as usize - '0' as usize));
-                return;
             }
-            OKey::Char(_) => return,
+            SKey::Char(_) => {}
+        }
+    }
+
+    /// The terminal or the sidebar changed size: the agent's screen follows the pane.
+    fn relayout(&mut self) {
+        let pane = self.areas().pane;
+        self.vt.screen_mut().set_size(nz(pane.height), nz(pane.width));
+        self.link.request(Command::Resize { thread_id: self.thread_id.clone(), rows: pane.height, cols: pane.width });
+        self.dirty = true;
+    }
+
+    fn paint(&mut self) {
+        let a = self.areas();
+        if self.term.backend().buffer().area != ratatui::layout::Rect::new(0, 0, self.cols, self.rows) {
+            self.term.backend_mut().resize(self.cols, self.rows);
+            self.shown = None;
+        }
+        self.vt.screen_mut().set_scrollback(self.scrolled);
+        self.scrolled = self.vt.screen().scrollback();
+        let skip = self.side_skip();
+        let view = View {
+            projects: &self.projects,
+            threads: &self.threads,
+            current: &self.thread_id,
+            cursor: self.side,
+            skip,
+            agent: &self.agent,
+            prefix_armed: self.armed.is_some(),
+            notice: self.notice.as_deref(),
+            help: self.help,
+            scrolled: self.scrolled,
         };
-        if let (Some(i), Some(Overlay { kind: Kind::List(c), .. })) = (moved, &mut self.overlay) {
-            *c = i;
-            self.redraw();
+        let screen = self.vt.screen();
+        let _ = self.term.draw(|f| layout::draw(f, &view, &a, screen));
+        let next = self.term.backend().buffer().clone();
+        let mut frame = b"\x1b[?2026h".to_vec();
+        frame.extend_from_slice(&layout::paint(self.shown.as_ref(), &next));
+        let (row, col) = screen.cursor_position();
+        if self.side.is_none() && !self.help && self.scrolled == 0 && !screen.hide_cursor() {
+            frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", a.pane.y + row + 1, a.pane.x + col + 1).as_bytes());
+        } else {
+            frame.extend_from_slice(b"\x1b[?25l");
         }
-    }
-
-    fn open_overlay(&mut self, kind: Kind) {
-        if self.overlay.is_some() {
-            if let Some(o) = &mut self.overlay {
-                o.kind = kind;
-            }
-            self.redraw();
-            return;
-        }
-        let over_alternate = self.modes.alternate;
-        // End a frame the agent may have left half-drawn, so the terminal shows the overlay.
-        out(b"\x1b[?2026l");
-        if !over_alternate {
-            out(b"\x1b[?1049h");
-        }
-        let Ok(term) = Terminal::new(TestBackend::new(self.cols, self.rows));
-        self.overlay = Some(Overlay { kind, term, over_alternate });
-        self.redraw();
-    }
-
-    fn redraw(&mut self) {
-        let Some(o) = &mut self.overlay else { return };
-        if o.term.backend().buffer().area != Rect::new(0, 0, self.cols, self.rows) {
-            o.term.backend_mut().resize(self.cols, self.rows);
-        }
-        match &mut o.kind {
-            Kind::List(cursor) => {
-                let rows = overlay::rows(&self.projects, &self.threads);
-                if !matches!(rows.get(*cursor), Some(Row::Thread { .. })) {
-                    let below = (*cursor..rows.len()).find(|&i| matches!(rows[i], Row::Thread { .. }));
-                    let above = (0..(*cursor).min(rows.len())).rev().find(|&i| matches!(rows[i], Row::Thread { .. }));
-                    *cursor = below.or(above).unwrap_or(0);
-                }
-                let view =
-                    ListView { projects: &self.projects, threads: &self.threads, current: &self.thread_id, cursor: *cursor, now: now_ms() };
-                let _ = o.term.draw(|f| overlay::draw_list(f, &view));
-            }
-            Kind::Help => {
-                let _ = o.term.draw(overlay::draw_help);
-            }
-        }
-        out(&overlay::paint(o.term.backend().buffer()));
-    }
-
-    /// Takes the overlay away and puts the agent's screen back as it was.
-    fn close_overlay(&mut self) {
-        let Some(o) = self.overlay.take() else { return };
-        let over_alternate = o.over_alternate;
-        drop(o);
-        let covered = std::mem::take(&mut self.covered);
-        if over_alternate || self.covered_overflow {
-            self.covered_overflow = false;
-            if self.busy.is_none() {
-                let id = self.thread_id.clone();
-                self.go(id);
-            }
-            return;
-        }
-        out(b"\x1b[H\x1b[2J\x1b[?1049l");
-        out(if self.modes.cursor_hidden { b"\x1b[?25l" } else { b"\x1b[?25h" });
-        out(&term::without_titles(&covered));
+        frame.extend_from_slice(b"\x1b[?2026l");
+        out(&frame);
+        self.shown = Some(next);
+        self.dirty = false;
+        self.painted = Instant::now();
     }
 
     /// Returns the farewell when the client should end.
@@ -430,35 +516,23 @@ impl Client {
         match frame {
             ServerFrame::Pty { thread_id, data } if thread_id == self.thread_id => {
                 let bytes = b64::decode(&data)?;
-                if self.overlay.is_some() {
-                    if self.covered.len() + bytes.len() > COVERED_MAX {
-                        self.covered.clear();
-                        self.covered_overflow = true;
-                    } else if !self.covered_overflow {
-                        self.covered.extend_from_slice(&bytes);
-                    }
-                    // What the agent sets now applies once the overlay closes.
-                    if self.overlay.as_ref().is_some_and(|o| !o.over_alternate) {
-                        self.modes.track(&bytes);
-                    }
-                    return None;
+                self.vt.process(&bytes);
+                // Nothing else is there to answer what the agent asks its terminal.
+                let replies = term::replies(&bytes, &self.answers, self.vt.screen().cursor_position());
+                self.input(&replies);
+                let modes = term::key_modes(&bytes);
+                if !modes.is_empty() {
+                    out(&modes);
                 }
-                self.modes.track(&bytes);
-                out(&term::without_titles(&bytes));
-                // tmux takes an APC (a kitty graphics query, say) as a title: put desl's back.
-                if bytes.windows(2).any(|w| w == b"\x1b_") {
-                    self.title();
-                }
+                self.dirty = true;
             }
             ServerFrame::PtyEnded { thread_id, .. } if thread_id == self.thread_id => {
                 return Some(format!("{} ended. Run desl to open the thread again; it resumes the same conversation.", self.agent));
             }
             ServerFrame::PtyReplace { thread_id, agent, data } if thread_id == self.thread_id => {
-                let bytes = b64::decode(&data).unwrap_or_default();
-                out(&term::replace_screen(&bytes));
-                self.modes = term::Modes::default();
-                self.modes.track(&bytes);
+                self.screen_from(&b64::decode(&data).unwrap_or_default());
                 self.agent = agent;
+                self.notice = None;
                 self.title();
                 self.busy = None;
                 self.release_held();
@@ -487,25 +561,18 @@ impl Client {
         }
         if let Some(sentence) = error {
             self.busy = None;
-            self.close_overlay();
             self.notice(&sentence);
             self.release_held();
             return;
         }
         match (self.busy.take(), ok) {
             (Some(Busy::Attach(_, want)), Some(Reply::Attached { thread_id, agent, replay })) if thread_id == want => {
-                // The new screen replaces the overlay and the old agent in one frame.
-                self.overlay = None;
-                self.covered.clear();
-                self.covered_overflow = false;
-                let bytes = b64::decode(&replay).unwrap_or_default();
-                out(&term::replace_screen(&bytes));
-                self.modes = term::Modes::default();
-                self.modes.track(&bytes);
+                self.screen_from(&b64::decode(&replay).unwrap_or_default());
                 if thread_id != self.thread_id {
                     self.previous = Some(std::mem::replace(&mut self.thread_id, thread_id));
                     self.link.request(Command::SaveView { view: serde_json::json!({ "current": self.thread_id }) });
                 }
+                self.side = None;
                 self.agent = agent;
                 self.title();
                 self.release_held();
@@ -539,10 +606,8 @@ impl Client {
             }
             Change::Appended { .. } | Change::Agents { .. } => return None,
         }
-        if !self.notice && self.busy.is_none() {
-            self.title();
-        }
-        self.redraw();
+        self.title();
+        self.dirty = true;
         None
     }
 
@@ -553,8 +618,7 @@ impl Client {
             && r > 0
         {
             (self.cols, self.rows) = (c, r);
-            self.link.request(Command::Resize { thread_id: self.thread_id.clone(), rows: r, cols: c });
-            self.redraw();
+            self.relayout();
         }
     }
 }
@@ -582,8 +646,11 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         });
     }
     let answers = probe(&rx);
+    out(SCREEN_ON);
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let (agent, replay) = match conn.call(Command::Attach { thread_id: thread_id.clone(), rows, cols, answers }) {
+    let pane = layout::areas(cols, rows, true).pane;
+    let attach = Command::Attach { thread_id: thread_id.clone(), rows: pane.height, cols: pane.width, answers: answers.clone() };
+    let (agent, replay) = match conn.call(attach) {
         Ok(Reply::Attached { agent, replay, .. }) => (agent, b64::decode(&replay).unwrap_or_default()),
         Ok(other) => {
             drop(raw);
@@ -594,9 +661,6 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
             return Err(e);
         }
     };
-    out(&term::replace_screen(&replay));
-    let mut modes = term::Modes::default();
-    modes.track(&replay);
     let (link, mut reader) = conn.split();
     {
         let tx = tx.clone();
@@ -616,21 +680,30 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
         projects: ws.projects,
         threads: ws.threads,
         previous: None,
-        modes,
-        rows,
+        answers,
+        vt: vt100::Parser::new(nz(pane.height), nz(pane.width), SCROLLBACK),
         cols,
+        rows,
+        sidebar_on: true,
+        term: Terminal::new(TestBackend::new(cols, rows))?,
+        shown: None,
+        dirty: true,
+        painted: Instant::now(),
         armed: None,
         swallow: false,
         busy: None,
         held: Vec::new(),
-        notice: false,
-        overlay: None,
-        covered: Vec::new(),
-        covered_overflow: false,
+        notice: None,
+        side: None,
+        help: false,
+        scrolled: 0,
     };
+    c.screen_from(&replay);
     c.title();
+    c.paint();
     let farewell = loop {
-        let msg = match rx.recv_timeout(Duration::from_millis(50)) {
+        let wait = if c.dirty { FRAME.saturating_sub(c.painted.elapsed()) } else { Duration::from_millis(50) };
+        let msg = match rx.recv_timeout(wait) {
             Ok(m) => Some(m),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => break None,
@@ -647,8 +720,10 @@ pub fn run(mut conn: Conn, cwd: PathBuf) -> Result<Option<String>> {
             break bye;
         }
         c.resized();
+        if c.dirty && c.painted.elapsed() >= FRAME {
+            c.paint();
+        }
     };
-    c.overlay = None;
     drop(raw);
     out(b"\r\n");
     // Give the last keys a moment to reach the daemon before the socket closes.

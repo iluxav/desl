@@ -205,6 +205,11 @@ pub trait Adapter: Send + Sync {
         let _ = screen_tail;
         false
     }
+    /// The folder the agent reads the user's own skills from, one folder per skill holding a
+    /// `SKILL.md` (SPEC.md "Agents drive desl"). None for an agent without skills.
+    fn skills_dir(&self) -> Option<PathBuf> {
+        None
+    }
     /// The command line of the agent's own interface for `opts` (the native route).
     fn launch(&self, opts: &LaunchOpts) -> Launch {
         let _ = opts;

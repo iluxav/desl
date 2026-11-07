@@ -69,6 +69,11 @@ impl Adapter for Claude {
         "claude"
     }
 
+    /// Claude Code's personal skills: `~/.claude/skills/<name>/SKILL.md` (docs/adapters.md).
+    fn skills_dir(&self) -> Option<PathBuf> {
+        std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".claude/skills"))
+    }
+
     fn detect(&self) -> Detection {
         let mut d = Detection {
             install_hint: "Install Claude Code with `npm install -g @anthropic-ai/claude-code`, then run `claude` once to log in.".into(),

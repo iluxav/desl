@@ -3,6 +3,16 @@
 All notable changes to desl are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- Agents can drive desl. Every terminal desl starts has `DESL_THREAD` set to its own thread,
+  and `desl skill install` teaches Claude Code and Codex to open threads, prompt them, wait on
+  them and fork their own conversation to the other agent.
+- `desl send`, `wait`, `switch` and `thread rm` refuse the thread they run in, and `desl`
+  refuses to attach inside one of its own threads, as tmux does.
+
 ## [0.1.1]
 
 ### Changed

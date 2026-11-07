@@ -38,6 +38,8 @@ crates/
     claude/        fixtures/, replay tests, the Claude Code adapter
     codex/         fixtures/, replay tests, the Codex adapter
     pty/           the raw PTY adapter (phase 2)
+skills/
+  desl/SKILL.md    the skill that teaches agents to drive desl; `desl skill install` copies it
 docs/
   protocol.md  adapters.md  CHANGELOG.md
 .github/workflows/ ci.yml (make check), release.yml (builds and publishes on a v* tag)

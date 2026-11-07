@@ -196,6 +196,17 @@ Each model lists its effort levels, and `/model` offers them after a model is pi
 the lists; an adapter whose agent has no such setting leaves both empty and the second list
 never opens.
 
+### Skill folders
+
+`skills_dir()` names the folder the agent reads the user's own skills from, one folder per skill
+holding a `SKILL.md`. `desl skill install` writes `desl/SKILL.md` there (SPEC.md "Agents drive
+desl"). The default is None, for an agent without skills.
+
+| Agent | Folder | How it was checked |
+| --- | --- | --- |
+| Claude Code 2.1.319 | `~/.claude/skills` | The user's personal skills live there on this machine, and Claude Code lists them. desl's Claude adapter reads `~/.claude` for sessions too and does not follow `CLAUDE_CONFIG_DIR`; the skill folder does the same. |
+| Codex 0.167.0 | `$CODEX_HOME/skills`, or `~/.codex/skills` when it is unset | The binary's own skill-creator text says so, and it also reads `~/.agents/skills`; `~/.codex/skills/.system` holds Codex's bundled skills. |
+
 ## Agent notes
 
 | Agent | Version | Installed via |

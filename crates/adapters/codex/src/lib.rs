@@ -47,13 +47,18 @@ fn interactive_flags(mode: PermissionMode) -> Vec<String> {
     }
 }
 
+/// Codex's own folder: `$CODEX_HOME`, or `~/.codex` when it is unset.
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|h| !h.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".codex")))
+}
+
 /// A top-level string from the user's own Codex config: `model`, `model_reasoning_effort`.
 /// Read so the lists can mark what Codex uses when the user has not picked in desl.
 fn configured(key: &str) -> Option<String> {
-    let path = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
-        .map(|d| d.join("config.toml"))?;
+    let path = codex_home()?.join("config.toml");
     let text = std::fs::read_to_string(path).ok()?;
     text.lines().take_while(|l| !l.trim_start().starts_with('[')).find_map(|l| {
         let rest = l.trim().strip_prefix(key)?.trim_start().strip_prefix('=')?;
@@ -68,6 +73,11 @@ fn configured_model() -> Option<String> {
 impl Adapter for Codex {
     fn id(&self) -> &'static str {
         "codex"
+    }
+
+    /// Codex's user skills: `$CODEX_HOME/skills/<name>/SKILL.md` (docs/adapters.md).
+    fn skills_dir(&self) -> Option<PathBuf> {
+        codex_home().map(|h| h.join("skills"))
     }
 
     fn detect(&self) -> Detection {

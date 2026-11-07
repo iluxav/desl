@@ -937,6 +937,7 @@ impl Engine {
         let (out_id, exit_id) = (thread_id.clone(), thread_id.clone());
         let pty = Pty::spawn(
             &agent,
+            &thread_id,
             &launch,
             Path::new(&t.cwd),
             rows,
@@ -1288,6 +1289,7 @@ impl Engine {
         let (out_id, exit_id) = (thread_id.to_string(), thread_id.to_string());
         let pty = Pty::spawn(
             to,
+            thread_id,
             &launch,
             Path::new(&cwd),
             rows,

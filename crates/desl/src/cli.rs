@@ -28,7 +28,7 @@ fn connect(paths: &Paths, start: bool) -> Result<Conn> {
     }
 }
 
-fn workspace(conn: &mut Conn) -> Result<Workspace> {
+pub fn workspace(conn: &mut Conn) -> Result<Workspace> {
     match conn.call(Command::Workspace)? {
         Reply::Workspace(ws) => Ok(*ws),
         other => bail!("The desl daemon answered with {other:?}. Run `desl daemon restart`."),
@@ -50,6 +50,42 @@ fn resolve(conn: &mut Conn, given: &str) -> Result<Thread> {
             many.len(),
             many.iter().map(|t| t.id.as_str()).collect::<Vec<_>>().join(", ")
         ),
+    }
+}
+
+/// What a command would do to the thread it runs in, when that is the thread it names. An agent
+/// driving desl from its own terminal (SPEC.md "Agents drive desl") can wait on, prompt, switch
+/// or remove any other thread; on its own, each of those would hang it or end it mid-turn.
+#[derive(Clone, Copy)]
+enum OwnThread {
+    Send,
+    Wait,
+    Switch,
+    Remove,
+}
+
+fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
+    if desl_proto::paths::own_thread().as_deref() != Some(t.id.as_str()) {
+        return Ok(());
+    }
+    let id = &t.id;
+    match what {
+        OwnThread::Send => bail!(
+            "{id} is the thread this command runs in, so `desl send` would wait on its own turn. Send to another thread, or `desl fork {id}` and send to the copy."
+        ),
+        OwnThread::Wait => bail!(
+            "{id} is the thread this command runs in, so `desl wait` would wait on its own turn. Wait on a thread opened with `desl new` or `desl fork`."
+        ),
+        OwnThread::Switch => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let prefix = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref()).prefix.label();
+            bail!(
+                "{id} is the thread this command runs in, and a switch would close its agent mid-turn. The user switches it with {prefix} s, or `desl fork {id} <agent>` hands a copy to the other agent."
+            )
+        }
+        OwnThread::Remove => {
+            bail!("{id} is the thread this command runs in, and removing it would end what runs here. Remove it from another terminal.")
+        }
     }
 }
 
@@ -168,6 +204,7 @@ pub fn thread_rename(paths: &Paths, out: &Out, thread: &str, name: &str) -> Resu
 pub fn thread_rm(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Remove)?;
     let note = match conn.call(Command::RemoveThread { thread_id: t.id.clone() })? {
         Reply::Removed { note } => note,
         _ => None,
@@ -198,6 +235,7 @@ pub fn new(paths: &Paths, out: &Out, project: Option<String>, agent: Option<Stri
 pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Send)?;
     conn.call(Command::Subscribe { cwd: None })?;
     conn.call(Command::View { thread_id: t.id.clone() })?;
     let Reply::Sent { queued } = conn.call(Command::Prompt { thread_id: t.id.clone(), text: prompt.to_string() })? else {
@@ -283,6 +321,7 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
 pub fn switch(paths: &Paths, out: &Out, thread: &str, agent: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Switch)?;
     conn.call(Command::Switch { thread_id: t.id.clone(), agent: agent.to_string() })?;
     done(out, json!({ "thread_id": t.id, "agent": agent }), format!("{} is on {agent}. Its next prompt carries the brief.", t.id));
     Ok(())
@@ -393,6 +432,7 @@ pub fn brief(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
 pub fn wait(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Wait)?;
     let Reply::Waited { status } = conn.call(Command::Wait { thread_id: t.id.clone() })? else {
         bail!("The desl daemon did not answer the wait.")
     };
@@ -609,5 +649,47 @@ pub fn config_show(paths: &Paths, out: &Out) -> Result<()> {
     for p in &c.problems {
         println!("problem       {p}");
     }
+    Ok(())
+}
+
+/// The skill that teaches agents to drive desl (SPEC.md "Agents drive desl"), as shipped.
+const SKILL: &str = include_str!("../../../skills/desl/SKILL.md");
+
+/// `desl skill install`: writes the skill into the skill folder of every agent that has been
+/// set up here. Running it again brings the copy up to date.
+pub fn skill_install(out: &Out) -> Result<()> {
+    let mut installed = Vec::new();
+    let mut linked = Vec::new();
+    for adapter in desl_daemon::server::adapters() {
+        let Some(dir) = adapter.skills_dir() else { continue };
+        // An agent that was never run here has no folder of its own yet.
+        if !dir.parent().is_some_and(|p| p.is_dir()) {
+            continue;
+        }
+        let folder = dir.join("desl");
+        // A link someone made, such as `npx skills add`, is theirs to update.
+        if folder.symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
+            linked.push((adapter.id(), folder));
+            continue;
+        }
+        let file = folder.join("SKILL.md");
+        std::fs::create_dir_all(&folder)
+            .and_then(|()| std::fs::write(&file, SKILL))
+            .map_err(|e| anyhow::anyhow!("Could not write {} ({e}). Check that the folder is writable", file.display()))?;
+        installed.push((adapter.id(), file));
+    }
+    if installed.is_empty() && linked.is_empty() {
+        bail!("Neither Claude Code nor Codex has been set up here. Run `claude` or `codex` once, then `desl skill install` again");
+    }
+    let v = json!({
+        "installed": installed.iter().map(|(a, f)| json!({ "agent": a, "path": f })).collect::<Vec<_>>(),
+        "linked": linked.iter().map(|(a, f)| json!({ "agent": a, "path": f })).collect::<Vec<_>>(),
+    });
+    let mut lines: Vec<String> = installed.iter().map(|(a, f)| format!("Installed the desl skill for {a}: {}", f.display())).collect();
+    lines.extend(
+        linked.iter().map(|(a, f)| format!("Left {a}'s desl skill alone: {} is a link, so update the folder it points to.", f.display())),
+    );
+    lines.push("Agents started from now on can drive desl; ask one to fork this thread to the other agent.".into());
+    done(out, v, lines.join("\n"));
     Ok(())
 }

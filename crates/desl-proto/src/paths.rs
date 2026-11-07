@@ -3,6 +3,15 @@
 
 use std::path::PathBuf;
 
+/// The variable the daemon sets in every terminal it starts: the id of the thread that terminal
+/// belongs to. Its presence means "inside desl" (SPEC.md "Agents drive desl").
+pub const THREAD_VAR: &str = "DESL_THREAD";
+
+/// The thread this process runs in, when desl started it.
+pub fn own_thread() -> Option<String> {
+    std::env::var(THREAD_VAR).ok().filter(|v| !v.is_empty())
+}
+
 #[derive(Clone, Debug)]
 pub struct Paths {
     /// The store: `workspace.db`.

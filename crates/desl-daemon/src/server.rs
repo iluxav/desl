@@ -72,6 +72,11 @@ fn accept(listener: UnixListener, tx: Sender<Msg>) {
 }
 
 /// Runs the daemon in this process until a client sends `shutdown`.
+/// Every agent desl has an adapter for, in the order lists show them.
+pub fn adapters() -> Vec<Arc<dyn Adapter>> {
+    vec![Arc::new(Claude), Arc::new(Codex)]
+}
+
 pub fn serve(paths: &Paths) -> Result<()> {
     if let Some(dir) = paths.socket.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -96,8 +101,7 @@ pub fn serve(paths: &Paths) -> Result<()> {
 
     let (tx, rx) = channel::<Msg>();
     let store = Store::open(&paths.db, &paths.blobs)?;
-    let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(Claude), Arc::new(Codex)];
-    let mut engine = Engine::new(store, adapters, tx.clone())?;
+    let mut engine = Engine::new(store, adapters(), tx.clone())?;
     engine.set_config_file(paths.config.clone());
     tracing::info!(socket = %paths.socket.display(), store = %paths.db.display(), pid = std::process::id(), "desl daemon {} started", env!("CARGO_PKG_VERSION"));
 

@@ -119,6 +119,11 @@ enum Cmd {
     },
     /// Check binaries, logins, the daemon and the store
     Doctor,
+    /// The desl skill, which teaches Claude Code and Codex to drive desl
+    Skill {
+        #[command(subcommand)]
+        command: SkillCmd,
+    },
     /// Start, stop or restart the daemon, or read its log
     Daemon {
         #[command(subcommand)]
@@ -143,6 +148,12 @@ enum ThreadCmd {
 }
 
 #[derive(Subcommand)]
+enum SkillCmd {
+    /// Install the skill into every agent's skill folder, or bring it up to date
+    Install,
+}
+
+#[derive(Subcommand)]
 enum DaemonCmd {
     Start,
     /// Stop the daemon and every agent; threads are kept
@@ -158,7 +169,21 @@ enum DaemonCmd {
     Run,
 }
 
+/// A desl drawn inside one of its own threads would draw itself without end. Like tmux with
+/// $TMUX, desl refuses; a desl on another socket, such as a test workspace, attaches as usual.
+fn not_nested(paths: &Paths) -> anyhow::Result<()> {
+    let Some(own) = desl_proto::paths::own_thread() else { return Ok(()) };
+    let Some(mut conn) = conn::Conn::open(paths, false, "cli")? else { return Ok(()) };
+    if cli::workspace(&mut conn)?.threads.iter().any(|t| t.id == own) {
+        anyhow::bail!(
+            "This terminal is already inside desl, in thread {own}. Run `unset DESL_THREAD` first to attach desl inside it anyway"
+        );
+    }
+    Ok(())
+}
+
 fn attach(paths: &Paths) -> anyhow::Result<()> {
+    not_nested(paths)?;
     let cwd = std::env::current_dir()?;
     let conn = match conn::Conn::open(paths, true, "tui")? {
         Some(c) => c,
@@ -197,6 +222,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Agents => cli::agents(paths, &out),
         Cmd::Config { command: None | Some(ConfigCmd::Show) } => cli::config_show(paths, &out),
         Cmd::Doctor => cli::doctor(paths, &out),
+        Cmd::Skill { command: SkillCmd::Install } => cli::skill_install(&out),
         Cmd::Daemon { command } => match command {
             DaemonCmd::Start => cli::daemon_start(paths, &out),
             DaemonCmd::Stop => cli::daemon_stop(paths, &out),

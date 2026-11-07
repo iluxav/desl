@@ -202,6 +202,7 @@ desl fork <thread> <agent> [--at N] [--worktree]
 desl brief <thread>          print the handoff brief, the fallback for a copy
 desl wait <thread>           block until the thread is waiting or idle
 desl worktree new|list|rm
+desl skill install           teach Claude Code and Codex to drive desl
 desl agents                  detected agents and login state
 desl doctor                  check binaries, logins, daemon, permissions
 desl daemon start|stop|restart|logs
@@ -210,7 +211,13 @@ desl upgrade
 
 Inside the agent, its own `/model` and permission keys work as always; `desl model` and `desl permissions` decide what desl passes when it opens a session for the thread (a switch, a fork, a restart). The lists they show come from the agents, as before.
 
-The CLI is how scripts, CI and other agents drive desl. A `desl` skill file for Claude Code and Codex (shipped in the repo, installable with `desl skill install`) teaches agents to open threads, wait on them and fork work, the way Herdr's skill does.
+The CLI is how scripts, CI and other agents drive desl.
+
+**Agents drive desl.** An agent running in a desl thread can open threads, prompt them, wait on them and fork its own conversation to the other agent, the way Herdr's agents drive Herdr. Three pieces make it work:
+
+- **`DESL_THREAD`.** The daemon sets it in every terminal it starts, agent or shell, to the id of that terminal's thread, as tmux sets `$TMUX`. Its presence means "inside desl"; the `desl` on `PATH` reaches the same daemon through the environment the agent inherited.
+- **No command turns on its own thread.** `desl send`, `wait`, `switch` and `thread rm` refuse the thread named in `DESL_THREAD`, because each would hang the caller on its own turn or end it mid-turn; the refusal names `desl fork` as the way to hand a copy on. A bare `desl` refuses to attach inside a thread of the workspace it would draw, and says to `unset DESL_THREAD` to force it, as tmux does with nested sessions. A desl on another socket, such as a test workspace, attaches as usual.
+- **The skill.** `skills/desl/SKILL.md` in the repo, compiled into the binary. `desl skill install` copies it into each agent's own skill folder, which the agent's adapter names (`~/.claude/skills/desl`, `$CODEX_HOME/skills/desl`); running it again brings the copy up to date, and a folder that is a link is left to whoever made it. The skill checks `DESL_THREAD` first, keeps approvals and permission changes with the user, and teaches three moves: look around (`status`, `thread show`), ask the other agent with this conversation (`fork "$DESL_THREAD" codex`, then `send`), and run work in parallel (`new --worktree -m`, then `wait`).
 
 ## Core concepts and data model
 
@@ -500,9 +507,9 @@ dir = ".worktrees"
 branch_prefix = "desl/"
 ```
 
-**Environment.** `DESL_HOME` overrides all paths at once (for CI and tests). `NO_COLOR`, `TERM`, `COLORTERM` and `$EDITOR` are honoured. `DESL_SOCKET` points a client at a non-default daemon.
+**Environment.** `DESL_HOME` overrides all paths at once (for CI and tests). `NO_COLOR`, `TERM`, `COLORTERM` and `$EDITOR` are honoured. `DESL_SOCKET` points a client at a non-default daemon. `DESL_THREAD` is set by the daemon, not the user: the thread a terminal belongs to ("Agents drive desl").
 
-**Shell integration.** `desl completion bash|zsh|fish` prints completions; the installer offers to add them. A `desl` skill file is installable into Claude Code and Codex with `desl skill install`.
+**Shell integration.** `desl completion bash|zsh|fish` prints completions; the installer offers to add them. The `desl` skill is installable into Claude Code and Codex with `desl skill install` ("Agents drive desl").
 
 ## Roadmap
 
@@ -516,7 +523,7 @@ Each diamond is a gate: the phase after it does not start until the gate's test 
 
 **Phase 1, the real thing (weeks 4 to 8).** The core built properly under the native route: daemon with socket protocol, SQLite store, event IR, PTY host, Claude and Codex adapters that read and write session files with fixtures, projector for the fallback brief, thread engine, attention; then the client: pass-through of the shown thread, the switch of `phase0/proto-n`, the thread list, help and info overlays in Prototype A's visual language, keymap and themes. Full CLI with `--json`. Detach and reattach. `desl doctor`, installer, cargo-dist pipeline. Gate: all five walkthrough scenarios pass on macOS and Linux; a 40-turn Claude thread switched to Codex continues correctly in three scripted scenarios and a fork from message 12 reproduces the parent's state, verified by an independent reviewer; every performance budget is met in CI; the author runs the hallway protocol on the build and every moment passes.
 
-**Phase 2, panes and worktrees (weeks 9 to 11).** Splits and zoom, threads for agents without an adapter, shell panes, worktree-per-thread with `desl diff` and `desl pr`, idle process reaping, the desl skill for agents. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
+**Phase 2, panes and worktrees (weeks 9 to 11).** Splits and zoom, threads for agents without an adapter, shell panes, worktree-per-thread with `desl diff` and `desl pr`, idle process reaping. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
 
 **Phase 3, reach (weeks 12 to 15).** Remote TCP mode with pairing, Windows support, `desl export`/`import` for moving threads between machines, agent-written briefs for the fallback, third-party adapter protocol with one community adapter (OpenCode) built against it, notifications (desktop and terminal). Gate: a thread started on a laptop is continued on a server from a phone browser's SSH client; an external contributor ships an adapter without touching core.
 

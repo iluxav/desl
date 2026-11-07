@@ -29,10 +29,12 @@ fn nz(n: u16) -> NonZeroU16 {
 }
 
 impl Pty {
-    /// Starts `launch` in `cwd` at this size. Output goes to `on_output` as it arrives, from a
-    /// thread of its own; `on_exit` is called once when the agent's side closes.
+    /// Starts `launch` in `cwd` at this size, for thread `thread`. Output goes to `on_output` as
+    /// it arrives, from a thread of its own; `on_exit` is called once when the agent's side closes.
+    #[allow(clippy::too_many_arguments)]
     pub fn spawn(
         agent: &str,
+        thread: &str,
         launch: &Launch,
         cwd: &Path,
         rows: u16,
@@ -58,6 +60,9 @@ impl Pty {
         if std::env::var_os("TERM").is_none() {
             cmd.env("TERM", "xterm-256color");
         }
+        // What runs here, an agent or the user's shell, knows it is inside desl and which
+        // thread is its own (SPEC.md "Agents drive desl"), as tmux sets $TMUX and Herdr its ids.
+        cmd.env(desl_proto::paths::THREAD_VAR, thread);
         let child = pair
             .slave
             .spawn_command(cmd)
@@ -197,8 +202,9 @@ mod tests {
         };
         let (tx, rx) = channel::<Option<Vec<u8>>>();
         let done = tx.clone();
-        let mut pty = Pty::spawn("sh", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(Some(b))), move || drop(done.send(None)))
-            .expect("sh starts in a pty");
+        let mut pty =
+            Pty::spawn("sh", "t-test", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(Some(b))), move || drop(done.send(None)))
+                .expect("sh starts in a pty");
         let mut seen = Vec::new();
         let mut wrote = false;
         while let Ok(Some(b)) = rx.recv_timeout(Duration::from_secs(5)) {
@@ -226,9 +232,30 @@ mod tests {
             session_id: None,
         };
         let (tx, rx) = channel::<Vec<u8>>();
-        let pty = Pty::spawn("shell", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        let pty = Pty::spawn("shell", "t-test", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(b)), || {}).expect("sh starts");
         let _ = rx.recv_timeout(Duration::from_secs(5));
         let tmp = Path::new("/tmp").canonicalize().unwrap();
         assert_eq!(pty.cwd().and_then(|p| p.canonicalize().ok()), Some(tmp));
+    }
+
+    #[test]
+    fn what_runs_in_a_thread_knows_its_thread() {
+        let launch = Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "printf 'thread=%s;\\n' \"$DESL_THREAD\"; sleep 5".into()],
+            env_remove: Vec::new(),
+            keep: Vec::new(),
+            session_id: None,
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let _pty = Pty::spawn("shell", "t-7f3a", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        let mut seen = String::new();
+        while let Ok(b) = rx.recv_timeout(Duration::from_secs(5)) {
+            seen.push_str(&String::from_utf8_lossy(&b));
+            if seen.contains(';') {
+                break;
+            }
+        }
+        assert!(seen.contains("thread=t-7f3a;"), "{seen:?}");
     }
 }

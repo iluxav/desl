@@ -143,6 +143,11 @@ struct Client {
     /// The key after the prefix was taken: swallow its release report too.
     swallow: bool,
     busy: Option<Busy>,
+    /// Where the pane goes once the thread it is moving to has arrived: keys that move between
+    /// threads (`alt+j`, the sidebar's cursor) do not wait for each other.
+    then: Option<String>,
+    /// The thread shown when the sidebar took the keys, for `prefix l` after browsing in it.
+    side_from: Option<String>,
     /// Keys typed while `busy`, for the agent on screen once it is done.
     held: Vec<u8>,
     notice: Option<String>,
@@ -331,6 +336,22 @@ impl Client {
                 continue;
             }
             self.swallow = false;
+            // alt+j / alt+k move between threads without the prefix, as in zellij.
+            if k.alt && !k.ctrl && !ours {
+                let a = match k.code {
+                    Some(106) => Some(Action::Next),
+                    Some(107) => Some(Action::Prev),
+                    _ => None,
+                };
+                if let Some(a) = a {
+                    self.swallow = true;
+                    self.send_keys(std::mem::take(&mut to_agent));
+                    if let Some(bye) = self.act(a) {
+                        return Some(bye);
+                    }
+                    continue;
+                }
+            }
             if rawkeys::is_prefix(&k, self.prefix) {
                 self.armed = Some(raw);
                 self.dirty = true;
@@ -338,6 +359,9 @@ impl Client {
             }
             if ours {
                 let key = match k.code {
+                    Some(106) if k.alt => SKey::Down,
+                    Some(107) if k.alt => SKey::Up,
+                    Some(_) if k.alt => continue,
                     Some(13) => SKey::Enter,
                     Some(27) => SKey::Close,
                     Some(127 | 8) => SKey::Back,
@@ -458,6 +482,15 @@ impl Client {
             }
             _ => {}
         }
+        if let (Action::Next | Action::Prev, Some(Busy::Attach(_, want))) = (a, &self.busy) {
+            let ids = self.ordered();
+            let from = self.then.clone().unwrap_or_else(|| want.clone());
+            if let Some(here) = ids.iter().position(|id| *id == from) {
+                let to = if a == Action::Next { (here + 1) % ids.len() } else { (here + ids.len() - 1) % ids.len() };
+                self.then = Some(ids[to].clone());
+            }
+            return None;
+        }
         if self.busy.is_some() {
             return None;
         }
@@ -495,6 +528,7 @@ impl Client {
                 }
                 let rows = layout::rows(&self.projects, &self.threads);
                 self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
+                self.side_from = Some(self.thread_id.clone());
             }
             Action::Switch if self.agent == SHELL => {
                 self.notice(&format!(
@@ -862,22 +896,35 @@ impl Client {
             SKey::Down | SKey::Char('j') => {
                 if let Some(i) = (cursor + 1..rows.len()).find(|&i| pickable(i)) {
                     self.side = Some(i);
+                    self.preview(thread_at(i));
                 }
             }
             SKey::Up | SKey::Char('k') => {
                 if let Some(i) = (0..cursor).rev().find(|&i| pickable(i)) {
                     self.side = Some(i);
+                    self.preview(thread_at(i));
                 }
             }
-            SKey::Enter => match thread_at(cursor) {
-                Some(id) if id == self.thread_id => self.side = None,
-                Some(id) if self.busy.is_none() => self.go(id),
-                _ => {}
-            },
+            // The pane already shows the thread under the cursor: enter gives it the keys.
+            SKey::Enter => {
+                self.side = None;
+                self.preview(thread_at(cursor));
+            }
             SKey::Char(c @ '1'..='9') => {
                 self.act(Action::Jump(c as usize - '0' as usize));
             }
             SKey::Char(_) | SKey::Back => {}
+        }
+    }
+
+    /// Shows the thread under the sidebar's cursor in the pane as the cursor moves (tmux's
+    /// choose-tree, lazygit's panels); a move made while another is arriving goes after it.
+    fn preview(&mut self, thread: Option<String>) {
+        let Some(id) = thread else { return };
+        match &self.busy {
+            None if id != self.thread_id => self.go(id),
+            Some(Busy::Attach(..)) => self.then = Some(id),
+            _ => {}
         }
     }
 
@@ -1067,6 +1114,7 @@ impl Client {
         }
         if let Some(sentence) = error {
             self.busy = None;
+            self.then = None;
             self.notice(&sentence);
             self.release_held();
             return;
@@ -1074,14 +1122,28 @@ impl Client {
         match (self.busy.take(), ok) {
             (Some(Busy::Attach(_, want)), Some(Reply::Attached { thread_id, agent, replay })) if thread_id == want => {
                 self.screen_from(&b64::decode(&replay).unwrap_or_default());
+                // Browsing in the sidebar keeps its keys; any other move gives them back.
+                let rows = layout::rows(&self.projects, &self.threads);
+                let browsing = self.side.and_then(|c| rows.get(c)).is_some_and(|r| *r == Row::Thread(thread_id.clone()))
+                    || (self.side.is_some() && self.then.is_some());
                 if thread_id != self.thread_id {
-                    self.previous = Some(std::mem::replace(&mut self.thread_id, thread_id));
+                    let old = std::mem::replace(&mut self.thread_id, thread_id);
+                    self.previous = match (browsing, self.side_from.clone()) {
+                        (true, Some(from)) if from != self.thread_id => Some(from),
+                        (true, _) => self.previous.take(),
+                        (false, _) => Some(old),
+                    };
                     self.link.request(Command::SaveView { view: serde_json::json!({ "current": self.thread_id }) });
                 }
-                self.side = None;
+                if !browsing {
+                    self.side = None;
+                }
                 self.agent = agent;
                 self.title();
-                self.release_held();
+                match self.then.take() {
+                    Some(next) if next != self.thread_id => self.go(next),
+                    _ => self.release_held(),
+                }
             }
             (Some(Busy::Create(_)), Some(Reply::Created { thread_id })) => self.go(thread_id),
             // A switch is done when its screen arrives (`pty_replace`), not when it is accepted.
@@ -1211,6 +1273,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         armed: None,
         swallow: false,
         busy: None,
+        then: None,
+        side_from: None,
         held: Vec::new(),
         notice: None,
         side: None,

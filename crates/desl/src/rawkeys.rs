@@ -7,6 +7,8 @@ pub struct Key {
     /// The key's unshifted character, when it is one.
     pub code: Option<u32>,
     pub ctrl: bool,
+    /// Held with alt (meta): `ESC` and the key in a plain terminal, or a report's modifier.
+    pub alt: bool,
     /// A release or repeat report, or a modifier key alone: carries no key press.
     pub noise: bool,
 }
@@ -17,7 +19,7 @@ pub fn next(b: &[u8]) -> Option<(Key, usize)> {
     if first != 0x1b {
         // Ctrl+letter as a control byte.
         if (1..=26).contains(&first) && first != b'\r' && first != b'\t' && first != b'\n' && first != 0x08 {
-            return Some((Key { code: Some(u32::from(first) + 96), ctrl: true, noise: false }, 1));
+            return Some((Key { code: Some(u32::from(first) + 96), ctrl: true, alt: false, noise: false }, 1));
         }
         let len = match first {
             0x00..=0x7f => 1,
@@ -27,13 +29,17 @@ pub fn next(b: &[u8]) -> Option<(Key, usize)> {
         }
         .min(b.len());
         let code = std::str::from_utf8(&b[..len]).ok().and_then(|s| s.chars().next()).map(u32::from);
-        return Some((Key { code, ctrl: false, noise: false }, len));
+        return Some((Key { code, ctrl: false, alt: false, noise: false }, len));
     }
     if b.len() < 2 {
         return None;
     }
     if b[1] != b'[' {
-        return Some((Key { code: None, ctrl: false, noise: false }, 2));
+        // A plain terminal sends alt+key as `ESC` and the key. `ESC O` begins an arrow in
+        // application mode, and is left alone.
+        let alt = (0x20..0x7f).contains(&b[1]) && b[1] != b'O';
+        let code = alt.then_some(u32::from(b[1]));
+        return Some((Key { code, ctrl: false, alt, noise: false }, 2));
     }
     let mut j = 2;
     while j < b.len() && (0x20..=0x3f).contains(&b[j]) {
@@ -59,16 +65,18 @@ pub fn next(b: &[u8]) -> Option<(Key, usize)> {
             let code = num(fields[0]);
             let (mods, event) = mods_event(fields.get(1));
             let modifier_only = code.is_some_and(|c| (57441..=57452).contains(&c));
-            Some((Key { code, ctrl: mods.saturating_sub(1) & 4 != 0, noise: event != 1 || modifier_only }, len))
+            let m = mods.saturating_sub(1);
+            Some((Key { code, ctrl: m & 4 != 0, alt: m & 2 != 0, noise: event != 1 || modifier_only }, len))
         }
         b'~' if fields.first() == Some(&"27") && fields.len() >= 3 => {
             let (mods, _) = mods_event(fields.get(1));
-            Some((Key { code: num(fields[2]), ctrl: mods.saturating_sub(1) & 4 != 0, noise: false }, len))
+            let m = mods.saturating_sub(1);
+            Some((Key { code: num(fields[2]), ctrl: m & 4 != 0, alt: m & 2 != 0, noise: false }, len))
         }
         _ => {
             // Arrows and other functional keys may carry an event type too: `CSI 1;1:3 A`.
             let (_, event) = mods_event(fields.get(1));
-            Some((Key { code: None, ctrl: false, noise: event != 1 }, len))
+            Some((Key { code: None, ctrl: false, alt: false, noise: event != 1 }, len))
         }
     }
 }
@@ -163,7 +171,19 @@ mod tests {
     fn releases_and_modifiers_alone_are_noise() {
         let k = keys(b"\x1b[57442;5u\x1b[98;5:3u\x1b[57442;1:3u\x1b[115u");
         assert!(k[0].noise && k[1].noise && k[2].noise);
-        assert_eq!(k[3], Key { code: Some(115), ctrl: false, noise: false });
+        assert_eq!(k[3], Key { code: Some(115), ctrl: false, alt: false, noise: false });
+    }
+
+    #[test]
+    fn alt_and_a_letter_is_found_in_every_encoding() {
+        for b in [&b"\x1bj"[..], b"\x1b[106;3u", b"\x1b[106;3:1u", b"\x1b[27;3;106~"] {
+            let k = keys(b);
+            assert_eq!((k.len(), k[0].code, k[0].alt, k[0].ctrl), (1, Some(106), true, false), "{:?}", String::from_utf8_lossy(b));
+        }
+        assert!(!keys(b"j")[0].alt);
+        assert!(keys(b"\x1b[106;3:3u")[0].noise, "a release is noise");
+        assert!(!keys(b"\x1bOA")[0].alt, "an arrow in application mode is not alt+O");
+        assert!(keys(b"\x1b[106;7u")[0].ctrl && keys(b"\x1b[106;7u")[0].alt, "ctrl+alt carries both");
     }
 
     #[test]

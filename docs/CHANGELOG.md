@@ -12,6 +12,10 @@ All notable changes to desl are recorded here. The format follows
   prompt resumes the conversation. The desl skill teaches both, and neither works on the
   thread it runs in.
 
+- `alt+j` / `alt+k` move to the next or previous thread in one press, without the prefix.
+- In the sidebar (`prefix w`), the pane shows the thread under the cursor as it moves; `enter`
+  or `esc` give the keys back to it.
+
 ### Fixed
 
 - desl no longer types a prompt into a question the agent draws near the top of its screen,

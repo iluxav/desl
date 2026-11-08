@@ -54,6 +54,9 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("desl", "prefix", "Send the prefix key itself to the agent"),
 ];
 
+/// The keys desl owns without the prefix: the only ones that never reach the agent.
+pub const DIRECT: &[(&str, &str)] = &[("alt+j", "Next thread"), ("alt+k", "Previous thread")];
+
 /// The action for the key pressed after the prefix.
 pub fn action(c: char) -> Option<Action> {
     Some(match c {
@@ -538,7 +541,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
         Line::from(spans)
     } else if v.cursor.is_some() {
         let mut spans = vec![Span::raw("  ")];
-        for (k, what) in [("j/k", "move"), ("enter", "open"), ("1-9", "jump"), ("esc", "back to the agent")] {
+        for (k, what) in [("j/k", "move, the pane follows"), ("enter esc", "back to the agent"), ("1-9", "jump")] {
             spans.push(Span::styled(k, theme::bold()));
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
@@ -546,6 +549,8 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
     } else {
         let mut spans = vec![
             Span::raw("  "),
+            Span::styled("alt+j k", theme::bold()),
+            Span::styled(" threads   ", theme::dim()),
             Span::styled(
                 format!(" {} ", v.prefix),
                 if v.prefix_armed { theme::pill() } else { theme::accent().add_modifier(Modifier::BOLD) },
@@ -556,8 +561,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ("s", "switch agent"),
             ("c", "new"),
             ("o", "open dir"),
-            ("w", "threads"),
-            ("n p", "next prev"),
+            ("w", "sidebar"),
             ("f", "fork"),
             ("x", "close"),
             ("?", "help"),
@@ -585,6 +589,11 @@ fn help(f: &mut Frame, v: &View, area: Rect) {
         lines.push(Line::from(vec![Span::styled(format!("  {key:<8}"), theme::accent()), Span::raw(what.to_string())]));
     }
     lines.push(Line::default());
+    let direct: Vec<&str> = DIRECT.iter().map(|(k, _)| *k).collect();
+    lines.push(Line::from(vec![
+        Span::styled(direct.join(" / "), theme::accent()),
+        Span::raw("  next / previous thread, without the prefix"),
+    ]));
     lines.push(Line::from(Span::styled("Every other key goes to the agent. Any key closes this.", theme::dim())));
     // Borders, and a line of padding above.
     let h = (lines.len() as u16 + 3).min(area.height);

@@ -217,6 +217,24 @@ Each agent writes a short title for a conversation, and the thread shows it (SPE
 | Claude Code 2.1.319 | `{"type":"ai-title","aiTitle":"…","sessionId":"…"}` lines in the session file, written after the first prompt and again as the session goes on | The session reader returns `Reading::Title`. Seen: written within seconds of the first reply. Not written in a session desl copied into Claude Code after a switch, so the thread keeps the name it had. |
 | Codex 0.167.0 | `$CODEX_HOME/session_index.jsonl`, one line `{"id","thread_name","updated_at"}` per naming; the newest line for an id wins. Not in the rollout file. | `session_title(session_id)`, asked every 5 seconds while the agent runs; only the last 256 KB of the index is read. Seen: written about a minute into a new session, and also for a session desl copied in, named from its newest prompt. |
 
+### Interrupting and dialogs (the native route)
+
+`interrupt_key()` is what desl types into the agent's own interface for `desl interrupt`; the
+agent then records the interruption in its session file, and the reader ends the turn.
+`waiting()` is given the bottom 14 rows of what the agent drew, with blank rows below it left out.
+
+| Agent | Interrupt key | Seen | Dialogs `waiting()` knows |
+| --- | --- | --- | --- |
+| Claude Code 2.1.319 | `esc` | 2026-11-08: a running turn ended about a second later; the partial reply and `[Request interrupted by user]` reach the thread as an assistant message and an interrupt. | A permission question with "1. Yes", the folder-trust question. |
+| Codex 0.167.0 | `esc` | 2026-11-08: a running turn ended within half a second, as `turn_aborted`. | An approval, "Trust this folder?" (drawn at the top of the screen, which the bottom rows of the terminal missed until this change), and the "Use session directory" choice when a resumed session's directory differs. |
+
+Before the drawn-tail change, desl typed a prompt into Codex 0.167's folder-trust dialog in a new
+folder: the keys chose "Back to Agent Command Center" and walked into Codex's resume picker,
+offering another project's session. Quitting with `ctrl+c` left everything as it was.
+
+`desl exit` ends the agent's process as closing its terminal would. On the next start Claude Code
+resumes the session and adds "No response requested." for the turn that was cut off.
+
 ## Agent notes
 
 | Agent | Version | Installed via |

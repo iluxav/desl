@@ -195,9 +195,13 @@ impl SessionReader for Reader {
     }
 }
 
-/// Codex's own questions at the bottom of its screen: an approval, or the folder-trust question.
+/// Codex's own questions at the bottom of its screen: an approval, the folder-trust question,
+/// or which directory a resumed session works in.
 pub fn waiting(tail: &str) -> bool {
-    tail.contains("Would you like to") || tail.contains("Trust this folder") || tail.contains("Allow") && tail.contains("1. Yes")
+    tail.contains("Would you like to")
+        || tail.contains("Trust this folder")
+        || tail.contains("Use session directory")
+        || tail.contains("Allow") && tail.contains("1. Yes")
 }
 
 /// The shell command Codex would have run for a neutral call; None when there is none.

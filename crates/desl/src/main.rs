@@ -99,6 +99,10 @@ enum Cmd {
     Brief { thread: String },
     /// Block until the thread is waiting, idle or failed
     Wait { thread: String },
+    /// Stop the thread's current turn, as esc does in the agent's own screen
+    Interrupt { thread: String },
+    /// End the thread's agent; the thread stays, and its next prompt resumes it
+    Exit { thread: String },
     /// Allow what the thread is waiting to do
     Approve {
         thread: String,
@@ -216,6 +220,8 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Permissions { thread, mode } => cli::permissions(paths, &out, &thread, mode),
         Cmd::Brief { thread } => cli::brief(paths, &out, &thread),
         Cmd::Wait { thread } => cli::wait(paths, &out, &thread),
+        Cmd::Interrupt { thread } => cli::interrupt(paths, &out, &thread),
+        Cmd::Exit { thread } => cli::exit(paths, &out, &thread),
         Cmd::Approve { thread, always } => cli::answer(paths, &out, &thread, if always { Decision::Always } else { Decision::Allow }),
         Cmd::Deny { thread } => cli::answer(paths, &out, &thread, Decision::Deny),
         Cmd::Log { thread } => cli::log(paths, &out, &thread),

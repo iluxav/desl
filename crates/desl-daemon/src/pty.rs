@@ -125,7 +125,14 @@ impl Pty {
         let screen = self.screen.screen();
         let (_, cols) = screen.size();
         let lines: Vec<String> = screen.rows(0, cols.get()).collect();
-        lines[lines.len().saturating_sub(rows)..].join("\n")
+        drawn_tail(&lines, rows)
+    }
+
+    /// Ends the agent now, as closing its terminal would. Its exit arrives as for any other.
+    pub fn end(&mut self) {
+        if let Ok(None) = self.child.try_wait() {
+            let _ = self.child.kill();
+        }
     }
 
     /// The agent's terminal size, (rows, columns).
@@ -167,6 +174,13 @@ impl Pty {
     pub fn exit_code(&mut self) -> Option<u32> {
         self.child.try_wait().ok().flatten().map(|s| s.exit_code())
     }
+}
+
+/// The last `rows` rows of what is drawn: blank rows below it do not count. An agent that draws
+/// a short dialog near the top of a tall screen (Codex's folder trust) is asking all the same.
+fn drawn_tail(lines: &[String], rows: usize) -> String {
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
+    lines[end.saturating_sub(rows)..end].join("\n")
 }
 
 impl Drop for Pty {
@@ -257,5 +271,15 @@ mod tests {
             }
         }
         assert!(seen.contains("thread=t-7f3a;"), "{seen:?}");
+    }
+
+    #[test]
+    fn the_tail_is_the_bottom_of_what_is_drawn() {
+        let mut lines: Vec<String> =
+            ["", "  Trust this folder?", "  1. Trust and continue", "  2. Back"].iter().map(|s| s.to_string()).collect();
+        lines.extend(std::iter::repeat_n(String::new(), 30));
+        assert_eq!(drawn_tail(&lines, 2), "  1. Trust and continue\n  2. Back");
+        assert!(drawn_tail(&lines, 14).contains("Trust this folder?"));
+        assert_eq!(drawn_tail(&[String::new(), "  ".into()], 14), "");
     }
 }

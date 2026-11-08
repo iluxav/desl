@@ -59,10 +59,21 @@ desl thread show <thread>              # read what it did
 
 Run independent threads first, then wait on each. `desl send` to a thread that is already working queues the prompt; it goes out when the current turn ends.
 
+## Stop a thread
+
+```bash
+desl interrupt <thread>                # stops its current turn, as esc does in its own screen
+desl exit <thread>                     # ends its agent; the thread and its conversation stay
+```
+
+After `desl interrupt`, `desl wait <thread>` returns once the turn has ended. After `desl exit`, the next `desl send` to the thread starts its agent again on the same conversation. Use `exit` when a thread's work is done or it has gone off track, so it stops using the user's limits.
+
+When `desl send` reports that the agent is asking something before it goes on, such as whether to trust a new folder, desl has not typed your prompt; tell the user, who answers in desl's screen.
+
 ## Rules
 
-- **Never target your own thread** with `send`, `wait`, `switch` or `thread rm`; desl refuses, because each would hang you or end you mid-turn. Fork it instead.
+- **Never target your own thread** with `send`, `wait`, `interrupt`, `exit`, `switch` or `thread rm`; desl refuses, because each would hang you or end you mid-turn. Fork it instead.
 - **Approvals belong to the user.** When a thread you opened is `waiting`, tell the user which thread waits and what it asks. Run `desl approve` or `desl deny` only when the user tells you to.
 - **Do not widen permissions.** Leave `desl permissions` and `--worktree` choices to what the user asked for; never set `yolo` on your own.
-- **Clean up only what you opened**, and only when the user agrees: `desl thread rm <thread>` removes a thread and its history.
+- **Stop and clean up only what you opened**, or what the user names. `desl exit` is safe to use when a thread you opened is done; `desl thread rm <thread>` removes a thread and its history, so ask the user first.
 - Open threads only when the user's request calls for another agent or parallel work, not by default.

@@ -201,6 +201,8 @@ desl permissions <thread> [mode]   the permission mode desl starts the agent wit
 desl fork <thread> <agent> [--at N] [--worktree]
 desl brief <thread>          print the handoff brief, the fallback for a copy
 desl wait <thread>           block until the thread is waiting or idle
+desl interrupt <thread>      stop the thread's current turn, as esc does in the agent's own screen
+desl exit <thread>           end the thread's agent; the thread stays, and its next prompt resumes it
 desl worktree new|list|rm
 desl skill install           teach Claude Code and Codex to drive desl
 desl agents                  detected agents and login state
@@ -216,8 +218,9 @@ The CLI is how scripts, CI and other agents drive desl.
 **Agents drive desl.** An agent running in a desl thread can open threads, prompt them, wait on them and fork its own conversation to the other agent, the way Herdr's agents drive Herdr. Three pieces make it work:
 
 - **`DESL_THREAD`.** The daemon sets it in every terminal it starts, agent or shell, to the id of that terminal's thread, as tmux sets `$TMUX`. Its presence means "inside desl"; the `desl` on `PATH` reaches the same daemon through the environment the agent inherited.
-- **No command turns on its own thread.** `desl send`, `wait`, `switch` and `thread rm` refuse the thread named in `DESL_THREAD`, because each would hang the caller on its own turn or end it mid-turn; the refusal names `desl fork` as the way to hand a copy on. A bare `desl` refuses to attach inside a thread of the workspace it would draw, and says to `unset DESL_THREAD` to force it, as tmux does with nested sessions. A desl on another socket, such as a test workspace, attaches as usual.
-- **The skill.** `skills/desl/SKILL.md` in the repo, compiled into the binary. `desl skill install` copies it into each agent's own skill folder, which the agent's adapter names (`~/.claude/skills/desl`, `$CODEX_HOME/skills/desl`); running it again brings the copy up to date, and a folder that is a link is left to whoever made it. The skill checks `DESL_THREAD` first, keeps approvals and permission changes with the user, and teaches three moves: look around (`status`, `thread show`), ask the other agent with this conversation (`fork "$DESL_THREAD" codex`, then `send`), and run work in parallel (`new --worktree -m`, then `wait`).
+- **No command turns on its own thread.** `desl send`, `wait`, `interrupt`, `exit`, `switch` and `thread rm` refuse the thread named in `DESL_THREAD`, because each would hang the caller on its own turn or end it mid-turn; the refusal names `desl fork` as the way to hand a copy on. A bare `desl` refuses to attach inside a thread of the workspace it would draw, and says to `unset DESL_THREAD` to force it, as tmux does with nested sessions. A desl on another socket, such as a test workspace, attaches as usual.
+- **The skill.** `skills/desl/SKILL.md` in the repo, compiled into the binary. `desl skill install` copies it into each agent's own skill folder, which the agent's adapter names (`~/.claude/skills/desl`, `$CODEX_HOME/skills/desl`); running it again brings the copy up to date, and a folder that is a link is left to whoever made it. The skill checks `DESL_THREAD` first, keeps approvals and permission changes with the user, and teaches four moves: look around (`status`, `thread show`), ask the other agent with this conversation (`fork "$DESL_THREAD" codex`, then `send`), run work in parallel (`new --worktree -m`, then `wait`), and stop a thread it opened (`interrupt` for the turn, `exit` for the agent, which the next prompt resumes as after idle reaping).
+- **A question on the agent's screen holds the prompt.** desl types a prompt only when the agent's screen shows no question of its own, judged from the bottom of what the agent drew, not the bottom of the terminal: a short dialog near the top of a tall screen, such as Codex's folder trust, counts. The thread is `waiting`, and `desl send` says the agent is asking something and that the user answers it in desl's screen.
 
 ## Core concepts and data model
 

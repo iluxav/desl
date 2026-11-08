@@ -1581,6 +1581,7 @@ impl Engine {
             }
             Command::Prompt { thread_id, text } => self.prompt(&thread_id, &text),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
+            Command::Exit { thread_id } => self.exit_agent(&thread_id),
             Command::Answer { thread_id, call_id, decision } => self.answer(&thread_id, call_id.as_deref(), decision),
             Command::Switch { thread_id, agent } => self.switch(&thread_id, &agent),
             Command::Fork { thread_id, agent, at, worktree } => self.fork(&thread_id, agent.as_deref(), at, worktree),
@@ -1884,6 +1885,24 @@ impl Engine {
             return Err(format!("{} is not working, so there is nothing to interrupt.", self.threads[i].active_agent));
         }
         let agent = self.threads[i].active_agent.clone();
+        if self.ptys.contains_key(thread_id) {
+            // A prompt not yet typed never reached the agent: it is dropped, and the thread is idle.
+            if self.typing.remove(thread_id).is_some_and(|ty| ty.typed.is_none()) {
+                self.threads[i].status = Status::Idle;
+                self.persist(thread_id);
+                return Ok(Reply::Done);
+            }
+            let key = self
+                .adapter(&agent)
+                .and_then(|a| a.interrupt_key())
+                .ok_or_else(|| format!("desl knows no key that interrupts {agent}. Run `desl` and stop it in its own screen."))?;
+            // As the user would press it; the agent's session file then records the interruption
+            // and the end of the turn, and the thread follows it.
+            if let Some((_, pty)) = self.ptys.get_mut(thread_id) {
+                pty.write(key);
+            }
+            return Ok(Reply::Done);
+        }
         let over = match self.live(thread_id).sessions.get_mut(&agent) {
             Some((_, session)) => session.interrupt(),
             None => true,
@@ -1903,6 +1922,33 @@ impl Engine {
             self.threads[i].status = Status::Working;
             self.persist(thread_id);
         }
+        Ok(Reply::Done)
+    }
+
+    /// Ends the thread's agent and keeps the thread: the agent's session holds the conversation,
+    /// and the next prompt or view resumes it, as after idle reaping (SPEC.md "Process hygiene").
+    fn exit_agent(&mut self, thread_id: &str) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let agent = self.threads[i].active_agent.clone();
+        if agent == SHELL {
+            return Err(format!(
+                "{thread_id} is a shell, and a shell that ends closes its thread. `desl thread rm {thread_id}` closes it."
+            ));
+        }
+        let Some((_, pty)) = self.ptys.get_mut(thread_id) else {
+            return Err(format!("{agent} is not running in {thread_id}. Its next prompt starts it again."));
+        };
+        pty.end();
+        // A switch under way ends with it; the thread stays on the agent it was on.
+        self.pending.remove(thread_id);
+        self.typing.remove(thread_id);
+        self.awaiting_turn.remove(thread_id);
+        if self.threads[i].status.busy() {
+            self.append(thread_id, EventKind::Interrupt);
+            self.threads[i].pending_approval = None;
+        }
+        tracing::info!(thread = %thread_id, agent = %agent, "ending the agent on request");
+        // The agent's exit arrives as any other: its last lines are read, the thread goes idle.
         Ok(Reply::Done)
     }
 

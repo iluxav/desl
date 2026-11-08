@@ -95,6 +95,10 @@ pub enum Command {
     Interrupt {
         thread_id: String,
     },
+    /// Ends the thread's agent; the thread stays, and its next prompt or view resumes it.
+    Exit {
+        thread_id: String,
+    },
     /// Answers the thread's pending approval. `call_id` guards against answering a newer one.
     Answer {
         thread_id: String,

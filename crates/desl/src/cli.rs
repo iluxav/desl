@@ -62,6 +62,8 @@ enum OwnThread {
     Wait,
     Switch,
     Remove,
+    Interrupt,
+    Exit,
 }
 
 fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
@@ -83,6 +85,12 @@ fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
                 "{id} is the thread this command runs in, and a switch would close its agent mid-turn. The user switches it with {prefix} s, or `desl fork {id} <agent>` hands a copy to the other agent."
             )
         }
+        OwnThread::Interrupt => bail!(
+            "{id} is the thread this command runs in, so `desl interrupt` would stop its own turn. Interrupt a thread opened with `desl new` or `desl fork`."
+        ),
+        OwnThread::Exit => bail!(
+            "{id} is the thread this command runs in, and `desl exit` would end what runs here. Exit a thread opened with `desl new` or `desl fork`."
+        ),
         OwnThread::Remove => {
             bail!("{id} is the thread this command runs in, and removing it would end what runs here. Remove it from another terminal.")
         }
@@ -440,6 +448,28 @@ pub fn wait(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     if status == Status::Failed {
         std::process::exit(1);
     }
+    Ok(())
+}
+
+/// `desl interrupt <thread>`: the thread's agent stops its turn, as when the user presses esc.
+pub fn interrupt(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Interrupt)?;
+    conn.call(Command::Interrupt { thread_id: t.id.clone() })?;
+    let text = format!("Interrupted {} in {}. `desl wait {}` returns once its turn has ended.", t.active_agent, t.id, t.id);
+    done(out, json!({ "thread_id": t.id, "agent": t.active_agent }), text);
+    Ok(())
+}
+
+/// `desl exit <thread>`: ends the thread's agent. The thread and its conversation stay.
+pub fn exit(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Exit)?;
+    conn.call(Command::Exit { thread_id: t.id.clone() })?;
+    let text = format!("Ended {} in {}. The thread stays; its next prompt resumes the conversation.", t.active_agent, t.id);
+    done(out, json!({ "thread_id": t.id, "agent": t.active_agent }), text);
     Ok(())
 }
 

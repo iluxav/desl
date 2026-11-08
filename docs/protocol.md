@@ -47,7 +47,8 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `view` | `thread_id` | `viewing {thread_id, partial}` | Moves the token stream to a thread whose events the client already has. |
 | `events` | `thread_id` | `events {events}` | The log, without viewing. |
 | `prompt` | `thread_id`, `text` | `sent {queued}` | `queued` when the agent was busy; the prompt goes out when the turn ends. |
-| `interrupt` | `thread_id` | `done` | Stops the current turn. |
+| `interrupt` | `thread_id` | `done` | Stops the current turn. An agent in its own interface gets its own interrupt key; the end of the turn arrives as an event. |
+| `exit` | `thread_id` | `done` | Ends the thread's agent; the thread stays idle, and its next prompt or view resumes the agent's session. |
 | `answer` | `thread_id`, `call_id?`, `decision` | `done` | Answers the pending approval: `allow`, `deny` or `always`. |
 | `switch` | `thread_id`, `agent` | `done` | The brief goes out with the next prompt. |
 | `fork` | `thread_id`, `agent?`, `at?` | `created {thread_id}` | A new thread with the history up to event `at` (the newest when absent). |

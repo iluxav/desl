@@ -894,3 +894,22 @@ fn the_agents_own_title_names_the_thread_until_the_user_names_it() {
     let stored = r.engine.store.threads().unwrap().into_iter().find(|x| x.id == t).unwrap();
     assert!(stored.named, "the store keeps that the user named it");
 }
+
+#[test]
+fn exit_ends_only_a_running_agent_and_never_a_shell() {
+    let mut r = rig("exit");
+    let t = r.t.clone();
+    let err = r.cmd(Command::Exit { thread_id: t.clone() }).unwrap_err();
+    assert!(err.contains("is not running") && err.contains("next prompt starts it"), "{err}");
+    let Ok(Reply::Created { thread_id: shell }) = r.cmd(Command::NewThread {
+        cwd: r.thread(&t).cwd,
+        agent: Some(SHELL.into()),
+        prompt: None,
+        beside: Some(t.clone()),
+        worktree: false,
+    }) else {
+        panic!("a shell thread")
+    };
+    let err = r.cmd(Command::Exit { thread_id: shell.clone() }).unwrap_err();
+    assert!(err.contains("is a shell") && err.contains("desl thread rm"), "{err}");
+}

@@ -69,6 +69,11 @@ impl Adapter for Claude {
         "claude"
     }
 
+    /// Claude Code stops a turn on `esc`, and says so under the prompt ("esc to interrupt").
+    fn interrupt_key(&self) -> Option<&'static [u8]> {
+        Some(b"\x1b")
+    }
+
     /// Claude Code's personal skills: `~/.claude/skills/<name>/SKILL.md` (docs/adapters.md).
     fn skills_dir(&self) -> Option<PathBuf> {
         std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".claude/skills"))

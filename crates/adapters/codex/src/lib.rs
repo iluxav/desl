@@ -96,6 +96,11 @@ impl Adapter for Codex {
         indexed_title(&codex_home()?.join("session_index.jsonl"), session_id)
     }
 
+    /// Codex stops a turn on `esc`, and says so while it works ("esc to interrupt").
+    fn interrupt_key(&self) -> Option<&'static [u8]> {
+        Some(b"\x1b")
+    }
+
     /// Codex's user skills: `$CODEX_HOME/skills/<name>/SKILL.md` (docs/adapters.md).
     fn skills_dir(&self) -> Option<PathBuf> {
         codex_home().map(|h| h.join("skills"))

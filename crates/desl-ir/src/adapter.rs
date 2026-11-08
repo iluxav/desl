@@ -214,6 +214,11 @@ pub trait Adapter: Send + Sync {
         let _ = session_id;
         None
     }
+    /// What to type into the agent's own interface to stop its turn, as the user would; None
+    /// for an agent desl does not know a key for.
+    fn interrupt_key(&self) -> Option<&'static [u8]> {
+        None
+    }
     /// The folder the agent reads the user's own skills from, one folder per skill holding a
     /// `SKILL.md` (SPEC.md "Agents drive desl"). None for an agent without skills.
     fn skills_dir(&self) -> Option<PathBuf> {

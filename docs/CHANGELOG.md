@@ -5,6 +5,18 @@ All notable changes to desl are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `desl interrupt <thread>` stops a thread's current turn, as `esc` does in the agent's own
+  screen, and `desl exit <thread>` ends a thread's agent while the thread stays; its next
+  prompt resumes the conversation. The desl skill teaches both, and neither works on the
+  thread it runs in.
+
+### Fixed
+
+- desl no longer types a prompt into a question the agent draws near the top of its screen,
+  such as Codex's "Trust this folder?" in a new folder. The thread waits for the user instead.
+
 ### Changed
 
 - A thread takes its agent's own title for the conversation, Claude Code's or Codex's, in place

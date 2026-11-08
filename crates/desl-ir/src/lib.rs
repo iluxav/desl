@@ -369,8 +369,13 @@ pub struct Thread {
     /// Short, typeable, unique per workspace: `t-7f3a`, or `t-7f3a/1` for a fork.
     pub id: String,
     pub project_id: String,
-    /// Derived from the first prompt, user-editable. Empty until the first prompt.
+    /// The thread's title: the active agent's own title for the conversation once it has
+    /// written one, before that the first line of the first prompt; empty until then. A name the
+    /// user gives it wins for good (SPEC.md "Interface design", Sidebar).
     pub name: String,
+    /// The user named the thread: the agents' own titles no longer change it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub named: bool,
     pub cwd: String,
     pub worktree: Option<String>,
     pub parent_id: Option<String>,

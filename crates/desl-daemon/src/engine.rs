@@ -106,7 +106,12 @@ struct Tail {
     /// The start of a line the agent has not finished writing.
     partial: Vec<u8>,
     last_poll: Instant,
+    /// When the agent's own title was last asked for, for an agent that keeps it outside the file.
+    title_asked: Option<Instant>,
 }
+
+/// How often an agent that keeps its titles outside the session file is asked for one.
+const TITLE_EVERY: Duration = Duration::from_secs(5);
 
 /// How often the engine ticks, in milliseconds. A switch is ready within one tick of its
 /// hidden agent going quiet.
@@ -557,6 +562,7 @@ impl Engine {
             id: self.new_thread_id(),
             project_id: project.id,
             name: String::new(),
+            named: false,
             git: git::state(Path::new(&project.path)),
             cwd: project.path.clone(),
             worktree: None,
@@ -963,6 +969,7 @@ impl Engine {
                     skip_existing: !read_before && t.head > 0,
                     partial: Vec::new(),
                     last_poll: Instant::now(),
+                    title_asked: None,
                 },
             );
         }
@@ -1110,6 +1117,9 @@ impl Engine {
                     self.awaiting_turn.remove(thread_id);
                 }
                 Reading::Idle => self.threads[i].status = Status::Idle,
+                Reading::Title(title) => {
+                    self.retitle(i, &title);
+                }
                 // Chosen in the agent's own interface: the agent's next session starts the same.
                 Reading::Settings { model, effort } => {
                     if let Some(b) = self.threads[i].bindings.get_mut(&agent) {
@@ -1122,6 +1132,16 @@ impl Engine {
                         }
                     }
                 }
+            }
+        }
+        if let Some(tail) = self.tails.get_mut(thread_id)
+            && tail.title_asked.is_none_or(|at| at.elapsed() >= TITLE_EVERY)
+            && let Some(session_id) = self.threads[i].bindings.get(&agent).and_then(|b| b.session_id.clone())
+            && let Some(adapter) = self.adapters.iter().find(|a| a.id() == agent).cloned()
+        {
+            tail.title_asked = Some(Instant::now());
+            if let Some(title) = adapter.session_title(&session_id) {
+                changed |= self.retitle(i, &title);
             }
         }
         if changed {
@@ -1144,6 +1164,19 @@ impl Engine {
             self.threads[i].queued.remove(0);
             self.type_prompt(thread_id, text);
         }
+    }
+
+    /// Gives thread `i` the agent's own title for its conversation, unless the user named it.
+    /// The caller persists the thread; true when the name changed.
+    fn retitle(&mut self, i: usize, title: &str) -> bool {
+        let t = &mut self.threads[i];
+        let name = derive_name(title);
+        if t.named || t.active_agent == SHELL || title.trim().is_empty() || t.name == name {
+            return false;
+        }
+        tracing::info!(thread = %t.id, from = %t.name, to = %name, "the agent titled the thread");
+        t.name = name;
+        true
     }
 
     /// Puts `text` on its way into the thread's agent's own interface, as if typed there.
@@ -1363,6 +1396,7 @@ impl Engine {
                     skip_existing: false,
                     partial: Vec::new(),
                     last_poll: Instant::now(),
+                    title_asked: None,
                 },
             );
         }
@@ -1559,6 +1593,7 @@ impl Engine {
                     return Err("Give the thread a name: /rename <name>.".to_string());
                 }
                 self.threads[i].name = name;
+                self.threads[i].named = true;
                 self.persist(&thread_id);
                 Ok(Reply::Done)
             }),
@@ -2013,6 +2048,8 @@ impl Engine {
             queued: Vec::new(),
             pending_approval: None,
             subagents: Vec::new(),
+            // The copy's agent may title it apart from the parent.
+            named: false,
             // `yolo` is set per thread, by hand; a fork does not inherit it.
             permission_mode: match parent.permission_mode {
                 PermissionMode::Yolo => PermissionMode::default(),

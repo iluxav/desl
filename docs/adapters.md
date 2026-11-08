@@ -207,6 +207,16 @@ desl"). The default is None, for an agent without skills.
 | Claude Code 2.1.319 | `~/.claude/skills` | The user's personal skills live there on this machine, and Claude Code lists them. desl's Claude adapter reads `~/.claude` for sessions too and does not follow `CLAUDE_CONFIG_DIR`; the skill folder does the same. |
 | Codex 0.167.0 | `$CODEX_HOME/skills`, or `~/.codex/skills` when it is unset | The binary's own skill-creator text says so, and it also reads `~/.agents/skills`; `~/.codex/skills/.system` holds Codex's bundled skills. |
 
+### Titles
+
+Each agent writes a short title for a conversation, and the thread shows it (SPEC.md
+"Interface design", Sidebar). An adapter reports it one of two ways.
+
+| Agent | Where the title is | How desl reads it |
+| --- | --- | --- |
+| Claude Code 2.1.319 | `{"type":"ai-title","aiTitle":"…","sessionId":"…"}` lines in the session file, written after the first prompt and again as the session goes on | The session reader returns `Reading::Title`. Seen: written within seconds of the first reply. Not written in a session desl copied into Claude Code after a switch, so the thread keeps the name it had. |
+| Codex 0.167.0 | `$CODEX_HOME/session_index.jsonl`, one line `{"id","thread_name","updated_at"}` per naming; the newest line for an id wins. Not in the rollout file. | `session_title(session_id)`, asked every 5 seconds while the agent runs; only the last 256 KB of the index is read. Seen: written about a minute into a new session, and also for a session desl copied in, named from its newest prompt. |
+
 ## Agent notes
 
 | Agent | Version | Installed via |

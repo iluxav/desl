@@ -95,6 +95,8 @@ pub enum Reading {
         model: Option<String>,
         effort: Option<String>,
     },
+    /// The agent's own short title for the conversation, written into its session file.
+    Title(String),
 }
 
 /// Turns an agent's session file into events, one line at a time, as the agent appends them.
@@ -204,6 +206,13 @@ pub trait Adapter: Send + Sync {
     fn waiting(&self, screen_tail: &str) -> bool {
         let _ = screen_tail;
         false
+    }
+    /// The agent's own title for session `session_id`, for an agent that keeps it outside the
+    /// session file; one that writes it into the file reports [`Reading::Title`] instead. Read
+    /// every few seconds while the agent runs, so it must be cheap.
+    fn session_title(&self, session_id: &str) -> Option<String> {
+        let _ = session_id;
+        None
     }
     /// The folder the agent reads the user's own skills from, one folder per skill holding a
     /// `SKILL.md` (SPEC.md "Agents drive desl"). None for an agent without skills.

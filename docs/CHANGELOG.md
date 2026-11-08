@@ -3,6 +3,15 @@
 All notable changes to desl are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning.
 
+## [Unreleased]
+
+### Changed
+
+- A thread takes its agent's own title for the conversation, Claude Code's or Codex's, in place
+  of the first sentence of its first prompt, and follows it when the agent retitles it. A name
+  given with `prefix ,` or `desl thread rename` stays. Threads renamed before this keep their
+  names.
+
 ## [0.1.2]
 
 ### Added

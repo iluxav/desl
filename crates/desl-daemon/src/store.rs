@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -136,6 +136,47 @@ impl Store {
                 "BEGIN; ALTER TABLE threads ADD COLUMN subagents TEXT NOT NULL DEFAULT '[]'; PRAGMA user_version = 5; COMMIT;",
             )?;
         }
+        if version < 6 {
+            // The user named the thread: the agents' own titles leave its name alone. Before
+            // this, a name the user gave was not marked; one that is neither of the names desl
+            // derives from the first prompt is taken as theirs.
+            self.conn.execute_batch("BEGIN; ALTER TABLE threads ADD COLUMN named INTEGER NOT NULL DEFAULT 0;")?;
+            let marked = self.mark_named();
+            match marked {
+                Ok(()) => self.conn.execute_batch("PRAGMA user_version = 6; COMMIT;")?,
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK;");
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Marks the threads whose name the user gave (schema 6).
+    fn mark_named(&self) -> Result<()> {
+        let threads: Vec<(String, String)> = {
+            let mut st = self.conn.prepare("SELECT id, name FROM threads WHERE active_agent != ?1 AND name != ''")?;
+            st.query_map(params![desl_ir::SHELL], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+        };
+        for (id, name) in threads {
+            let first: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT body FROM events WHERE thread_id = ?1 AND kind = 'user_message' ORDER BY idx LIMIT 1",
+                    params![id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()?
+                .and_then(|body| match serde_json::from_str::<EventKind>(&body) {
+                    Ok(EventKind::UserMessage { text, .. }) => Some(text),
+                    _ => None,
+                });
+            let derived = first.is_some_and(|text| name == desl_ir::derive_name(&text) || name == desl_ir::derive_word(&text));
+            if !derived {
+                self.conn.execute("UPDATE threads SET named = 1 WHERE id = ?1", params![id])?;
+            }
+        }
         Ok(())
     }
 
@@ -201,7 +242,7 @@ impl Store {
             }
         }
         let mut st = self.conn.prepare(
-            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents
+            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named
              FROM threads ORDER BY created_at, id",
         )?;
         let rows = st.query_map([], |r| {
@@ -225,6 +266,7 @@ impl Store {
                 queued: queued.remove(&id).unwrap_or_default(),
                 pending_approval: None,
                 subagents: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
+                named: r.get(13)?,
                 git: GitState::default(),
                 id,
             })
@@ -235,13 +277,14 @@ impl Store {
     /// Writes a thread's row and its bindings. The queue and the events have their own writes.
     pub fn put_thread(&self, t: &Thread) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12, subagents = ?13",
+            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12, subagents = ?13, named = ?14",
             params![
                 t.id, t.project_id, t.name, t.cwd, t.worktree, t.parent_id, t.fork_point, t.active_agent,
                 t.status.word(), t.permission_mode.word(), t.created_at, t.updated_at,
-                serde_json::to_string(&t.subagents).unwrap_or_else(|_| "[]".into())
+                serde_json::to_string(&t.subagents).unwrap_or_else(|_| "[]".into()),
+                t.named
             ],
         )?;
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
@@ -427,6 +470,7 @@ mod tests {
             id: id.into(),
             project_id: "api".into(),
             name: "auth".into(),
+            named: false,
             cwd: "/p/api".into(),
             worktree: None,
             parent_id: None,
@@ -583,6 +627,9 @@ mod tests {
                  CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL);
                  INSERT INTO threads VALUES ('t-1', 'api', 'auth', '/p/api', NULL, NULL, NULL, 'claude', 'idle', 'edits', 1, 1);
                  INSERT INTO bindings VALUES ('t-1', 'claude', 's1', 0, 'claude-opus-5-5', 1);
+                 INSERT INTO events VALUES ('t-1', 1, 1, 'claude', 'user_message', '{\"kind\":\"user_message\",\"text\":\"Add refresh-token rotation to the auth\",\"attachments\":[]}');
+                 INSERT INTO threads VALUES ('t-2', 'api', 'Fix the flaky login test', '/p/api', NULL, NULL, NULL, 'claude', 'idle', 'edits', 2, 2);
+                 INSERT INTO events VALUES ('t-2', 1, 2, 'claude', 'user_message', '{\"kind\":\"user_message\",\"text\":\"Fix the flaky login test\",\"attachments\":[]}');
                  PRAGMA user_version = 1;",
             )
             .unwrap();
@@ -591,6 +638,8 @@ mod tests {
         let t = &s.threads().unwrap()[0];
         assert_eq!((t.bindings["claude"].session_id.as_deref(), t.bindings["claude"].model_choice.as_deref()), (Some("s1"), None));
         assert_eq!(t.bindings["claude"].effort_choice, None);
+        let named: Vec<(String, bool)> = s.threads().unwrap().into_iter().map(|t| (t.id, t.named)).collect();
+        assert_eq!(named, [("t-1".to_string(), true), ("t-2".to_string(), false)], "a name that is not the first prompt's was the user's");
         assert!(dir.join("workspace.db.v1.bak").exists(), "the store as it was is kept beside the migrated one");
         let version: i64 = s.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);

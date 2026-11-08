@@ -223,3 +223,29 @@ fn each_permission_mode_has_its_sandbox_and_a_note_where_codex_cannot_ask() {
     assert_eq!(launch(PermissionMode::Edits), ["--no-daemon", "-s", "workspace-write", "-a", "on-request"]);
     assert_eq!(Codex.permission_note(PermissionMode::Yolo), None, "yolo holds as written");
 }
+
+#[test]
+fn codexs_title_is_the_newest_name_its_index_gives_the_session() {
+    let dir = std::env::temp_dir().join(format!("desl-codex-index-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let index = dir.join("session_index.jsonl");
+    std::fs::write(
+        &index,
+        concat!(
+            r#"{"id":"s1","thread_name":"Implement the resume","updated_at":"2026-11-07T04:23:00Z"}"#,
+            "\n",
+            r#"{"id":"s2","thread_name":"Fix gVisor","updated_at":"2026-11-07T19:13:00Z"}"#,
+            "\n",
+            r#"{"id":"s1","thread_name":"Resume after a crash","updated_at":"2026-11-07T20:00:00Z"}"#,
+            "\n",
+            r#"{"id":"s1x","thread_name":"Another session","updated_at":"2026-11-07T21:00:00Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    assert_eq!(indexed_title(&index, "s1").as_deref(), Some("Resume after a crash"));
+    assert_eq!(indexed_title(&index, "s2").as_deref(), Some("Fix gVisor"));
+    assert_eq!(indexed_title(&index, "s3"), None);
+    assert_eq!(indexed_title(&dir.join("missing.jsonl"), "s1"), None);
+    let _ = std::fs::remove_dir_all(dir);
+}

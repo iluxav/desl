@@ -100,6 +100,15 @@ impl SessionReader for Reader {
                 return Vec::new();
             }
             Some("assistant") => {}
+            // Claude Code's own title for the conversation, written again as the session goes on.
+            Some("ai-title") => {
+                return v["aiTitle"]
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                    .map(|t| vec![Reading::Title(t.to_string())])
+                    .unwrap_or_default();
+            }
             _ => return Vec::new(),
         }
         let mut out = Vec::new();
@@ -298,6 +307,7 @@ mod tests {
                 Reading::Working => "working".into(),
                 Reading::Idle => "idle".into(),
                 Reading::Settings { .. } => "settings".into(),
+                Reading::Title(_) => "title".into(),
             })
             .collect();
         assert_eq!(names, ["working", "user_message", "tool_call", "tool_result", "assistant_message", "idle"]);
@@ -419,5 +429,16 @@ mod tests {
             "{got:?}"
         );
         assert!(lines.iter().flat_map(|l| main.line(l)).next().is_none(), "the session reader skips subagent lines");
+    }
+
+    #[test]
+    fn claude_codes_own_title_reads_as_the_threads_title() {
+        let got = read(&[
+            r#"{"type":"ai-title","aiTitle":"Herdr API awareness in desl","sessionId":"s1"}"#,
+            r#"{"type":"ai-title","aiTitle":"  ","sessionId":"s1"}"#,
+        ]);
+        assert_eq!(got, vec![Reading::Title("Herdr API awareness in desl".into())]);
+        let mut sub = Reader::subagent(Path::new("/tmp/demo"));
+        assert!(sub.line(r#"{"type":"ai-title","aiTitle":"x","sessionId":"s1"}"#).is_empty(), "a subagent's reader leaves titles alone");
     }
 }

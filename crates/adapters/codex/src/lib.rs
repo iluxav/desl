@@ -55,6 +55,22 @@ fn codex_home() -> Option<PathBuf> {
         .or_else(|| std::env::var_os("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".codex")))
 }
 
+/// Codex's title for session `id`: the newest `thread_name` that `session_index.jsonl`, one line
+/// per naming, gives it. Only the end of the file is read; a session is named soon after it starts.
+fn indexed_title(index: &std::path::Path, id: &str) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    const TAIL: u64 = 256 * 1024;
+    let mut f = std::fs::File::open(index).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut text = String::new();
+    f.read_to_string(&mut text).ok()?;
+    text.lines().rev().filter(|l| l.contains(id)).find_map(|l| {
+        let v: Value = serde_json::from_str(l).ok()?;
+        (v["id"].as_str() == Some(id)).then(|| v["thread_name"].as_str().map(str::trim).unwrap_or("").to_string()).filter(|t| !t.is_empty())
+    })
+}
+
 /// A top-level string from the user's own Codex config: `model`, `model_reasoning_effort`.
 /// Read so the lists can mark what Codex uses when the user has not picked in desl.
 fn configured(key: &str) -> Option<String> {
@@ -73,6 +89,11 @@ fn configured_model() -> Option<String> {
 impl Adapter for Codex {
     fn id(&self) -> &'static str {
         "codex"
+    }
+
+    /// Codex names a session in `$CODEX_HOME/session_index.jsonl`, not in its file (docs/adapters.md).
+    fn session_title(&self, session_id: &str) -> Option<String> {
+        indexed_title(&codex_home()?.join("session_index.jsonl"), session_id)
     }
 
     /// Codex's user skills: `$CODEX_HOME/skills/<name>/SKILL.md` (docs/adapters.md).

@@ -877,3 +877,20 @@ fn a_thread_with_a_worktree_works_in_it_and_closing_keeps_its_branch() {
     let Ok(Reply::Removed { note: Some(note) }) = r.cmd(Command::RemoveThread { thread_id: kept }) else { panic!("not removed") };
     assert!(note.contains("uncommitted") && kept_dir.join("draft.txt").exists(), "{note}");
 }
+
+#[test]
+fn the_agents_own_title_names_the_thread_until_the_user_names_it() {
+    let mut r = rig("title");
+    let t = r.t.clone();
+    r.prompt(&t, "ok let me ask you this. herdr when it runs agents");
+    let i = r.engine.idx(&t).unwrap();
+    assert!(r.engine.retitle(i, "Herdr API awareness in desl"));
+    assert_eq!(r.thread(&t).name, "Herdr API awareness in desl");
+    assert!(!r.engine.retitle(i, "Herdr API awareness in desl"), "the same title changes nothing");
+    r.cmd(Command::Rename { thread_id: t.clone(), name: "skills".into() }).unwrap();
+    assert!(r.thread(&t).named);
+    assert!(!r.engine.retitle(i, "Something else"), "a name the user gave wins");
+    assert_eq!(r.thread(&t).name, "skills");
+    let stored = r.engine.store.threads().unwrap().into_iter().find(|x| x.id == t).unwrap();
+    assert!(stored.named, "the store keeps that the user named it");
+}

@@ -106,6 +106,7 @@ fn nerd_font() -> bool {
 /// The one request in flight that changes what is on screen.
 enum Busy {
     Switch(u64),
+    Restart(u64),
     Attach(u64, String),
     Create(u64),
 }
@@ -548,6 +549,15 @@ impl Client {
                 self.notice(&format!("Switching to {to}…"));
                 let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
                 self.busy = Some(Busy::Switch(id));
+            }
+            Action::Restart if self.agent == SHELL => {
+                self.notice("A shell has no conversation to restart; `exec $SHELL` typed in it starts it again.")
+            }
+            Action::Restart => {
+                self.side = None;
+                self.notice(&format!("Restarting {}…", self.agent));
+                let id = self.link.request(Command::Restart { thread_id: self.thread_id.clone() });
+                self.busy = Some(Busy::Restart(id));
             }
             Action::New | Action::Fork if self.menu.is_some() => self.menu = None,
             Action::Fork if self.agent == SHELL => self.notice("A shell has no conversation to fork."),
@@ -1049,6 +1059,10 @@ impl Client {
                 self.dirty = true;
             }
             ServerFrame::PtyEnded { thread_id, .. } if thread_id == self.thread_id => {
+                // A restart whose agent could not start again ends as any other exit.
+                if matches!(self.busy, Some(Busy::Restart(_))) {
+                    self.busy = None;
+                }
                 let name = if self.agent == SHELL { "The shell".to_string() } else { self.agent.clone() };
                 // Another thread takes the pane; desl ends only with the last one.
                 let others: Vec<String> = self.ordered().into_iter().filter(|id| *id != thread_id).collect();
@@ -1071,7 +1085,7 @@ impl Client {
             }
             ServerFrame::Reply { id, ok, error } => self.reply(id, ok, error),
             ServerFrame::Notice { thread_id, text } if thread_id == self.thread_id => {
-                if matches!(self.busy, Some(Busy::Switch(_))) {
+                if matches!(self.busy, Some(Busy::Switch(_) | Busy::Restart(_))) {
                     self.busy = None;
                 }
                 self.notice(&text);
@@ -1106,7 +1120,7 @@ impl Client {
             return;
         }
         let mine = match &self.busy {
-            Some(Busy::Switch(r) | Busy::Attach(r, _) | Busy::Create(r)) => *r == id,
+            Some(Busy::Switch(r) | Busy::Restart(r) | Busy::Attach(r, _) | Busy::Create(r)) => *r == id,
             None => false,
         };
         if !mine {
@@ -1146,8 +1160,9 @@ impl Client {
                 }
             }
             (Some(Busy::Create(_)), Some(Reply::Created { thread_id })) => self.go(thread_id),
-            // A switch is done when its screen arrives (`pty_replace`), not when it is accepted.
+            // A switch or a restart is done when its screen arrives (`pty_replace`), not when it is accepted.
             (Some(Busy::Switch(r)), _) => self.busy = Some(Busy::Switch(r)),
+            (Some(Busy::Restart(r)), _) => self.busy = Some(Busy::Restart(r)),
             _ => self.release_held(),
         }
     }

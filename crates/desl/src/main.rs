@@ -103,6 +103,8 @@ enum Cmd {
     Interrupt { thread: String },
     /// End the thread's agent; the thread stays, and its next prompt resumes it
     Exit { thread: String },
+    /// Start the thread's agent again on the same conversation, with the binary and settings installed now
+    Restart { thread: String },
     /// Allow what the thread is waiting to do
     Approve {
         thread: String,
@@ -222,6 +224,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Wait { thread } => cli::wait(paths, &out, &thread),
         Cmd::Interrupt { thread } => cli::interrupt(paths, &out, &thread),
         Cmd::Exit { thread } => cli::exit(paths, &out, &thread),
+        Cmd::Restart { thread } => cli::restart(paths, &out, &thread),
         Cmd::Approve { thread, always } => cli::answer(paths, &out, &thread, if always { Decision::Always } else { Decision::Allow }),
         Cmd::Deny { thread } => cli::answer(paths, &out, &thread, Decision::Deny),
         Cmd::Log { thread } => cli::log(paths, &out, &thread),

@@ -64,6 +64,7 @@ enum OwnThread {
     Remove,
     Interrupt,
     Exit,
+    Restart,
 }
 
 fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
@@ -78,13 +79,14 @@ fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
         OwnThread::Wait => bail!(
             "{id} is the thread this command runs in, so `desl wait` would wait on its own turn. Wait on a thread opened with `desl new` or `desl fork`."
         ),
-        OwnThread::Switch => {
-            let cwd = std::env::current_dir().unwrap_or_default();
-            let prefix = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref()).prefix.label();
-            bail!(
-                "{id} is the thread this command runs in, and a switch would close its agent mid-turn. The user switches it with {prefix} s, or `desl fork {id} <agent>` hands a copy to the other agent."
-            )
-        }
+        OwnThread::Switch => bail!(
+            "{id} is the thread this command runs in, and a switch would close its agent mid-turn. The user switches it with {} s, or `desl fork {id} <agent>` hands a copy to the other agent.",
+            prefix(paths)
+        ),
+        OwnThread::Restart => bail!(
+            "{id} is the thread this command runs in, and `desl restart` would end what runs here mid-turn. The user restarts it with {} r.",
+            prefix(paths)
+        ),
         OwnThread::Interrupt => bail!(
             "{id} is the thread this command runs in, so `desl interrupt` would stop its own turn. Interrupt a thread opened with `desl new` or `desl fork`."
         ),
@@ -95,6 +97,12 @@ fn not_own(paths: &Paths, t: &Thread, what: OwnThread) -> Result<()> {
             bail!("{id} is the thread this command runs in, and removing it would end what runs here. Remove it from another terminal.")
         }
     }
+}
+
+/// The prefix key as the user's settings name it, for sentences that say which key to press.
+fn prefix(paths: &Paths) -> String {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref()).prefix.label()
 }
 
 fn thread_line(t: &Thread) -> String {
@@ -469,6 +477,19 @@ pub fn exit(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     not_own(paths, &t, OwnThread::Exit)?;
     conn.call(Command::Exit { thread_id: t.id.clone() })?;
     let text = format!("Ended {} in {}. The thread stays; its next prompt resumes the conversation.", t.active_agent, t.id);
+    done(out, json!({ "thread_id": t.id, "agent": t.active_agent }), text);
+    Ok(())
+}
+
+pub fn restart(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let t = resolve(&mut conn, thread)?;
+    not_own(paths, &t, OwnThread::Restart)?;
+    conn.call(Command::Restart { thread_id: t.id.clone() })?;
+    let text = format!(
+        "Restarting {} in {}: it comes back on the same conversation, with the binary and settings installed now.",
+        t.active_agent, t.id
+    );
     done(out, json!({ "thread_id": t.id, "agent": t.active_agent }), text);
     Ok(())
 }

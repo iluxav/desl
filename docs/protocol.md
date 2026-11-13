@@ -49,6 +49,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `prompt` | `thread_id`, `text` | `sent {queued}` | `queued` when the agent was busy; the prompt goes out when the turn ends. |
 | `interrupt` | `thread_id` | `done` | Stops the current turn. An agent in its own interface gets its own interrupt key; the end of the turn arrives as an event. |
 | `exit` | `thread_id` | `done` | Ends the thread's agent; the thread stays idle, and its next prompt or view resumes the agent's session. |
+| `restart` | `thread_id` | `done` | Ends the thread's agent and, once it has exited, starts it again on the same session, with the binary and settings installed now; clients showing the thread get `pty_replace`. |
 | `answer` | `thread_id`, `call_id?`, `decision` | `done` | Answers the pending approval: `allow`, `deny` or `always`. |
 | `switch` | `thread_id`, `agent` | `done` | The brief goes out with the next prompt. |
 | `fork` | `thread_id`, `agent?`, `at?` | `created {thread_id}` | A new thread with the history up to event `at` (the newest when absent). |

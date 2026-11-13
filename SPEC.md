@@ -170,6 +170,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | Key | Action | Source |
 | --- | --- | --- |
 | `prefix s` | Switch this thread to the other agent; with more than two agents, a list with the current one marked | desl |
+| `prefix r` | Restart this thread's agent on the same conversation, so it runs the version and settings installed now, such as a new MCP server: the daemon keeps agents alive while desl itself is closed and reopened, so this is how one is reloaded. Keys typed meanwhile wait for it, and the pane shows it again once it has drawn | desl |
 | `prefix f` | Fork from here: a menu of the agents, the thread's own marked; a new thread `t-7f3a/1` opens with the conversation so far copied into a new session of the one picked, keeping the parent's model and effort choices | desl |
 | `prefix c` | New thread in this project: a menu of the agents and the user's shell, the cursor on the project's default (`j`/`k`, `enter`, `1`…`9`, `esc`); from a shell, in the shell's directory, which becomes a project | tmux |
 | `prefix o` | Open a directory: a fuzzy finder over known projects, zoxide's directories and git repositories under home, or a typed path; a shell opens there, then `prefix c` | fzf, zoxide |
@@ -204,6 +205,7 @@ desl brief <thread>          print the handoff brief, the fallback for a copy
 desl wait <thread>           block until the thread is waiting or idle
 desl interrupt <thread>      stop the thread's current turn, as esc does in the agent's own screen
 desl exit <thread>           end the thread's agent; the thread stays, and its next prompt resumes it
+desl restart <thread>        start the thread's agent again on the same conversation, with the binary and settings installed now
 desl worktree new|list|rm
 desl skill install           teach Claude Code and Codex to drive desl
 desl agents                  detected agents and login state
@@ -219,7 +221,7 @@ The CLI is how scripts, CI and other agents drive desl.
 **Agents drive desl.** An agent running in a desl thread can open threads, prompt them, wait on them and fork its own conversation to the other agent, the way Herdr's agents drive Herdr. Three pieces make it work:
 
 - **`DESL_THREAD`.** The daemon sets it in every terminal it starts, agent or shell, to the id of that terminal's thread, as tmux sets `$TMUX`. Its presence means "inside desl"; the `desl` on `PATH` reaches the same daemon through the environment the agent inherited.
-- **No command turns on its own thread.** `desl send`, `wait`, `interrupt`, `exit`, `switch` and `thread rm` refuse the thread named in `DESL_THREAD`, because each would hang the caller on its own turn or end it mid-turn; the refusal names `desl fork` as the way to hand a copy on. A bare `desl` refuses to attach inside a thread of the workspace it would draw, and says to `unset DESL_THREAD` to force it, as tmux does with nested sessions. A desl on another socket, such as a test workspace, attaches as usual.
+- **No command turns on its own thread.** `desl send`, `wait`, `interrupt`, `exit`, `restart`, `switch` and `thread rm` refuse the thread named in `DESL_THREAD`, because each would hang the caller on its own turn or end it mid-turn; the refusal names `desl fork` as the way to hand a copy on. A bare `desl` refuses to attach inside a thread of the workspace it would draw, and says to `unset DESL_THREAD` to force it, as tmux does with nested sessions. A desl on another socket, such as a test workspace, attaches as usual.
 - **The skill.** `skills/desl/SKILL.md` in the repo, compiled into the binary. `desl skill install` copies it into each agent's own skill folder, which the agent's adapter names (`~/.claude/skills/desl`, `$CODEX_HOME/skills/desl`); running it again brings the copy up to date, and a folder that is a link is left to whoever made it. The skill checks `DESL_THREAD` first, keeps approvals and permission changes with the user, and teaches four moves: look around (`status`, `thread show`), ask the other agent with this conversation (`fork "$DESL_THREAD" codex`, then `send`), run work in parallel (`new --worktree -m`, then `wait`), and stop a thread it opened (`interrupt` for the turn, `exit` for the agent, which the next prompt resumes as after idle reaping).
 - **A question on the agent's screen holds the prompt.** desl types a prompt only when the agent's screen shows no question of its own, judged from the bottom of what the agent drew, not the bottom of the terminal: a short dialog near the top of a tall screen, such as Codex's folder trust, counts. The thread is `waiting`, and `desl send` says the agent is asking something and that the user answers it in desl's screen.
 

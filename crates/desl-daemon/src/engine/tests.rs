@@ -913,3 +913,22 @@ fn exit_ends_only_a_running_agent_and_never_a_shell() {
     let err = r.cmd(Command::Exit { thread_id: shell.clone() }).unwrap_err();
     assert!(err.contains("is a shell") && err.contains("desl thread rm"), "{err}");
 }
+
+#[test]
+fn restart_needs_a_running_agent_and_never_a_shell() {
+    let mut r = rig("restart");
+    let t = r.t.clone();
+    let err = r.cmd(Command::Restart { thread_id: t.clone() }).unwrap_err();
+    assert!(err.contains("is not running") && err.contains("next prompt starts it"), "{err}");
+    let Ok(Reply::Created { thread_id: shell }) = r.cmd(Command::NewThread {
+        cwd: r.thread(&t).cwd,
+        agent: Some(SHELL.into()),
+        prompt: None,
+        beside: Some(t.clone()),
+        worktree: false,
+    }) else {
+        panic!("a shell thread")
+    };
+    let err = r.cmd(Command::Restart { thread_id: shell.clone() }).unwrap_err();
+    assert!(err.contains("is a shell"), "{err}");
+}

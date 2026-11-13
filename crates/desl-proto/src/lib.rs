@@ -99,6 +99,12 @@ pub enum Command {
     Exit {
         thread_id: String,
     },
+    /// Ends the thread's agent and, once it has exited, starts it again on the same
+    /// conversation, so it runs the binary and settings installed now. Clients showing the
+    /// thread get `pty_replace`.
+    Restart {
+        thread_id: String,
+    },
     /// Answers the thread's pending approval. `call_id` guards against answering a newer one.
     Answer {
         thread_id: String,

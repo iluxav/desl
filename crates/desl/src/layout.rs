@@ -17,6 +17,7 @@ use unicode_width::UnicodeWidthStr;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Switch,
+    Restart,
     Fork,
     New,
     Open,
@@ -39,11 +40,11 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ("Agent", "s", "Switch this thread to the other agent"),
     ("Agent", "f", "Fork: this conversation in a new thread, on either agent"),
     ("Agent", "i", "Info: agent, session ids, model, directory"),
+    ("Agent", "r", "Restart this agent on the same conversation, for a new version or new MCP servers"),
     ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
     ("Threads", "c", "New thread: pick Claude, Codex or a shell"),
     ("Threads", "o", "Open a directory: type to find it; a shell opens there"),
-    ("Threads", "n", "Next thread"),
-    ("Threads", "p", "Previous thread"),
+    ("Threads", "n / p", "Next / previous thread"),
     ("Threads", "1…9", "Jump to thread n"),
     ("Threads", "l", "Back to the thread shown before"),
     ("Threads", ",", "Rename this thread"),
@@ -61,6 +62,7 @@ pub const DIRECT: &[(&str, &str)] = &[("alt+j", "Next thread"), ("alt+k", "Previ
 pub fn action(c: char) -> Option<Action> {
     Some(match c {
         's' => Action::Switch,
+        'r' => Action::Restart,
         'w' => Action::Threads,
         'c' => Action::New,
         'f' => Action::Fork,

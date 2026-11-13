@@ -199,6 +199,8 @@ pub struct Engine {
     typing: HashMap<String, Typing>,
     /// Prompts typed into an agent whose turn has not shown in its files yet, by thread.
     awaiting_turn: HashMap<String, Instant>,
+    /// Threads whose agent was ended to start again on the same conversation when its exit arrives.
+    restarting: HashSet<String>,
     /// The user's settings file; none in tests, which run on the defaults.
     config_file: Option<PathBuf>,
     ticks: u64,
@@ -290,6 +292,7 @@ impl Engine {
             entered: HashMap::new(),
             typing: HashMap::new(),
             awaiting_turn: HashMap::new(),
+            restarting: HashSet::new(),
             config_file: None,
             ticks: 0,
             stopping: false,
@@ -1416,6 +1419,7 @@ impl Engine {
         self.ptys.remove(thread_id);
         self.tails.remove(thread_id);
         self.pending.remove(thread_id);
+        self.restarting.remove(thread_id);
         if let Err(e) = self.store.delete_thread(thread_id) {
             tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
         }
@@ -1440,6 +1444,9 @@ impl Engine {
             }
             return;
         }
+        // A restart ends here either way: this is the exit it waited for, or something started
+        // since has taken the thread.
+        let restart = self.restarting.remove(thread_id);
         if self.ptys.get(thread_id).is_none_or(|(g, _)| *g != generation) {
             return;
         }
@@ -1453,8 +1460,23 @@ impl Engine {
             self.persist(thread_id);
         }
         let code = self.ptys.get_mut(thread_id).and_then(|(_, p)| p.exit_code());
+        let (rows, cols) = self.ptys.get(thread_id).map_or((40, 120), |(_, p)| p.size());
         self.ptys.remove(thread_id);
         tracing::info!(thread = %thread_id, ?code, "the agent's interface ended");
+        if restart && let Ok(i) = self.idx(thread_id) {
+            match self.start_pty(i, rows, cols) {
+                Ok(()) => {
+                    let agent = self.threads[i].active_agent.clone();
+                    let frame = ServerFrame::PtyReplace { thread_id: thread_id.to_string(), agent, data: String::new() };
+                    for client in self.showing(thread_id) {
+                        self.send(client, &frame);
+                    }
+                    tracing::info!(thread = %thread_id, "the agent started again on its conversation");
+                    return;
+                }
+                Err(e) => tracing::warn!(thread = %thread_id, "the agent could not start again: {e}"),
+            }
+        }
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
         let was_shell = self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL);
         let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
@@ -1582,6 +1604,7 @@ impl Engine {
             Command::Prompt { thread_id, text } => self.prompt(&thread_id, &text),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Exit { thread_id } => self.exit_agent(&thread_id),
+            Command::Restart { thread_id } => self.restart_agent(&thread_id),
             Command::Answer { thread_id, call_id, decision } => self.answer(&thread_id, call_id.as_deref(), decision),
             Command::Switch { thread_id, agent } => self.switch(&thread_id, &agent),
             Command::Fork { thread_id, agent, at, worktree } => self.fork(&thread_id, agent.as_deref(), at, worktree),
@@ -1928,6 +1951,21 @@ impl Engine {
     /// Ends the thread's agent and keeps the thread: the agent's session holds the conversation,
     /// and the next prompt or view resumes it, as after idle reaping (SPEC.md "Process hygiene").
     fn exit_agent(&mut self, thread_id: &str) -> Outcome {
+        self.end_agent(thread_id)?;
+        Ok(Reply::Done)
+    }
+
+    /// Ends the thread's agent and, when its exit arrives, starts it again on the same
+    /// conversation: it runs the binary and settings installed now, such as a new MCP server.
+    /// Every client showing the thread gets the new screen in one frame, as after a switch.
+    fn restart_agent(&mut self, thread_id: &str) -> Outcome {
+        self.end_agent(thread_id)?;
+        self.restarting.insert(thread_id.to_string());
+        Ok(Reply::Done)
+    }
+
+    /// Ends the thread's agent now, as closing its terminal would; its exit arrives as any other.
+    fn end_agent(&mut self, thread_id: &str) -> Result<(), String> {
         let i = self.idx(thread_id)?;
         let agent = self.threads[i].active_agent.clone();
         if agent == SHELL {
@@ -1949,7 +1987,7 @@ impl Engine {
         }
         tracing::info!(thread = %thread_id, agent = %agent, "ending the agent on request");
         // The agent's exit arrives as any other: its last lines are read, the thread goes idle.
-        Ok(Reply::Done)
+        Ok(())
     }
 
     fn answer(&mut self, thread_id: &str, call_id: Option<&str>, decision: Decision) -> Outcome {

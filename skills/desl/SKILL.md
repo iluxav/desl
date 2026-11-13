@@ -64,15 +64,16 @@ Run independent threads first, then wait on each. `desl send` to a thread that i
 ```bash
 desl interrupt <thread>                # stops its current turn, as esc does in its own screen
 desl exit <thread>                     # ends its agent; the thread and its conversation stay
+desl restart <thread>                  # ends its agent and starts it again on the same conversation
 ```
 
-After `desl interrupt`, `desl wait <thread>` returns once the turn has ended. After `desl exit`, the next `desl send` to the thread starts its agent again on the same conversation. Use `exit` when a thread's work is done or it has gone off track, so it stops using the user's limits.
+After `desl interrupt`, `desl wait <thread>` returns once the turn has ended. After `desl exit`, the next `desl send` to the thread starts its agent again on the same conversation. Use `exit` when a thread's work is done or it has gone off track, so it stops using the user's limits. Use `restart` when a thread's agent should pick up something installed since it started, such as a new MCP server or a new version of itself; it comes back on the same conversation.
 
 When `desl send` reports that the agent is asking something before it goes on, such as whether to trust a new folder, desl has not typed your prompt; tell the user, who answers in desl's screen.
 
 ## Rules
 
-- **Never target your own thread** with `send`, `wait`, `interrupt`, `exit`, `switch` or `thread rm`; desl refuses, because each would hang you or end you mid-turn. Fork it instead.
+- **Never target your own thread** with `send`, `wait`, `interrupt`, `exit`, `restart`, `switch` or `thread rm`; desl refuses, because each would hang you or end you mid-turn. Fork it instead.
 - **Approvals belong to the user.** When a thread you opened is `waiting`, tell the user which thread waits and what it asks. Run `desl approve` or `desl deny` only when the user tells you to.
 - **Do not widen permissions.** Leave `desl permissions` and `--worktree` choices to what the user asked for; never set `yolo` on your own.
 - **Stop and clean up only what you opened**, or what the user names. `desl exit` is safe to use when a thread you opened is done; `desl thread rm <thread>` removes a thread and its history, so ask the user first.

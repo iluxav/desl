@@ -62,7 +62,7 @@ Every design decision is tested against these eight rules. When two conflict, th
 2. **Zero to useful in ten seconds.** First run detects installed agents, detects the repo in the current directory, and opens a thread. No config file, no wizard, no account.
 3. **Borrow, never invent.** Keys, words and commands come from tmux, lazygit, fzf, Claude Code and Codex. A new concept gets a new word only when no community word fits. Users should guess right the first time.
 4. **The agent is the star.** The agent's own interface fills the pane. desl's chrome is a frame around it in the style of Herdr and T3 Code: one accent colour, no banners, no animation that does not carry information.
-5. **Interrupt the agent, never the app.** Every key without the prefix belongs to the agent, `ctrl+c` included, except `alt+j` and `alt+k`, which move between threads (the author's choice on 2026-11-08: two presses for the most common move were too many). Quitting desl is a deliberate command, and the daemon keeps running regardless.
+5. **Interrupt the agent, never the app.** Every key without the prefix belongs to the agent, `ctrl+c` included, except `alt+j` and `alt+k`, which move between threads (the author's choice on 2026-11-08: two presses for the most common move were too many), and `alt+h` and `alt+l` while two panes are open, which move the keys between them. Quitting desl is a deliberate command, and the daemon keeps running regardless.
 6. **Everything is scriptable.** Every action desl owns exists as a CLI subcommand with `--json` output. Agents can drive desl through the same interface a human uses.
 7. **Fast by default.** Keys reach the agent with no delay a person could notice; a switch or a thread change lands in one frame. Performance is a feature with a budget, not a cleanup phase.
 8. **Honest status.** The UI never says "done" when a process is still running, never hides an error, and shows which agent and which native session is behind every thread.
@@ -157,7 +157,7 @@ The workspace screen, in the style of Herdr and T3 Code in a terminal: projects 
 
 **Visual language.** One accent colour (default: the terminal's blue), one warning, one critical, three greys. Status glyphs: `●` working, `◐` waiting, `○` idle, `✕` failed, `⊝` detached, with the words always available for screen readers and `NO_COLOR`. Rounded box drawing where the terminal supports it, falling back to ASCII. No emoji in chrome. Respect the terminal's own palette by default; built-in themes (`default`, `mono`, `catppuccin`, `gruvbox`, `solarized`) are opt-in.
 
-**Splits (phase 2).** `prefix %` and `prefix "` show two threads side by side in the pane, as in tmux, through the same emulator; `prefix z` zooms one back. Shell panes work the same way.
+**Splits.** `prefix %` and `prefix "` show a second thread beside or under the one on screen, as in tmux, through the same emulator: each pane is its own panel with its own header, the one with the keys has the accent border, and `alt+h`/`alt+l` or a click move the keys between them. The second pane opens on the thread shown before, else the next in the list. The thread keys (`alt+j`/`alt+k`, the sidebar, `prefix 1`…`9`, `prefix l`) change what the focused pane shows, and a thread the other pane already shows gets the keys instead of a copy. `prefix z` zooms back to one pane, the focused one. A pane whose thread ends or closes goes, and the other takes the room. The split and both threads come back on the next attach. Shell panes work the same way.
 
 **Help.** `prefix ?` opens a box over the pane listing the keys desl owns, each with its group and what it does, in the style of lazygit's menu, and the list runs the key picked in it: typing filters the rows as the directory finder does, `↑`/`↓` move, `enter` runs the row under the cursor, `esc` closes. Notes under the rows name `1…9`, the prefix sent to the agent, `alt+j`/`alt+k`, and that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
 
@@ -181,6 +181,9 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix l` | Back to the thread shown before | tmux |
 | `prefix ,` | Rename this thread: the key line becomes a one-line input with the current title, `enter` saves, `esc` cancels | tmux |
 | `prefix i` | A box over the pane: thread id, title, directory, branch, parent, agent, permissions, each agent's native session id and model, subagents; any key closes it | desl |
+| `prefix %` / `prefix "` | Split: a second pane beside / under this one, showing the thread shown before, else the next in the list | tmux |
+| `prefix z` | Zoom: back to one pane, the one with the keys | tmux |
+| `alt+h` / `alt+l` | The other pane gets the keys, while two are open, without the prefix; a click does too | zellij |
 | `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |
@@ -530,7 +533,7 @@ Each diamond is a gate: the phase after it does not start until the gate's test 
 
 **Phase 1, the real thing (weeks 4 to 8).** The core built properly under the native route: daemon with socket protocol, SQLite store, event IR, PTY host, Claude and Codex adapters that read and write session files with fixtures, projector for the fallback brief, thread engine, attention; then the client: pass-through of the shown thread, the switch of `phase0/proto-n`, the thread list, help and info overlays in Prototype A's visual language, keymap and themes. Full CLI with `--json`. Detach and reattach. `desl doctor`, installer, cargo-dist pipeline. Gate: all five walkthrough scenarios pass on macOS and Linux; a 40-turn Claude thread switched to Codex continues correctly in three scripted scenarios and a fork from message 12 reproduces the parent's state, verified by an independent reviewer; every performance budget is met in CI; the author runs the hallway protocol on the build and every moment passes.
 
-**Phase 2, panes and worktrees (weeks 9 to 11).** Splits and zoom, threads for agents without an adapter, shell panes, worktree-per-thread with `desl diff` and `desl pr`, idle process reaping. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
+**Phase 2, panes and worktrees (weeks 9 to 11).** Threads for agents without an adapter (splits and zoom shipped in phase 1), shell panes, worktree-per-thread with `desl diff` and `desl pr`, idle process reaping. Gate: 20 concurrent threads across 5 worktrees for 8 hours with no orphaned processes, no lost events and memory within budget.
 
 **Phase 3, reach (weeks 12 to 15).** Remote TCP mode with pairing, Windows support, `desl export`/`import` for moving threads between machines, agent-written briefs for the fallback, third-party adapter protocol with one community adapter (OpenCode) built against it, notifications (desktop and terminal). Gate: a thread started on a laptop is continued on a server from a phone browser's SSH client; an external contributor ships an adapter without touching core.
 

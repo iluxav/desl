@@ -4,7 +4,7 @@
 
 use crate::conn::{Conn, Link};
 use crate::finder::Finder;
-use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, Row, SubView, View};
+use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Event, Project, SHELL, Status, Thread};
@@ -13,6 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::terminal;
+use ratatui::layout::Rect;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -107,7 +108,8 @@ fn nerd_font() -> bool {
 enum Busy {
     Switch(u64),
     Restart(u64),
-    Attach(u64, String),
+    /// The request, the thread wanted, and the thread the pane showed when it was asked.
+    Attach(u64, String, String),
     Create(u64),
 }
 
@@ -128,17 +130,35 @@ enum SKey {
     Char(char),
 }
 
-struct Client {
-    link: Link,
+/// One pane: the thread it shows and its agent's screen, as desl's emulator keeps it.
+struct Pane {
     thread_id: String,
     agent: String,
+    vt: vt100::Parser,
+    scrolled: usize,
+    /// The key modes its agent set (kitty keys, bracketed paste), for the terminal while this
+    /// pane has the keys.
+    modes: Vec<u8>,
+}
+
+impl Pane {
+    fn new(thread_id: String, agent: String, area: Rect) -> Pane {
+        Pane { thread_id, agent, vt: vt100::Parser::new(nz(area.height), nz(area.width), SCROLLBACK), scrolled: 0, modes: Vec::new() }
+    }
+}
+
+struct Client {
+    link: Link,
+    /// The panes on screen, one or two, left to right or top to bottom; `focus` has the keys.
+    panes: Vec<Pane>,
+    focus: usize,
+    /// Two panes sit one above the other, not beside each other.
+    stacked: bool,
     projects: Vec<Project>,
     threads: Vec<Thread>,
     /// The thread shown before this one, for `prefix l`.
     previous: Option<String>,
     answers: term::Answers,
-    /// The agent's screen, as desl's emulator keeps it.
-    vt: vt100::Parser,
     cols: u16,
     rows: u16,
     sidebar_on: bool,
@@ -165,7 +185,6 @@ struct Client {
     help: Option<Palette>,
     /// An action picked in the key list, run once its key is handled.
     run: Option<Action>,
-    scrolled: usize,
     agents: Vec<AgentInfo>,
     /// The new-thread menu's cursor while it is open.
     menu: Option<usize>,
@@ -214,13 +233,67 @@ fn shell_name() -> String {
 
 impl Client {
     fn areas(&self) -> Areas {
-        layout::areas(self.cols, self.rows, self.sidebar_on)
+        layout::areas(self.cols, self.rows, self.sidebar_on, (self.panes.len() > 1).then_some(self.stacked))
+    }
+
+    /// Where pane `i` draws its agent's screen.
+    fn rect(&self, i: usize) -> Rect {
+        let a = self.areas();
+        a.panes.get(i).or(a.panes.first()).copied().unwrap_or_default()
+    }
+
+    fn pane(&self) -> &Pane {
+        &self.panes[self.focus]
+    }
+
+    fn pane_mut(&mut self) -> &mut Pane {
+        let i = self.focus;
+        &mut self.panes[i]
+    }
+
+    /// The thread in the pane that has the keys.
+    fn thread_id(&self) -> &str {
+        &self.pane().thread_id
+    }
+
+    fn agent(&self) -> &str {
+        &self.pane().agent
+    }
+
+    /// The pane showing `thread_id`, if one does.
+    fn pane_of(&self, thread_id: &str) -> Option<usize> {
+        self.panes.iter().position(|p| p.thread_id == thread_id)
+    }
+
+    /// The keys move to pane `i`; the terminal takes its agent's key modes.
+    fn focus(&mut self, i: usize) {
+        if i < self.panes.len() && i != self.focus {
+            self.focus = i;
+            self.apply_modes();
+            self.title();
+            self.save_view();
+            self.dirty = true;
+        }
+    }
+
+    /// The terminal takes the focused pane's agent's key modes (kitty keys, bracketed paste).
+    fn apply_modes(&self) {
+        let mut modes = KEYS_PLAIN.to_vec();
+        modes.extend_from_slice(&self.pane().modes);
+        out(&modes);
+    }
+
+    /// What to show again next time: the focused thread, the panes in order, and how they sit.
+    fn save_view(&mut self) {
+        let panes: Vec<&str> = self.panes.iter().map(|p| p.thread_id.as_str()).collect();
+        let view = serde_json::json!({ "current": self.thread_id(), "panes": panes, "focus": self.focus, "stacked": self.stacked });
+        self.link.request(Command::SaveView { view });
     }
 
     fn title(&self) {
-        let waiting = self.threads.iter().filter(|t| t.status == Status::Waiting && t.id != self.thread_id).count();
+        let waiting = self.threads.iter().filter(|t| t.status == Status::Waiting && t.id != self.thread_id()).count();
         let tail = if waiting > 0 { format!(" · {waiting} waiting") } else { String::new() };
-        out(format!("\x1b]0;desl · {} · {}{tail}\x07", self.agent, self.thread_id).as_bytes());
+        out(format!("\x1b]0;desl · {} · {}{tail}\x07", self.agent(), self.thread_id()).as_bytes());
     }
 
     fn notice(&mut self, text: &str) {
@@ -228,21 +301,29 @@ impl Client {
         self.dirty = true;
     }
 
-    /// A fresh screen for the agent now shown, with everything it drew so far.
-    fn screen_from(&mut self, replay: &[u8]) {
-        let pane = self.areas().pane;
-        self.vt = vt100::Parser::new(nz(pane.height), nz(pane.width), SCROLLBACK);
-        self.vt.process(replay);
-        let mut modes = KEYS_PLAIN.to_vec();
-        modes.extend_from_slice(&term::key_modes(replay));
-        out(&modes);
-        self.scrolled = 0;
+    /// A fresh screen in pane `i` for the agent now shown there, with everything it drew so far.
+    fn screen_from(&mut self, i: usize, replay: &[u8]) {
+        let r = self.rect(i);
+        let p = &mut self.panes[i];
+        p.vt = vt100::Parser::new(nz(r.height), nz(r.width), SCROLLBACK);
+        p.vt.process(replay);
+        p.modes = term::key_modes(replay);
+        p.scrolled = 0;
+        if i == self.focus {
+            self.apply_modes();
+        }
         self.dirty = true;
     }
 
+    /// Keys for the agent in the focused pane.
     fn input(&mut self, keys: &[u8]) {
+        let id = self.thread_id().to_string();
+        self.input_to(&id, keys);
+    }
+
+    fn input_to(&mut self, thread_id: &str, keys: &[u8]) {
         if !keys.is_empty() {
-            self.link.request(Command::Input { thread_id: self.thread_id.clone(), data: b64::encode(keys) });
+            self.link.request(Command::Input { thread_id: thread_id.to_string(), data: b64::encode(keys) });
         }
     }
 
@@ -250,8 +331,8 @@ impl Client {
         if keys.is_empty() {
             return;
         }
-        if self.scrolled > 0 {
-            self.scrolled = 0;
+        if self.pane().scrolled > 0 {
+            self.pane_mut().scrolled = 0;
             self.dirty = true;
         }
         if self.busy.is_some() {
@@ -352,6 +433,7 @@ impl Client {
                 let a = match k.code {
                     Some(106) => Some(Action::Next),
                     Some(107) => Some(Action::Prev),
+                    Some(104 | 108) if self.panes.len() > 1 => Some(Action::OtherPane),
                     _ => None,
                 };
                 if let Some(a) = a {
@@ -400,40 +482,54 @@ impl Client {
 
     fn mouse(&mut self, m: Mouse) {
         let a = self.areas();
-        let inside = |r: ratatui::layout::Rect| m.x >= r.x && m.x < r.x + r.width && m.y >= r.y && m.y < r.y + r.height;
-        if inside(a.pane)
-            && let Some(sub) = &mut self.sub
-        {
-            if let Some(up) = m.wheel() {
-                sub.scroll = if up { sub.scroll + 3 } else { sub.scroll.saturating_sub(3) };
-                self.dirty = true;
+        let inside = |r: Rect| m.x >= r.x && m.x < r.x + r.width && m.y >= r.y && m.y < r.y + r.height;
+        if let Some(i) = a.mains.iter().position(|r| inside(*r)) {
+            // A click in the other pane gives it the keys first.
+            if i != self.focus && m.press && !m.motion() && m.wheel().is_none() {
+                self.focus(i);
             }
-            return;
-        }
-        if inside(a.pane) {
-            let screen = self.vt.screen();
-            let wants = match screen.mouse_protocol_mode() {
+            if i == self.focus
+                && let Some(sub) = &mut self.sub
+            {
+                if let Some(up) = m.wheel() {
+                    sub.scroll = if up { sub.scroll + 3 } else { sub.scroll.saturating_sub(3) };
+                    self.dirty = true;
+                }
+                return;
+            }
+            let r = a.panes.get(i).copied().unwrap_or_default();
+            let thread_id = self.panes[i].thread_id.clone();
+            let (mode, sgr, alternate, app_cursor) = {
+                let s = self.panes[i].vt.screen();
+                (
+                    s.mouse_protocol_mode(),
+                    s.mouse_protocol_encoding() == MouseProtocolEncoding::Sgr,
+                    s.alternate_screen(),
+                    s.application_cursor(),
+                )
+            };
+            let wants = match mode {
                 MouseProtocolMode::None => false,
                 MouseProtocolMode::Press => m.press && !m.motion(),
                 MouseProtocolMode::PressRelease => !m.motion(),
                 MouseProtocolMode::ButtonMotion | MouseProtocolMode::AnyMotion => true,
             };
-            if wants && self.scrolled == 0 {
-                let sgr = screen.mouse_protocol_encoding() == MouseProtocolEncoding::Sgr;
-                let bytes = m.encode(a.pane.x, a.pane.y, sgr);
-                self.input(&bytes);
+            if wants && self.panes[i].scrolled == 0 {
+                let bytes = m.encode(r.x, r.y, sgr);
+                self.input_to(&thread_id, &bytes);
             } else if let Some(up) = m.wheel() {
-                if screen.alternate_screen() && self.scrolled == 0 {
+                if alternate && self.panes[i].scrolled == 0 {
                     // A full-screen program without the mouse: the wheel is its arrow keys.
-                    let arrow: &[u8] = match (up, screen.application_cursor()) {
+                    let arrow: &[u8] = match (up, app_cursor) {
                         (true, true) => b"\x1bOA",
                         (true, false) => b"\x1b[A",
                         (false, true) => b"\x1bOB",
                         (false, false) => b"\x1b[B",
                     };
-                    self.input(&arrow.repeat(3));
+                    self.input_to(&thread_id, &arrow.repeat(3));
                 } else {
-                    self.scrolled = if up { self.scrolled + 3 } else { self.scrolled.saturating_sub(3) };
+                    let p = &mut self.panes[i];
+                    p.scrolled = if up { p.scrolled + 3 } else { p.scrolled.saturating_sub(3) };
                     self.dirty = true;
                 }
             }
@@ -463,7 +559,7 @@ impl Client {
                     self.side = None;
                     self.sub = None;
                     self.dirty = true;
-                    if id != self.thread_id && self.busy.is_none() {
+                    if id != self.thread_id() && self.busy.is_none() {
                         self.go(id);
                     }
                 }
@@ -479,7 +575,7 @@ impl Client {
     fn side_skip(&self) -> usize {
         let Some(s) = self.areas().sidebar else { return 0 };
         let rows = layout::rows(&self.projects, &self.threads);
-        let keep = self.side.unwrap_or_else(|| rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
+        let keep = self.side.unwrap_or_else(|| rows.iter().position(|r| *r == Row::Thread(self.thread_id().to_string())).unwrap_or(0));
         layout::side_skip(rows.len(), keep, s)
     }
 
@@ -501,9 +597,16 @@ impl Client {
                 self.relayout();
                 return None;
             }
+            Action::OtherPane => {
+                if self.panes.len() > 1 {
+                    let i = 1 - self.focus.min(1);
+                    self.focus(i);
+                }
+                return None;
+            }
             _ => {}
         }
-        if let (Action::Next | Action::Prev, Some(Busy::Attach(_, want))) = (a, &self.busy) {
+        if let (Action::Next | Action::Prev, Some(Busy::Attach(_, want, _))) = (a, &self.busy) {
             let ids = self.ordered();
             let from = self.then.clone().unwrap_or_else(|| want.clone());
             if let Some(here) = ids.iter().position(|id| *id == from) {
@@ -527,19 +630,19 @@ impl Client {
         match a {
             Action::Close => {
                 self.side = None;
-                let what = match self.threads.iter().find(|t| t.id == self.thread_id) {
+                let what = match self.threads.iter().find(|t| t.id == self.thread_id()) {
                     Some(t) if t.active_agent == SHELL => format!("the shell {}", t.name),
                     Some(t) => format!("{} · {}", t.active_agent, if t.name.is_empty() { "new" } else { t.name.as_str() }),
-                    None => self.thread_id.clone(),
+                    None => self.thread_id().to_string(),
                 };
-                let wt = self.threads.iter().find(|t| t.id == self.thread_id).and_then(|t| t.worktree.clone());
-                let note = match (&wt, self.agent == SHELL) {
+                let wt = self.threads.iter().find(|t| t.id == self.thread_id()).and_then(|t| t.worktree.clone());
+                let note = match (&wt, self.agent() == SHELL) {
                     (Some(name), _) => format!(" Its worktree goes if nothing in it is uncommitted; the branch desl/{name} stays."),
                     (None, true) => String::new(),
                     (None, false) => " The agent keeps the conversation in its own history.".to_string(),
                 };
-                self.notice(&format!("Close {} ({what})?{note}  y close · any other key keeps it", self.thread_id));
-                self.closing = Some(self.thread_id.clone());
+                self.notice(&format!("Close {} ({what})?{note}  y close · any other key keeps it", self.thread_id()));
+                self.closing = Some(self.thread_id().to_string());
             }
             Action::Threads if self.side.is_some() => self.side = None,
             Action::Threads => {
@@ -548,10 +651,10 @@ impl Client {
                     self.relayout();
                 }
                 let rows = layout::rows(&self.projects, &self.threads);
-                self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id.clone())).unwrap_or(0));
-                self.side_from = Some(self.thread_id.clone());
+                self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id().to_string())).unwrap_or(0));
+                self.side_from = Some(self.thread_id().to_string());
             }
-            Action::Switch if self.agent == SHELL => {
+            Action::Switch if self.agent() == SHELL => {
                 self.notice(&format!(
                     "A shell has no conversation to switch. Press {} c to start an agent where it is.",
                     self.prefix_label
@@ -565,33 +668,33 @@ impl Client {
             }
             Action::Switch => {
                 self.side = None;
-                let to = if self.agent == "claude" { "codex" } else { "claude" };
+                let to = if self.agent() == "claude" { "codex" } else { "claude" };
                 self.notice(&format!("Switching to {to}…"));
-                let id = self.link.request(Command::Switch { thread_id: self.thread_id.clone(), agent: to.to_string() });
+                let id = self.link.request(Command::Switch { thread_id: self.thread_id().to_string(), agent: to.to_string() });
                 self.busy = Some(Busy::Switch(id));
             }
-            Action::Restart if self.agent == SHELL => {
+            Action::Restart if self.agent() == SHELL => {
                 self.notice("A shell has no conversation to restart; `exec $SHELL` typed in it starts it again.")
             }
             Action::Restart => {
                 self.side = None;
-                self.notice(&format!("Restarting {}…", self.agent));
-                let id = self.link.request(Command::Restart { thread_id: self.thread_id.clone() });
+                self.notice(&format!("Restarting {}…", self.agent()));
+                let id = self.link.request(Command::Restart { thread_id: self.thread_id().to_string() });
                 self.busy = Some(Busy::Restart(id));
             }
             Action::New | Action::Fork if self.menu.is_some() => self.menu = None,
-            Action::Fork if self.agent == SHELL => self.notice("A shell has no conversation to fork."),
+            Action::Fork if self.agent() == SHELL => self.notice("A shell has no conversation to fork."),
             Action::Fork => {
                 self.side = None;
                 self.forking = true;
                 self.menu_worktree = false;
                 // The cursor starts on the thread's own agent.
-                let at = self.choices().iter().position(|c| c.start == self.agent).unwrap_or(0);
+                let at = self.choices().iter().position(|c| c.start == self.agent()).unwrap_or(0);
                 self.menu = Some(at);
             }
             Action::Rename => {
                 self.side = None;
-                let name = self.threads.iter().find(|t| t.id == self.thread_id).map(|t| t.name.clone()).unwrap_or_default();
+                let name = self.threads.iter().find(|t| t.id == self.thread_id()).map(|t| t.name.clone()).unwrap_or_default();
                 self.renaming = Some(name);
             }
             Action::Info => {
@@ -617,13 +720,13 @@ impl Client {
                 if ids.len() < 2 {
                     self.notice(&format!("This is the only thread. Press {} c for a new one.", self.prefix_label));
                 } else {
-                    let here = ids.iter().position(|id| *id == self.thread_id).unwrap_or(0);
+                    let here = ids.iter().position(|id| *id == self.thread_id()).unwrap_or(0);
                     let to = if a == Action::Next { (here + 1) % ids.len() } else { (here + ids.len() - 1) % ids.len() };
                     self.go(ids[to].clone());
                 }
             }
             Action::Jump(n) => match self.ordered().get(n - 1) {
-                Some(id) if *id == self.thread_id => self.side = None,
+                Some(id) if *id == self.thread_id() => self.side = None,
                 Some(id) => self.go(id.clone()),
                 None => self.notice(&format!("There is no thread {n}.")),
             },
@@ -631,27 +734,75 @@ impl Client {
                 Some(id) => self.go(id),
                 None => self.notice("No thread was shown before this one."),
             },
-            Action::Detach | Action::Help | Action::Sidebar => {}
+            Action::SplitBeside | Action::SplitStacked => self.split(a == Action::SplitStacked, None),
+            Action::Zoom => self.zoom(),
+            Action::Detach | Action::Help | Action::Sidebar | Action::OtherPane => {}
         }
         None
     }
 
-    /// Shows `thread_id` in the pane once the daemon sends what its agent drew.
+    /// Shows `thread_id` in the focused pane once the daemon sends what its agent drew; a thread
+    /// the other pane shows gets the keys instead of a copy.
     fn go(&mut self, thread_id: String) {
-        let pane = self.areas().pane;
-        let command = Command::Attach { thread_id: thread_id.clone(), rows: pane.height, cols: pane.width, answers: self.answers.clone() };
+        if let Some(i) = self.pane_of(&thread_id)
+            && i != self.focus
+        {
+            return self.focus(i);
+        }
+        let r = self.rect(self.focus);
+        let from = self.thread_id().to_string();
+        let command = Command::Attach { thread_id: thread_id.clone(), rows: r.height, cols: r.width, answers: self.answers.clone() };
         let id = self.link.request(command);
-        self.busy = Some(Busy::Attach(id, thread_id));
+        self.busy = Some(Busy::Attach(id, thread_id, from));
+    }
+
+    /// `prefix %` / `prefix "`: a second pane. It shows `thread`, else the thread shown before
+    /// this one, else the next in the list.
+    fn split(&mut self, stacked: bool, thread: Option<String>) {
+        if self.panes.len() > 1 {
+            return self.notice(&format!("Two panes are open already. {} z zooms back to one.", self.prefix_label));
+        }
+        let here = self.thread_id().to_string();
+        let ids = self.ordered();
+        let pick = |t: Option<String>| t.filter(|t| *t != here && ids.contains(t));
+        let next = || {
+            let at = ids.iter().position(|id| *id == here).unwrap_or(0);
+            ids.iter().cycle().skip(at + 1).take(ids.len()).find(|id| **id != here).cloned()
+        };
+        let Some(thread) = pick(thread).or_else(|| pick(self.previous.clone())).or_else(next) else {
+            return self.notice(&format!("This is the only thread. Press {} c for a new one to show beside it.", self.prefix_label));
+        };
+        let agent = self.threads.iter().find(|t| t.id == thread).map(|t| t.active_agent.clone()).unwrap_or_default();
+        self.stacked = stacked;
+        self.side = None;
+        self.panes.push(Pane::new(thread.clone(), agent, Rect::default()));
+        self.focus = 1;
+        self.relayout();
+        self.go(thread);
+        self.save_view();
+    }
+
+    /// `prefix z`: back to one pane, the one with the keys.
+    fn zoom(&mut self) {
+        if self.panes.len() < 2 {
+            let p = &self.prefix_label;
+            return self.notice(&format!("One pane is open. {p} % shows another thread beside it, {p} \" under it."));
+        }
+        let gone = self.panes.remove(1 - self.focus.min(1));
+        self.focus = 0;
+        self.link.request(Command::Leave { thread_id: gone.thread_id });
+        self.relayout();
+        self.save_view();
     }
 
     fn project(&self) -> Option<&Project> {
-        let t = self.threads.iter().find(|t| t.id == self.thread_id)?;
+        let t = self.threads.iter().find(|t| t.id == self.thread_id())?;
         self.projects.iter().find(|p| p.id == t.project_id)
     }
 
     /// `prefix i`: what the thread is and where its agents keep it.
     fn facts(&self) -> Vec<(String, String)> {
-        let Some(t) = self.threads.iter().find(|t| t.id == self.thread_id) else { return Vec::new() };
+        let Some(t) = self.threads.iter().find(|t| t.id == self.thread_id()) else { return Vec::new() };
         let mut out = vec![
             ("Thread".to_string(), t.id.clone()),
             ("Title".to_string(), if t.name.is_empty() { "New thread".into() } else { t.name.clone() }),
@@ -725,7 +876,7 @@ impl Client {
         self.menu = None;
         if self.forking {
             let id = self.link.request(Command::Fork {
-                thread_id: self.thread_id.clone(),
+                thread_id: self.thread_id().to_string(),
                 agent: Some(choice.start.clone()),
                 at: None,
                 worktree: self.menu_worktree,
@@ -733,14 +884,19 @@ impl Client {
             self.busy = Some(Busy::Create(id));
             return;
         }
-        let cwd = match (self.project(), self.threads.iter().find(|t| t.id == self.thread_id)) {
+        let cwd = match (self.project(), self.threads.iter().find(|t| t.id == self.thread_id())) {
             (Some(p), _) => p.path.clone(),
             (None, Some(t)) => t.cwd.clone(),
             (None, None) => return self.notice("desl does not know this thread's project yet. Try again in a moment."),
         };
         let worktree = self.menu_worktree && choice.start != SHELL;
-        let command =
-            Command::NewThread { cwd, agent: Some(choice.start.clone()), prompt: None, beside: Some(self.thread_id.clone()), worktree };
+        let command = Command::NewThread {
+            cwd,
+            agent: Some(choice.start.clone()),
+            prompt: None,
+            beside: Some(self.thread_id().to_string()),
+            worktree,
+        };
         let id = self.link.request(command);
         self.busy = Some(Busy::Create(id));
     }
@@ -922,7 +1078,7 @@ impl Client {
                     let name = self.renaming.take().unwrap_or_default();
                     let name = name.trim().to_string();
                     if !name.is_empty() {
-                        self.link.request(Command::Rename { thread_id: self.thread_id.clone(), name });
+                        self.link.request(Command::Rename { thread_id: self.thread_id().to_string(), name });
                     }
                 }
                 _ => {}
@@ -983,17 +1139,20 @@ impl Client {
     fn preview(&mut self, thread: Option<String>) {
         let Some(id) = thread else { return };
         match &self.busy {
-            None if id != self.thread_id => self.go(id),
+            None if id != self.thread_id() => self.go(id),
             Some(Busy::Attach(..)) => self.then = Some(id),
             _ => {}
         }
     }
 
-    /// The terminal or the sidebar changed size: the agent's screen follows the pane.
+    /// The terminal, the sidebar or the split changed: each agent's screen follows its pane.
     fn relayout(&mut self) {
-        let pane = self.areas().pane;
-        self.vt.screen_mut().set_size(nz(pane.height), nz(pane.width));
-        self.link.request(Command::Resize { thread_id: self.thread_id.clone(), rows: pane.height, cols: pane.width });
+        let a = self.areas();
+        for (i, p) in self.panes.iter_mut().enumerate() {
+            let Some(r) = a.panes.get(i) else { continue };
+            p.vt.screen_mut().set_size(nz(r.height), nz(r.width));
+            self.link.request(Command::Resize { thread_id: p.thread_id.clone(), rows: r.height, cols: r.width });
+        }
         self.dirty = true;
     }
 
@@ -1003,20 +1162,22 @@ impl Client {
             self.term.backend_mut().resize(self.cols, self.rows);
             self.shown = None;
         }
-        self.vt.screen_mut().set_scrollback(self.scrolled);
-        self.scrolled = self.vt.screen().scrollback();
+        for p in &mut self.panes {
+            p.vt.screen_mut().set_scrollback(p.scrolled);
+            p.scrolled = p.vt.screen().scrollback();
+        }
+        let focused = self.rect(self.focus);
         let skip = self.side_skip();
         let view = View {
             projects: &self.projects,
             threads: &self.threads,
-            current: &self.thread_id,
+            panes: self.panes.iter().map(|p| PaneView { thread_id: &p.thread_id, agent: &p.agent, scrolled: p.scrolled }).collect(),
+            focus: self.focus,
             cursor: self.side,
             skip,
-            agent: &self.agent,
             prefix_armed: self.armed.is_some(),
             notice: self.notice.as_deref(),
             help: self.help.as_ref().map(|p| layout::PaletteView { query: &p.query, cursor: p.cursor }),
-            scrolled: self.scrolled,
             menu: None,
             finder: None,
             sub: None,
@@ -1038,7 +1199,7 @@ impl Client {
             title.push_str(" · ⎇ own worktree");
         }
         // A subagent's conversation, laid out by the transcript renderer.
-        let width = a.pane.width as usize;
+        let width = focused.width as usize;
         let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
             (Some(sub), Some(_)) => {
                 let mut m = crate::model::Thread::new();
@@ -1055,7 +1216,7 @@ impl Client {
                 }
                 None => ("gone".to_string(), false),
             };
-            let max = sub_lines.len().saturating_sub(a.pane.height as usize);
+            let max = sub_lines.len().saturating_sub(focused.height as usize);
             SubView { title, running, lines: &sub_lines, scroll: sub.scroll.min(max) }
         });
         let finder_rows: Vec<(String, &'static str)> =
@@ -1067,8 +1228,9 @@ impl Client {
             scanning: f.scanning(),
         });
         let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), sub: sub_view, finder, ..view };
-        let screen = self.vt.screen();
-        let _ = self.term.draw(|f| layout::draw(f, &view, &a, screen));
+        let screens: Vec<&vt100::Screen> = self.panes.iter().map(|p| p.vt.screen()).collect();
+        let _ = self.term.draw(|f| layout::draw(f, &view, &a, &screens));
+        let screen = self.pane().vt.screen();
         let next = self.term.backend().buffer().clone();
         let mut frame = b"\x1b[?2026h".to_vec();
         frame.extend_from_slice(&layout::paint(self.shown.as_ref(), &next));
@@ -1080,10 +1242,10 @@ impl Client {
             && self.info.is_none()
             && self.renaming.is_none()
             && self.help.is_none()
-            && self.scrolled == 0
+            && self.pane().scrolled == 0
             && !screen.hide_cursor()
         {
-            frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", a.pane.y + row + 1, a.pane.x + col + 1).as_bytes());
+            frame.extend_from_slice(format!("\x1b[{};{}H\x1b[?25h", focused.y + row + 1, focused.x + col + 1).as_bytes());
         } else {
             frame.extend_from_slice(b"\x1b[?25l");
         }
@@ -1097,24 +1259,45 @@ impl Client {
     /// Returns the farewell when the client should end.
     fn frame(&mut self, frame: ServerFrame) -> Option<String> {
         match frame {
-            ServerFrame::Pty { thread_id, data } if thread_id == self.thread_id => {
+            ServerFrame::Pty { thread_id, data } => {
+                let i = self.pane_of(&thread_id)?;
                 let bytes = b64::decode(&data)?;
-                self.vt.process(&bytes);
+                let p = &mut self.panes[i];
+                p.vt.process(&bytes);
                 // Nothing else is there to answer what the agent asks its terminal.
-                let replies = term::replies(&bytes, &self.answers, self.vt.screen().cursor_position());
-                self.input(&replies);
+                let replies = term::replies(&bytes, &self.answers, p.vt.screen().cursor_position());
                 let modes = term::key_modes(&bytes);
                 if !modes.is_empty() {
-                    out(&modes);
+                    p.modes.extend_from_slice(&modes);
+                    if p.modes.len() > 4096 {
+                        let cut = p.modes.len() - 1024;
+                        p.modes.drain(..cut);
+                    }
+                    if i == self.focus {
+                        out(&modes);
+                    }
                 }
+                self.input_to(&thread_id, &replies);
                 self.dirty = true;
             }
-            ServerFrame::PtyEnded { thread_id, .. } if thread_id == self.thread_id => {
+            ServerFrame::PtyEnded { thread_id, .. } => {
+                let i = self.pane_of(&thread_id)?;
                 // A restart whose agent could not start again ends as any other exit.
                 if matches!(self.busy, Some(Busy::Restart(_))) {
                     self.busy = None;
                 }
-                let name = if self.agent == SHELL { "The shell".to_string() } else { self.agent.clone() };
+                let agent = self.panes[i].agent.clone();
+                let name = if agent == SHELL { "The shell".to_string() } else { agent };
+                if self.panes.len() > 1 {
+                    // Its pane closes; the other one stays.
+                    self.panes.remove(i);
+                    self.focus = 0;
+                    self.apply_modes();
+                    self.relayout();
+                    self.save_view();
+                    self.notice(&format!("{name} in {thread_id} ended; its pane closed."));
+                    return None;
+                }
                 // Another thread takes the pane; desl ends only with the last one.
                 let others: Vec<String> = self.ordered().into_iter().filter(|id| *id != thread_id).collect();
                 let next = self.previous.clone().filter(|p| others.contains(p)).or_else(|| others.first().cloned());
@@ -1126,16 +1309,19 @@ impl Client {
                     _ => return Some(format!("{name} ended. Run desl to open the thread again.")),
                 }
             }
-            ServerFrame::PtyReplace { thread_id, agent, data } if thread_id == self.thread_id => {
-                self.screen_from(&b64::decode(&data).unwrap_or_default());
-                self.agent = agent;
+            ServerFrame::PtyReplace { thread_id, agent, data } => {
+                let i = self.pane_of(&thread_id)?;
+                self.screen_from(i, &b64::decode(&data).unwrap_or_default());
+                self.panes[i].agent = agent;
                 self.notice = None;
                 self.title();
-                self.busy = None;
+                if matches!(self.busy, Some(Busy::Switch(_) | Busy::Restart(_))) {
+                    self.busy = None;
+                }
                 self.release_held();
             }
             ServerFrame::Reply { id, ok, error } => self.reply(id, ok, error),
-            ServerFrame::Notice { thread_id, text } if thread_id == self.thread_id => {
+            ServerFrame::Notice { thread_id, text } if self.pane_of(&thread_id).is_some() => {
                 if matches!(self.busy, Some(Busy::Switch(_) | Busy::Restart(_))) {
                     self.busy = None;
                 }
@@ -1171,7 +1357,7 @@ impl Client {
             return;
         }
         let mine = match &self.busy {
-            Some(Busy::Switch(r) | Busy::Restart(r) | Busy::Attach(r, _) | Busy::Create(r)) => *r == id,
+            Some(Busy::Switch(r) | Busy::Restart(r) | Busy::Attach(r, _, _) | Busy::Create(r)) => *r == id,
             None => false,
         };
         if !mine {
@@ -1185,28 +1371,37 @@ impl Client {
             return;
         }
         match (self.busy.take(), ok) {
-            (Some(Busy::Attach(_, want)), Some(Reply::Attached { thread_id, agent, replay })) if thread_id == want => {
-                self.screen_from(&b64::decode(&replay).unwrap_or_default());
+            (Some(Busy::Attach(_, want, from)), Some(Reply::Attached { thread_id, agent, replay })) if thread_id == want => {
+                let Some(p) = self.pane_of(&from) else {
+                    // The pane closed while its thread was arriving.
+                    self.link.request(Command::Leave { thread_id });
+                    self.then = None;
+                    return self.release_held();
+                };
+                self.screen_from(p, &b64::decode(&replay).unwrap_or_default());
                 // Browsing in the sidebar keeps its keys; any other move gives them back.
                 let rows = layout::rows(&self.projects, &self.threads);
                 let browsing = self.side.and_then(|c| rows.get(c)).is_some_and(|r| *r == Row::Thread(thread_id.clone()))
                     || (self.side.is_some() && self.then.is_some());
-                if thread_id != self.thread_id {
-                    let old = std::mem::replace(&mut self.thread_id, thread_id);
+                if thread_id != from {
+                    self.panes[p].thread_id = thread_id.clone();
+                    if self.pane_of(&from).is_none() {
+                        self.link.request(Command::Leave { thread_id: from.clone() });
+                    }
                     self.previous = match (browsing, self.side_from.clone()) {
-                        (true, Some(from)) if from != self.thread_id => Some(from),
+                        (true, Some(other)) if other != thread_id => Some(other),
                         (true, _) => self.previous.take(),
-                        (false, _) => Some(old),
+                        (false, _) => Some(from),
                     };
-                    self.link.request(Command::SaveView { view: serde_json::json!({ "current": self.thread_id }) });
+                    self.save_view();
                 }
                 if !browsing {
                     self.side = None;
                 }
-                self.agent = agent;
+                self.panes[p].agent = agent;
                 self.title();
                 match self.then.take() {
-                    Some(next) if next != self.thread_id => self.go(next),
+                    Some(next) if next != self.thread_id() => self.go(next),
                     _ => self.release_held(),
                 }
             }
@@ -1222,7 +1417,7 @@ impl Client {
         match change {
             Change::Thread { thread } => {
                 let before = self.threads.iter().find(|t| t.id == thread.id).map(|t| t.status);
-                if thread.status == Status::Waiting && before != Some(Status::Waiting) && thread.id != self.thread_id {
+                if thread.status == Status::Waiting && before != Some(Status::Waiting) && self.pane_of(&thread.id).is_none() {
                     out(b"\x07");
                 }
                 match self.threads.iter_mut().find(|t| t.id == thread.id) {
@@ -1232,12 +1427,21 @@ impl Client {
             }
             Change::ThreadRemoved { thread_id } => {
                 self.threads.retain(|t| t.id != thread_id);
-                // The thread on screen was closed: the pane moves on, and desl ends with the last.
-                if thread_id == self.thread_id && self.busy.is_none() {
-                    let next = self.previous.clone().filter(|p| self.threads.iter().any(|t| t.id == *p));
-                    match next.or_else(|| self.ordered().into_iter().next()) {
-                        Some(id) => self.go(id),
-                        None => return Some("That was the last thread. Run desl to start a new one.".to_string()),
+                if let Some(i) = self.pane_of(&thread_id) {
+                    if self.panes.len() > 1 {
+                        // Its pane closes; the other one stays.
+                        self.panes.remove(i);
+                        self.focus = 0;
+                        self.apply_modes();
+                        self.relayout();
+                        self.save_view();
+                    } else if self.busy.is_none() {
+                        // The thread on screen was closed: the pane moves on, and desl ends with the last.
+                        let next = self.previous.clone().filter(|p| self.threads.iter().any(|t| t.id == *p));
+                        match next.or_else(|| self.ordered().into_iter().next()) {
+                            Some(id) => self.go(id),
+                            None => return Some("That was the last thread. Run desl to start a new one.".to_string()),
+                        }
                     }
                 }
             }
@@ -1295,7 +1499,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
     crate::theme::set_nerd(nerd_font());
     out(SCREEN_ON);
     let (cols, rows) = terminal::size().unwrap_or((80, 24));
-    let pane = layout::areas(cols, rows, true).pane;
+    let pane = layout::areas(cols, rows, true, None).panes[0];
     let attach = Command::Attach { thread_id: thread_id.clone(), rows: pane.height, cols: pane.width, answers: answers.clone() };
     let (agent, replay) = match conn.call(attach) {
         Ok(Reply::Attached { agent, replay, .. }) => (agent, b64::decode(&replay).unwrap_or_default()),
@@ -1320,15 +1524,23 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
             let _ = tx.send(Msg::DaemonGone);
         });
     }
+    let saved = ws.view.clone().unwrap_or_default();
+    let saved_panes: Vec<String> = saved
+        .get("panes")
+        .and_then(|p| p.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let saved_focus = saved.get("focus").and_then(|f| f.as_u64()).unwrap_or(0) as usize;
+    let saved_stacked = saved.get("stacked").and_then(|s| s.as_bool()).unwrap_or(false);
     let mut c = Client {
         link,
-        thread_id,
-        agent,
+        panes: vec![Pane::new(thread_id, agent, pane)],
+        focus: 0,
+        stacked: false,
         projects: ws.projects,
         threads: ws.threads,
         previous: None,
         answers,
-        vt: vt100::Parser::new(nz(pane.height), nz(pane.width), SCROLLBACK),
         cols,
         rows,
         sidebar_on: true,
@@ -1346,7 +1558,6 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         side: None,
         help: None,
         run: None,
-        scrolled: 0,
         agents: ws.agents,
         menu: None,
         finder: None,
@@ -1363,8 +1574,22 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
     if let Some(problem) = settings.problems.first() {
         c.notice(&format!("{problem} `desl config show` lists every setting."));
     }
-    c.screen_from(&replay);
+    c.screen_from(0, &replay);
     c.title();
+    // The split from last time, when both its threads are still here, in the same order.
+    if saved_panes.len() == 2
+        && let Some(other) = saved_panes.iter().find(|id| **id != c.thread_id()).cloned()
+        && c.threads.iter().any(|t| t.id == other)
+    {
+        c.split(saved_stacked, Some(other.clone()));
+        if c.panes.len() == 2 && saved_panes[0] == other {
+            c.panes.swap(0, 1);
+            c.focus = 1;
+        }
+        c.focus = c.focus.min(1);
+        c.focus(saved_focus.min(1));
+        c.relayout();
+    }
     c.paint();
     let farewell = loop {
         let wait = if c.dirty { FRAME.saturating_sub(c.painted.elapsed()) } else { Duration::from_millis(50) };

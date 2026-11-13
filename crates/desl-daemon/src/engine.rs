@@ -74,8 +74,8 @@ struct Client {
     subscribed: bool,
     /// The thread whose token stream this client receives.
     viewing: Option<String>,
-    /// The thread whose agent's interface this client shows (the native route).
-    shows: Option<String>,
+    /// The threads whose agents' interfaces this client shows (the native route), one per pane.
+    shows: HashSet<String>,
 }
 
 /// The turn in flight on a thread.
@@ -868,7 +868,7 @@ impl Engine {
     pub fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Connected { client, out } => {
-                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: None });
+                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: HashSet::new() });
             }
             Msg::Disconnected { client } => {
                 self.clients.remove(&client);
@@ -1005,7 +1005,7 @@ impl Engine {
             None => self.start_pty(i, rows, cols)?,
         }
         if let Some(c) = self.clients.get_mut(&client) {
-            c.shows = Some(thread_id.to_string());
+            c.shows.insert(thread_id.to_string());
         }
         let (_, pty) = &self.ptys[thread_id];
         Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()) })
@@ -1032,7 +1032,7 @@ impl Engine {
             self.poll_tail(thread_id);
         }
         let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
         if shown.is_empty() {
             // Nobody's terminal is there to answer what the agent asks it: answer as it would.
             let replies = term::replies(data, &self.answers, pty.cursor());
@@ -1420,6 +1420,9 @@ impl Engine {
         self.tails.remove(thread_id);
         self.pending.remove(thread_id);
         self.restarting.remove(thread_id);
+        for c in self.clients.values_mut() {
+            c.shows.remove(thread_id);
+        }
         if let Err(e) = self.store.delete_thread(thread_id) {
             tracing::error!(thread = %thread_id, "could not delete the thread: {e:#}");
         }
@@ -1428,7 +1431,7 @@ impl Engine {
     }
 
     fn showing(&self, thread_id: &str) -> Vec<ClientId> {
-        self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect()
+        self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect()
     }
 
     fn pty_exit(&mut self, thread_id: &str, generation: u64) {
@@ -1479,11 +1482,11 @@ impl Engine {
         }
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
         let was_shell = self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL);
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.as_deref() == Some(thread_id)).map(|(id, _)| *id).collect();
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
             if let Some(c) = self.clients.get_mut(&client) {
-                c.shows = None;
+                c.shows.remove(thread_id);
             }
         }
         // A shell that exited is gone: there is nothing to come back to.
@@ -1729,6 +1732,12 @@ impl Engine {
             Command::Resize { thread_id, rows, cols } => {
                 if let Some((_, pty)) = self.ptys.get_mut(&thread_id) {
                     pty.resize(rows, cols);
+                }
+                return None;
+            }
+            Command::Leave { thread_id } => {
+                if let Some(c) = self.clients.get_mut(&client) {
+                    c.shows.remove(&thread_id);
                 }
                 return None;
             }

@@ -18,6 +18,11 @@ use unicode_width::UnicodeWidthStr;
 pub enum Action {
     Switch,
     Restart,
+    SplitBeside,
+    SplitStacked,
+    Zoom,
+    /// `alt+h` / `alt+l`: the keys move to the other pane.
+    OtherPane,
     Fork,
     New,
     Open,
@@ -63,6 +68,9 @@ pub const KEYS: &[Bind] = &[
     bind("Threads", "l", "Back to the thread shown before", Some(Action::Last)),
     bind("Threads", ",", "Rename this thread", Some(Action::Rename)),
     bind("Threads", "x", "Close this thread: its agent or shell ends", Some(Action::Close)),
+    bind("Panes", "%", "Split: another thread beside this one", Some(Action::SplitBeside)),
+    bind("Panes", "\"", "Split: another thread under this one", Some(Action::SplitStacked)),
+    bind("Panes", "z", "Zoom: back to one pane, this one", Some(Action::Zoom)),
     bind("desl", "b", "Hide or show the sidebar", Some(Action::Sidebar)),
     bind("desl", "d", "Detach; the agents keep working", Some(Action::Detach)),
     bind("desl", "?", "This list; typing filters it, enter runs the row", Some(Action::Help)),
@@ -70,7 +78,8 @@ pub const KEYS: &[Bind] = &[
 ];
 
 /// The keys desl owns without the prefix: the only ones that never reach the agent.
-pub const DIRECT: &[(&str, &str)] = &[("alt+j", "Next thread"), ("alt+k", "Previous thread")];
+pub const DIRECT: &[(&str, &str)] =
+    &[("alt+j k", "next / previous thread, without the prefix"), ("alt+h l", "the other pane, while two are open")];
 
 /// The action for the key pressed after the prefix.
 pub fn action(c: char) -> Option<Action> {
@@ -119,27 +128,45 @@ pub fn truncate_start(s: &str, width: usize) -> String {
 
 /// Where everything goes on a terminal of this size: two rounded panels, the sidebar and the
 /// agent's, over one line of keys.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Areas {
     /// The sidebar's panel, borders included.
     pub sidebar: Option<Rect>,
-    /// The agent's panel, borders included; its top border carries the header.
-    pub main: Rect,
-    /// The agent's screen inside the panel, a column of padding each side: its terminal is
+    /// Everything right of the sidebar: the panes' panels together, where overlays go.
+    pub body: Rect,
+    /// Each pane's panel, borders included, left to right or top to bottom; its top border
+    /// carries the header.
+    pub mains: Vec<Rect>,
+    /// Each agent's screen inside its panel, a column of padding each side: its terminal is
     /// exactly this size.
-    pub pane: Rect,
+    pub panes: Vec<Rect>,
     pub footer: Rect,
 }
 
 /// The sidebar takes three tenths of the width, 32 to 52 columns, and steps aside below 80.
-pub fn areas(cols: u16, rows: u16, sidebar: bool) -> Areas {
+/// `split` is `Some(stacked)` for two panes: beside each other, or one above the other.
+pub fn areas(cols: u16, rows: u16, sidebar: bool, split: Option<bool>) -> Areas {
     let side_w = if sidebar && cols >= 80 { (cols * 3 / 10).clamp(32, 52) } else { 0 };
     let body_h = rows.saturating_sub(1).max(3);
-    let main = Rect::new(side_w, 0, cols.saturating_sub(side_w).max(5), body_h);
+    let body = Rect::new(side_w, 0, cols.saturating_sub(side_w).max(5), body_h);
+    let mains = match split {
+        None => vec![body],
+        Some(false) => {
+            let left = body.width / 2;
+            vec![Rect::new(body.x, body.y, left, body.height), Rect::new(body.x + left, body.y, body.width - left, body.height)]
+        }
+        Some(true) => {
+            let top = body.height / 2;
+            vec![Rect::new(body.x, body.y, body.width, top), Rect::new(body.x, body.y + top, body.width, body.height - top)]
+        }
+    };
+    let panes =
+        mains.iter().map(|m| Rect::new(m.x + 2, m.y + 1, m.width.saturating_sub(4).max(1), m.height.saturating_sub(2).max(1))).collect();
     Areas {
         sidebar: (side_w > 0).then(|| Rect::new(0, 0, side_w, body_h)),
-        main,
-        pane: Rect::new(main.x + 2, main.y + 1, main.width.saturating_sub(4).max(1), main.height.saturating_sub(2).max(1)),
+        body,
+        mains,
+        panes,
         footer: Rect::new(0, rows.saturating_sub(1), cols, 1),
     }
 }
@@ -247,20 +274,27 @@ pub struct FinderView<'a> {
     pub scanning: bool,
 }
 
+/// One pane: the thread it shows, that thread's agent, and how far back its screen is scrolled.
+pub struct PaneView<'a> {
+    pub thread_id: &'a str,
+    pub agent: &'a str,
+    /// Lines scrolled back in the agent's screen, 0 when following it.
+    pub scrolled: usize,
+}
+
 pub struct View<'a> {
     pub projects: &'a [Project],
     pub threads: &'a [Thread],
-    pub current: &'a str,
+    /// The panes, left to right or top to bottom; `focus` is the one with the keys.
+    pub panes: Vec<PaneView<'a>>,
+    pub focus: usize,
     /// The highlighted sidebar row while the sidebar has the keys.
     pub cursor: Option<usize>,
     pub skip: usize,
-    pub agent: &'a str,
     pub prefix_armed: bool,
     /// A sentence for the user, shown in the key line until the next key.
     pub notice: Option<&'a str>,
     pub help: Option<PaletteView<'a>>,
-    /// Lines scrolled back in the agent's screen, 0 when following it.
-    pub scrolled: usize,
     pub menu: Option<Menu<'a>>,
     pub finder: Option<FinderView<'a>>,
     pub sub: Option<SubView<'a>>,
@@ -276,6 +310,13 @@ pub struct View<'a> {
     pub pulse: f32,
     /// The prefix as the interface writes it: `ctrl+space`.
     pub prefix: &'a str,
+}
+
+impl View<'_> {
+    /// The thread in the pane that has the keys.
+    pub fn current(&self) -> &str {
+        self.panes.get(self.focus).map_or("", |p| p.thread_id)
+    }
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -394,7 +435,10 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             }
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
-                let current = t.id == v.current && v.shown_sub.is_none();
+                // A thread whose subagent is on screen hands its tint to the subagent's row.
+                let shows_sub = v.shown_sub.is_some_and(|(id, _)| id == t.id);
+                let focused = t.id == v.current() && !shows_sub;
+                let current = !shows_sub && v.panes.iter().any(|p| p.thread_id == t.id);
                 // One row: `<logo> title ……… ⎇ 21m`. The logo is the status; the thread on
                 // screen is tinted; the cursor lights the row.
                 let base = if lit {
@@ -417,7 +461,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                     Span::styled(" ", base),
                     Span::styled(icon, on(icon_style)),
                     Span::styled(" ", base),
-                    Span::styled(title, on(if current { theme::bold() } else { theme::normal() })),
+                    Span::styled(title, on(if focused { theme::bold() } else { theme::normal() })),
                     Span::styled(" ".repeat(pad), base),
                     Span::styled(right, on(theme::muted())),
                     Span::styled(" ", base),
@@ -464,9 +508,9 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
 
 /// The agent's panel: its border, with the project, agent and model on top and the thread's
 /// id and status on the right.
-fn main_panel(f: &mut Frame, v: &View, area: Rect) {
-    let mut block = panel(v.cursor.is_none() && v.help.is_none());
-    if let Some(s) = &v.sub {
+fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) {
+    let mut block = panel(focused && v.cursor.is_none() && v.help.is_none());
+    if focused && let Some(s) = &v.sub {
         let state = if s.running { Span::styled(" ● running ", theme::accent()) } else { Span::styled(" ✓ done ", theme::dim()) };
         block = block
             .title(Line::from(vec![
@@ -480,23 +524,23 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
         f.render_widget(block, area);
         return;
     }
-    if let Some(t) = v.threads.iter().find(|t| t.id == v.current) {
+    if let Some(t) = v.threads.iter().find(|t| t.id == p.thread_id) {
         // A shell's header names where it started; an agent's, its project.
         let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-        let mut path = tilde(&if v.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        let mut path = tilde(&if p.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
         // A thread in its own worktree says which branch it works on.
         if t.worktree.is_some()
             && let Some(b) = &t.git.branch
         {
             path.push_str(&format!(" ⎇ {b}"));
         }
-        let binding = t.bindings.get(v.agent);
+        let binding = t.bindings.get(p.agent);
         let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
         if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
             model = if model.is_empty() { format!("{e} effort") } else { format!("{model} · {e}") };
         }
-        let right = if v.scrolled > 0 {
-            Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", v.scrolled), theme::warning()))
+        let right = if p.scrolled > 0 {
+            Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", p.scrolled), theme::warning()))
         } else {
             Line::from(vec![
                 Span::raw(" "),
@@ -505,8 +549,8 @@ fn main_panel(f: &mut Frame, v: &View, area: Rect) {
                 Span::styled(format!("{} ", t.id), theme::muted()),
             ])
         };
-        let agent = if v.agent == SHELL { t.name.clone() } else { agent_title(v.agent) };
-        let (icon, icon_style) = agent_icon(v.agent);
+        let agent = if p.agent == SHELL { t.name.clone() } else { agent_title(p.agent) };
+        let (icon, icon_style) = agent_icon(p.agent);
         let tail = if model.is_empty() { 0 } else { model.width() + 3 };
         let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + 10).max(8);
         let mut left = vec![
@@ -585,16 +629,9 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ),
             Span::raw("  "),
         ];
-        for (k, what) in [
-            ("s", "switch agent"),
-            ("c", "new"),
-            ("o", "open dir"),
-            ("w", "sidebar"),
-            ("f", "fork"),
-            ("x", "close"),
-            ("?", "help"),
-            ("d", "detach"),
-        ] {
+        for (k, what) in
+            [("s", "switch agent"), ("c", "new"), ("%", "split"), ("w", "sidebar"), ("x", "close"), ("?", "help"), ("d", "detach")]
+        {
             spans.push(Span::styled(k, theme::bold()));
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
@@ -609,7 +646,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
 fn help(f: &mut Frame, p: &PaletteView, prefix: &str, area: Rect) {
     let rows = palette_rows(p.query);
     let notes: Vec<&Bind> = KEYS.iter().filter(|b| b.action.is_none()).collect();
-    let tail = notes.len() + 3;
+    let tail = notes.len() + DIRECT.len() + 2;
     let w = 96.min(area.width);
     let h = ((rows.len().max(1) + tail + 4) as u16).min(area.height);
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 4, w, h);
@@ -653,12 +690,9 @@ fn help(f: &mut Frame, p: &PaletteView, prefix: &str, area: Rect) {
     for b in notes {
         lines.push(Line::from(vec![Span::styled(format!("          {:<8} ", b.key), theme::dim()), Span::styled(b.what, theme::dim())]));
     }
-    // `alt+j k`, as the key line writes the pair.
-    let direct = format!("{} {}", DIRECT[0].0, DIRECT[1].0.rsplit('+').next().unwrap_or_default());
-    lines.push(Line::from(vec![
-        Span::styled(format!("          {direct:<8} "), theme::dim()),
-        Span::styled("next / previous thread, without the prefix", theme::dim()),
-    ]));
+    for (key, what) in DIRECT {
+        lines.push(Line::from(vec![Span::styled(format!("          {key:<8} "), theme::dim()), Span::styled(*what, theme::dim())]));
+    }
     lines.push(Line::from(Span::styled("          Every other key goes to the agent.", theme::dim())));
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -802,33 +836,42 @@ pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
 }
 
 /// Draws the screen: the panels, then the agent's screen copied into its pane.
-pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
+/// `screens` are the panes' agents' screens, in the panes' order.
+pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
     if let Some(s) = a.sidebar {
         sidebar(f, v, s);
     }
-    main_panel(f, v, a.main);
-    match &v.sub {
-        Some(s) => {
-            let h = a.pane.height as usize;
-            let top = s.lines.len().saturating_sub(h + s.scroll);
-            let shown: Vec<Line<'static>> = s.lines.iter().skip(top).take(h).cloned().collect();
-            f.render_widget(Clear, a.pane);
-            f.render_widget(Paragraph::new(shown), a.pane);
+    for (i, (main, area)) in a.mains.iter().zip(&a.panes).enumerate() {
+        let Some(p) = v.panes.get(i) else { continue };
+        let focused = i == v.focus;
+        main_panel(f, v, p, focused, *main);
+        match &v.sub {
+            Some(s) if focused => {
+                let h = area.height as usize;
+                let top = s.lines.len().saturating_sub(h + s.scroll);
+                let shown: Vec<Line<'static>> = s.lines.iter().skip(top).take(h).cloned().collect();
+                f.render_widget(Clear, *area);
+                f.render_widget(Paragraph::new(shown), *area);
+            }
+            _ => {
+                if let Some(screen) = screens.get(i) {
+                    pane(f.buffer_mut(), *area, screen);
+                }
+            }
         }
-        None => pane(f.buffer_mut(), a.pane, screen),
     }
     footer(f, v, a.footer);
     if let Some(m) = &v.menu {
-        menu(f, m, a.pane);
+        menu(f, m, a.body);
     }
     if let Some(fv) = &v.finder {
-        finder(f, fv, a.pane);
+        finder(f, fv, a.body);
     }
     if let Some(rows) = v.info {
-        info(f, rows, a.pane);
+        info(f, rows, a.body);
     }
     if let Some(p) = &v.help {
-        help(f, p, v.prefix, a.pane);
+        help(f, p, v.prefix, a.body);
     }
 }
 
@@ -961,7 +1004,7 @@ mod tests {
             }
         }
         assert_eq!(action('3'), Some(Action::Jump(3)));
-        assert_eq!(action('z'), None);
+        assert_eq!(action('q'), None);
     }
 
     #[test]
@@ -973,6 +1016,20 @@ mod tests {
         assert_eq!(palette_rows("detach")[0].action, Some(Action::Detach));
         assert_eq!(palette_rows("rename")[0].action, Some(Action::Rename));
         assert!(palette_rows("qqqq").is_empty());
+    }
+
+    #[test]
+    fn two_panes_share_the_body_beside_or_stacked() {
+        let a = areas(150, 40, true, Some(false));
+        assert_eq!(a.mains.len(), 2);
+        assert_eq!(a.mains[0].x, 45);
+        assert_eq!(a.mains[0].width + a.mains[1].width, a.body.width);
+        assert_eq!(a.mains[1].x, a.mains[0].x + a.mains[0].width);
+        assert_eq!(a.panes[1].width, a.mains[1].width - 4);
+        let s = areas(150, 40, true, Some(true));
+        assert_eq!(s.mains[0].height + s.mains[1].height, s.body.height);
+        assert_eq!(s.mains[1].y, s.mains[0].height);
+        assert_eq!(areas(150, 40, true, None).mains, vec![a.body]);
     }
 
     #[test]
@@ -1000,49 +1057,48 @@ mod tests {
         assert_eq!(r[1], Row::Thread("t-1".into()));
         assert_eq!(r[2], Row::Sub("t-1".into(), 2), "the newest four only");
         assert_eq!(r[6], Row::Thread("t-2".into()), "no blank row between threads");
-        let a = areas(120, 30, true);
+        let a = areas(120, 30, true, None);
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 2), Some(Row::Sub("t-1".into(), 2)));
         threads[2].subagents.clear();
         let r = rows(&projects, &threads);
         assert_eq!(r[0], Row::Project("a".into()));
         assert_eq!(r[2], Row::Thread("t-2".into()));
         assert_eq!((&r[3], &r[4]), (&Row::Gap, &Row::Project("b".into())), "one between projects");
-        let a = areas(120, 30, true);
+        let a = areas(120, 30, true, None);
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP + 1), Some(Row::Thread("t-1".into())));
         assert_eq!(row_at(&projects, &threads, a.sidebar.unwrap(), 0, SIDE_TOP), Some(Row::Project("a".into())));
     }
 
     #[test]
     fn the_layout_gives_the_agent_what_the_chrome_leaves() {
-        let a = areas(150, 40, true);
+        let a = areas(150, 40, true, None);
         assert_eq!(a.sidebar, Some(Rect::new(0, 0, 45, 39)));
-        assert_eq!(a.main, Rect::new(45, 0, 105, 39));
-        assert_eq!(a.pane, Rect::new(47, 1, 101, 37));
-        assert_eq!(areas(300, 80, true).sidebar.map(|r| r.width), Some(52));
-        assert_eq!(areas(90, 24, true).sidebar.map(|r| r.width), Some(32));
+        assert_eq!(a.mains[0], Rect::new(45, 0, 105, 39));
+        assert_eq!(a.panes[0], Rect::new(47, 1, 101, 37));
+        assert_eq!(areas(300, 80, true, None).sidebar.map(|r| r.width), Some(52));
+        assert_eq!(areas(90, 24, true, None).sidebar.map(|r| r.width), Some(32));
         assert_eq!(a.footer, Rect::new(0, 39, 150, 1));
-        assert_eq!(areas(79, 24, true).sidebar, None);
-        assert_eq!(areas(100, 30, false).pane.width, 96);
+        assert_eq!(areas(79, 24, true, None).sidebar, None);
+        assert_eq!(areas(100, 30, false, None).panes[0].width, 96);
     }
 
     #[test]
     fn the_screen_reads_at_100_by_30_and_paints_only_what_changed() {
         let projects = [project("desl")];
         let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), thread("t-2b", "desl", 2, Status::Waiting, "")];
-        let a = areas(120, 30, true);
-        let mut vt = vt100::Parser::new(a.pane.height.try_into().unwrap(), a.pane.width.try_into().unwrap(), 0);
+        let a = areas(120, 30, true, None);
+        let mut vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
         vt.process(b"\x1b[1mhello\x1b[0m from the agent");
         let mut v = View {
             projects: &projects,
             threads: &threads,
-            current: "t-1a",
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            focus: 0,
             cursor: None,
             skip: 0,
-            agent: "claude",
             prefix_armed: false,
             notice: None,
             help: None,
-            scrolled: 0,
             menu: None,
             finder: None,
             sub: None,
@@ -1054,7 +1110,7 @@ mod tests {
             prefix: "ctrl+space",
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
-        t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         assert_eq!(truncate_start("/tmp/a/b/demo", 8), "…/b/demo");
         let lines: Vec<&str> = s.lines().collect();
@@ -1084,14 +1140,13 @@ mod tests {
         let v2 = View {
             projects: &projects,
             threads: &with_sub,
-            current: "t-1a",
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            focus: 0,
             cursor: None,
             skip: 0,
-            agent: "claude",
             prefix_armed: false,
             notice: None,
             help: None,
-            scrolled: 0,
             menu: None,
             finder: None,
             sub: None,
@@ -1102,7 +1157,7 @@ mod tests {
             pulse: 1.0,
             prefix: "ctrl+space",
         };
-        t2.draw(|f| draw(f, &v2, &a, vt.screen())).unwrap();
+        t2.draw(|f| draw(f, &v2, &a, &[vt.screen()])).unwrap();
         let b2 = t2.backend().buffer();
         assert_eq!(b2[(20, 3)].bg, Color::Reset, "the thread gives up the tint");
         assert_ne!(b2[(20, 4)].bg, Color::Reset, "the subagent's row has it");
@@ -1116,13 +1171,13 @@ mod tests {
             MenuItem { label: "bash".into(), note: "shell".into(), enabled: true },
         ];
         v.menu = Some(Menu { title: "New in desl", items: &items, cursor: 1 });
-        t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         assert!(s.contains("╭ New in desl ") && s.contains(" 1  Claude  agent") && s.contains(" 2  bash    shell"), "{s}");
         assert!(s.lines().last().unwrap().contains("enter start"), "{s}");
         v.menu = None;
         v.help = Some(PaletteView { query: "", cursor: 0 });
-        t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         assert!(screen(&t).contains("Every other key goes to the agent."));
         let diff = String::from_utf8(paint(Some(&before), t.backend().buffer())).unwrap();
         assert!(!diff.contains("\x1b[2J") && diff.contains("Switch") && diff.contains("agent") && !diff.contains("projects"), "{diff:?}");

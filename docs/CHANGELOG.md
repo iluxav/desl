@@ -15,6 +15,9 @@ All notable changes to desl are recorded here. The format follows
 - `alt+j` / `alt+k` move to the next or previous thread in one press, without the prefix.
 - In the sidebar (`prefix w`), the pane shows the thread under the cursor as it moves; `enter`
   or `esc` give the keys back to it.
+- `prefix %` and `prefix "` split the pane: a second thread beside or under the one on screen,
+  each with its own header. `alt+h` / `alt+l` or a click move the keys between the panes,
+  `prefix z` zooms back to one, and the split comes back on the next attach.
 - `prefix r` and `desl restart <thread>` end a thread's agent and start it again on the same
   conversation, so it runs the version and settings installed now, such as a new MCP server.
   The daemon keeps agents alive while desl itself is closed and reopened, so this is how one

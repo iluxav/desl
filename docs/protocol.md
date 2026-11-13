@@ -72,6 +72,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `attach` | `thread_id`, `rows`, `cols`, `answers` | `attached {thread_id, agent, replay}` | Shows the thread's agent in this client's terminal (the native route). The agent's own interface starts at this size if it is not running, resuming its session when the thread has one. `replay` is everything it drew so far, base64; the client puts it on screen in one frame, and `pty` frames follow. `answers` is what the client's terminal replied to the questions agents ask (`fg`, `bg`, `cursor_color`, `da1`, `kitty`, each the reply verbatim); the daemon gives the same replies while no client shows the agent. |
 | `input` | `thread_id`, `data` | none | Keys for the shown agent, base64, exactly as the terminal sent them. Never replied to. |
 | `resize` | `thread_id`, `rows`, `cols` | none | The client's terminal changed size. Never replied to. |
+| `leave` | `thread_id` | none | This client no longer shows the thread: its pane closed or moved to another thread. A client may show several threads at once, one per pane. Never replied to. |
 | `doctor` | | `doctor {checks}` | Store, agents and daemon checks. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
 

@@ -209,7 +209,8 @@ pub enum Command {
     /// Shows a thread in this client's terminal: its agent's interface starts if it is not
     /// running, at this size. The reply carries what the agent has drawn so far; `pty` frames
     /// follow with everything it draws after. `answers` is what the client's terminal said to
-    /// the questions agents ask it, for the daemon to give while no client shows the agent.
+    /// the questions agents ask it, for the daemon to give while no client shows the agent. A
+    /// client may show several threads at once, one per pane; `leave` ends one of them.
     Attach {
         thread_id: String,
         rows: u16,
@@ -228,6 +229,11 @@ pub enum Command {
         thread_id: String,
         rows: u16,
         cols: u16,
+    },
+    /// This client no longer shows the thread: its pane closed or moved to another thread. The
+    /// daemon answers the agent's terminal questions again once nobody shows it. Never replied to.
+    Leave {
+        thread_id: String,
     },
     /// The conversation of one of a thread's subagents, read-only. Replied with `events`.
     Subagent {

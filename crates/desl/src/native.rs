@@ -111,6 +111,13 @@ enum Busy {
     Create(u64),
 }
 
+/// `prefix ?`: the key list, with what the user typed to filter it and the row under the cursor.
+#[derive(Default)]
+struct Palette {
+    query: String,
+    cursor: usize,
+}
+
 /// A key the sidebar understands, from whichever encoding the terminal used.
 enum SKey {
     Up,
@@ -154,7 +161,10 @@ struct Client {
     notice: Option<String>,
     /// The highlighted sidebar row while the sidebar has the keys.
     side: Option<usize>,
-    help: bool,
+    /// `prefix ?`: the key list while it is open.
+    help: Option<Palette>,
+    /// An action picked in the key list, run once its key is handled.
+    run: Option<Action>,
     scrolled: usize,
     agents: Vec<AgentInfo>,
     /// The new-thread menu's cursor while it is open.
@@ -274,7 +284,7 @@ impl Client {
                 continue;
             }
             let ours = self.side.is_some()
-                || self.help
+                || self.help.is_some()
                 || self.menu.is_some()
                 || self.finder.is_some()
                 || self.closing.is_some()
@@ -375,6 +385,11 @@ impl Client {
                     None => continue,
                 };
                 self.side_key(key);
+                if let Some(a) = self.run.take()
+                    && let Some(bye) = self.act(a)
+                {
+                    return Some(bye);
+                }
                 continue;
             }
             to_agent.extend_from_slice(&raw);
@@ -422,10 +437,15 @@ impl Client {
                     self.dirty = true;
                 }
             }
-            if m.press && !m.motion() && m.wheel().is_none() && (self.side.is_some() || self.menu.is_some() || self.finder.is_some()) {
+            if m.press
+                && !m.motion()
+                && m.wheel().is_none()
+                && (self.side.is_some() || self.menu.is_some() || self.finder.is_some() || self.help.is_some())
+            {
                 self.side = None;
                 self.menu = None;
                 self.finder = None;
+                self.help = None;
                 self.dirty = true;
             }
             return;
@@ -472,7 +492,7 @@ impl Client {
         match a {
             Action::Detach => return Some("Detached. The agents keep working; run desl to come back.".to_string()),
             Action::Help => {
-                self.help = !self.help;
+                self.help = if self.help.is_some() { None } else { Some(Palette::default()) };
                 return None;
             }
             Action::Sidebar => {
@@ -495,7 +515,7 @@ impl Client {
         if self.busy.is_some() {
             return None;
         }
-        self.help = false;
+        self.help = None;
         if a != Action::New {
             self.menu = None;
         }
@@ -740,6 +760,38 @@ impl Client {
     }
 
     /// Typing filters, arrows or ctrl+n/p move, tab completes a path, enter opens a shell there.
+    /// The key list: typing filters it, `↑`/`↓` move, `enter` runs the key under the cursor.
+    fn palette_key(&mut self, key: SKey) {
+        let Some(p) = &mut self.help else { return };
+        let n = layout::palette_rows(&p.query).len();
+        match key {
+            SKey::Close => self.help = None,
+            SKey::Down | SKey::Char('\x0e') => p.cursor = (p.cursor + 1).min(n.saturating_sub(1)),
+            SKey::Up | SKey::Char('\x10') => p.cursor = p.cursor.saturating_sub(1),
+            SKey::Back => {
+                p.query.pop();
+                p.cursor = 0;
+            }
+            SKey::Char('\x15') => {
+                p.query.clear();
+                p.cursor = 0;
+            }
+            SKey::Char(c) if !c.is_control() => {
+                p.query.push(c);
+                p.cursor = 0;
+            }
+            SKey::Enter => {
+                let Some(bind) = layout::palette_rows(&p.query).get(p.cursor).copied() else {
+                    return self.notice("No key matches what you typed. Backspace, or esc closes the list.");
+                };
+                self.help = None;
+                // `?` is this list; picking it just closes it.
+                self.run = bind.action.filter(|a| *a != Action::Help);
+            }
+            SKey::Char(_) => {}
+        }
+    }
+
     fn finder_key(&mut self, key: SKey) {
         let Some(f) = &mut self.finder else { return };
         let n = f.matches().len();
@@ -839,9 +891,8 @@ impl Client {
 
     fn side_key(&mut self, key: SKey) {
         self.dirty = true;
-        if self.help {
-            self.help = false;
-            return;
+        if self.help.is_some() {
+            return self.palette_key(key);
         }
         if self.finder.is_some() {
             return self.finder_key(key);
@@ -964,7 +1015,7 @@ impl Client {
             agent: &self.agent,
             prefix_armed: self.armed.is_some(),
             notice: self.notice.as_deref(),
-            help: self.help,
+            help: self.help.as_ref().map(|p| layout::PaletteView { query: &p.query, cursor: p.cursor }),
             scrolled: self.scrolled,
             menu: None,
             finder: None,
@@ -1028,7 +1079,7 @@ impl Client {
             && self.sub.is_none()
             && self.info.is_none()
             && self.renaming.is_none()
-            && !self.help
+            && self.help.is_none()
             && self.scrolled == 0
             && !screen.hide_cursor()
         {
@@ -1293,7 +1344,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         held: Vec::new(),
         notice: None,
         side: None,
-        help: false,
+        help: None,
+        run: None,
         scrolled: 0,
         agents: ws.agents,
         menu: None,

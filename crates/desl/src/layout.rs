@@ -34,25 +34,39 @@ pub enum Action {
     Help,
 }
 
-/// The keys desl owns after the prefix, in the order the help shows them. The help is drawn
+/// A key desl owns after the prefix: its group in the list, the key as written, what it does and
+/// the action it runs; `None` for the two rows that are not one action (`1…9`, the prefix itself).
+pub struct Bind {
+    pub group: &'static str,
+    pub key: &'static str,
+    pub what: &'static str,
+    pub action: Option<Action>,
+}
+
+const fn bind(group: &'static str, key: &'static str, what: &'static str, action: Option<Action>) -> Bind {
+    Bind { group, key, what, action }
+}
+
+/// The keys desl owns after the prefix, in the order the list shows them. The list is drawn
 /// from this table and [`action`] reads it, so the two cannot disagree.
-pub const KEYS: &[(&str, &str, &str)] = &[
-    ("Agent", "s", "Switch this thread to the other agent"),
-    ("Agent", "f", "Fork: this conversation in a new thread, on either agent"),
-    ("Agent", "i", "Info: agent, session ids, model, directory"),
-    ("Agent", "r", "Restart this agent on the same conversation, for a new version or new MCP servers"),
-    ("Threads", "w", "Move to the thread list (j/k, enter, esc)"),
-    ("Threads", "c", "New thread: pick Claude, Codex or a shell"),
-    ("Threads", "o", "Open a directory: type to find it; a shell opens there"),
-    ("Threads", "n / p", "Next / previous thread"),
-    ("Threads", "1…9", "Jump to thread n"),
-    ("Threads", "l", "Back to the thread shown before"),
-    ("Threads", ",", "Rename this thread"),
-    ("Threads", "x", "Close this thread: its agent or shell ends"),
-    ("desl", "b", "Hide or show the sidebar"),
-    ("desl", "d", "Detach; the agents keep working"),
-    ("desl", "?", "This help"),
-    ("desl", "prefix", "Send the prefix key itself to the agent"),
+pub const KEYS: &[Bind] = &[
+    bind("Agent", "s", "Switch this thread to the other agent", Some(Action::Switch)),
+    bind("Agent", "f", "Fork: this conversation in a new thread, on either agent", Some(Action::Fork)),
+    bind("Agent", "i", "Info: agent, session ids, model, directory", Some(Action::Info)),
+    bind("Agent", "r", "Restart this agent, keeping the conversation", Some(Action::Restart)),
+    bind("Threads", "w", "Move to the thread list (j/k, enter, esc)", Some(Action::Threads)),
+    bind("Threads", "c", "New thread: pick Claude, Codex or a shell", Some(Action::New)),
+    bind("Threads", "o", "Open a directory: type to find it; a shell opens there", Some(Action::Open)),
+    bind("Threads", "n", "Next thread", Some(Action::Next)),
+    bind("Threads", "p", "Previous thread", Some(Action::Prev)),
+    bind("Threads", "1…9", "Jump to thread n", None),
+    bind("Threads", "l", "Back to the thread shown before", Some(Action::Last)),
+    bind("Threads", ",", "Rename this thread", Some(Action::Rename)),
+    bind("Threads", "x", "Close this thread: its agent or shell ends", Some(Action::Close)),
+    bind("desl", "b", "Hide or show the sidebar", Some(Action::Sidebar)),
+    bind("desl", "d", "Detach; the agents keep working", Some(Action::Detach)),
+    bind("desl", "?", "This list; typing filters it, enter runs the row", Some(Action::Help)),
+    bind("desl", "prefix", "Send the prefix key itself to the agent", None),
 ];
 
 /// The keys desl owns without the prefix: the only ones that never reach the agent.
@@ -60,25 +74,10 @@ pub const DIRECT: &[(&str, &str)] = &[("alt+j", "Next thread"), ("alt+k", "Previ
 
 /// The action for the key pressed after the prefix.
 pub fn action(c: char) -> Option<Action> {
-    Some(match c {
-        's' => Action::Switch,
-        'r' => Action::Restart,
-        'w' => Action::Threads,
-        'c' => Action::New,
-        'f' => Action::Fork,
-        ',' => Action::Rename,
-        'i' => Action::Info,
-        'o' => Action::Open,
-        'n' => Action::Next,
-        'p' => Action::Prev,
-        'l' => Action::Last,
-        'b' => Action::Sidebar,
-        'x' => Action::Close,
-        'd' => Action::Detach,
-        '?' => Action::Help,
-        '1'..='9' => Action::Jump(c as usize - '0' as usize),
-        _ => return None,
-    })
+    if let Some(n) = c.to_digit(10).filter(|n| *n >= 1) {
+        return Some(Action::Jump(n as usize));
+    }
+    KEYS.iter().find(|b| b.key.chars().eq([c])).and_then(|b| b.action)
 }
 
 /// Every thread in a fixed order: by project, then oldest first. The sidebar, `prefix n`,
@@ -220,6 +219,26 @@ pub struct Menu<'a> {
 }
 
 /// `prefix o`: the query, and the directories that match it, as `~/x` with where each is from.
+/// The key list (`prefix ?`) while it is open: the typed filter and the row under the cursor.
+pub struct PaletteView<'a> {
+    pub query: &'a str,
+    pub cursor: usize,
+}
+
+/// The rows of the key list that match `query`, best first; every runnable key when it is empty.
+pub fn palette_rows(query: &str) -> Vec<&'static Bind> {
+    let mut rows: Vec<(i64, usize, &'static Bind)> = KEYS
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.action.is_some())
+        .filter_map(|(i, b)| crate::finder::score(&format!("{} {} {}", b.key, b.what, b.group), query).map(|s| (s, i, b)))
+        .collect();
+    if !query.is_empty() {
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    }
+    rows.into_iter().map(|(_, _, b)| b).collect()
+}
+
 pub struct FinderView<'a> {
     pub query: &'a str,
     pub rows: &'a [(String, &'static str)],
@@ -239,7 +258,7 @@ pub struct View<'a> {
     pub prefix_armed: bool,
     /// A sentence for the user, shown in the key line until the next key.
     pub notice: Option<&'a str>,
-    pub help: bool,
+    pub help: Option<PaletteView<'a>>,
     /// Lines scrolled back in the agent's screen, 0 when following it.
     pub scrolled: usize,
     pub menu: Option<Menu<'a>>,
@@ -446,7 +465,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
 /// The agent's panel: its border, with the project, agent and model on top and the thread's
 /// id and status on the right.
 fn main_panel(f: &mut Frame, v: &View, area: Rect) {
-    let mut block = panel(v.cursor.is_none() && !v.help);
+    let mut block = panel(v.cursor.is_none() && v.help.is_none());
     if let Some(s) = &v.sub {
         let state = if s.running { Span::styled(" ● running ", theme::accent()) } else { Span::styled(" ✓ done ", theme::dim()) };
         block = block
@@ -525,6 +544,13 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
         Line::from(spans)
+    } else if v.help.is_some() {
+        let mut spans = vec![Span::raw("  ")];
+        for (k, what) in [("type", "filter"), ("↑↓", "move"), ("enter", "run"), ("esc", "close")] {
+            spans.push(Span::styled(k, theme::bold()));
+            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+        }
+        Line::from(spans)
     } else if v.finder.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in
@@ -577,38 +603,64 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-fn help(f: &mut Frame, v: &View, area: Rect) {
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut group = "";
-    for (g, key, what) in KEYS {
-        if *g != group {
-            if !group.is_empty() {
-                lines.push(Line::default());
-            }
-            group = g;
-            lines.push(Line::from(Span::styled(g.to_string(), theme::bold())));
-        }
-        lines.push(Line::from(vec![Span::styled(format!("  {key:<8}"), theme::accent()), Span::raw(what.to_string())]));
-    }
-    lines.push(Line::default());
-    let direct: Vec<&str> = DIRECT.iter().map(|(k, _)| *k).collect();
-    lines.push(Line::from(vec![
-        Span::styled(direct.join(" / "), theme::accent()),
-        Span::raw("  next / previous thread, without the prefix"),
-    ]));
-    lines.push(Line::from(Span::styled("Every other key goes to the agent. Any key closes this.", theme::dim())));
-    // Borders, and a line of padding above.
-    let h = (lines.len() as u16 + 3).min(area.height);
-    let w = 64.min(area.width);
-    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
-    let block = panel(true).title(Line::from(Span::styled(format!(" Keys, after {} ", v.prefix), theme::bold())));
+/// `prefix ?`: every key desl owns, in a list that runs the one picked. Typing filters it as
+/// the directory finder does, `↑`/`↓` move, `enter` runs, `esc` closes. The rows and the notes
+/// under them come from [`KEYS`], never written by hand.
+fn help(f: &mut Frame, p: &PaletteView, prefix: &str, area: Rect) {
+    let rows = palette_rows(p.query);
+    let notes: Vec<&Bind> = KEYS.iter().filter(|b| b.action.is_none()).collect();
+    let tail = notes.len() + 3;
+    let w = 96.min(area.width);
+    let h = ((rows.len().max(1) + tail + 4) as u16).min(area.height);
+    let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 4, w, h);
+    let block = panel(true).title(Line::from(Span::styled(format!(" Keys, after {prefix} "), theme::bold())));
     let inner = block.inner(r);
     f.render_widget(Clear, r);
     f.render_widget(block, r);
-    f.render_widget(
-        Paragraph::new(lines),
-        Rect::new(inner.x + 2, inner.y + 1, inner.width.saturating_sub(4), inner.height.saturating_sub(1)),
-    );
+    let inner = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+    let iw = inner.width as usize;
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("❯ ", theme::accent()),
+            Span::styled(p.query.to_string(), theme::normal()),
+            Span::styled("▏", theme::accent()),
+            if p.query.is_empty() { Span::styled("type to filter", theme::muted()) } else { Span::raw("") },
+        ]),
+        Line::from(Span::styled("─".repeat(iw), theme::muted())),
+    ];
+    let room = (inner.height as usize).saturating_sub(2 + tail).max(1);
+    if rows.is_empty() {
+        lines.push(Line::from(Span::styled(" No key matches. esc closes this.", theme::dim())));
+    }
+    let skip = p.cursor.saturating_sub(room.saturating_sub(1));
+    let what_w = iw.saturating_sub(20);
+    let mut group = "";
+    for (i, b) in rows.iter().enumerate().skip(skip).take(room) {
+        let lit = i == p.cursor;
+        let g = if b.group == group { "" } else { b.group };
+        group = b.group;
+        let what = truncate_end(b.what, what_w);
+        let pad = what_w.saturating_sub(what.width());
+        let (gs, ks, ws) =
+            if lit { (theme::pill(), theme::pill(), theme::pill()) } else { (theme::dim(), theme::accent(), theme::normal()) };
+        lines.push(Line::from(vec![
+            Span::styled(format!(" {g:<8} "), gs),
+            Span::styled(format!("{:<8} ", b.key), ks),
+            Span::styled(format!("{what}{} ", " ".repeat(pad)), ws),
+        ]));
+    }
+    lines.push(Line::default());
+    for b in notes {
+        lines.push(Line::from(vec![Span::styled(format!("          {:<8} ", b.key), theme::dim()), Span::styled(b.what, theme::dim())]));
+    }
+    // `alt+j k`, as the key line writes the pair.
+    let direct = format!("{} {}", DIRECT[0].0, DIRECT[1].0.rsplit('+').next().unwrap_or_default());
+    lines.push(Line::from(vec![
+        Span::styled(format!("          {direct:<8} "), theme::dim()),
+        Span::styled("next / previous thread, without the prefix", theme::dim()),
+    ]));
+    lines.push(Line::from(Span::styled("          Every other key goes to the agent.", theme::dim())));
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// `prefix i`: the thread's facts in a box over the pane, labels dim, values plain.
@@ -775,8 +827,8 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screen: &vt100::Screen) {
     if let Some(rows) = v.info {
         info(f, rows, a.pane);
     }
-    if v.help {
-        help(f, v, a.pane);
+    if let Some(p) = &v.help {
+        help(f, p, v.prefix, a.pane);
     }
 }
 
@@ -902,13 +954,25 @@ mod tests {
 
     #[test]
     fn every_documented_key_has_an_action_and_digits_jump() {
-        for (_, key, _) in KEYS {
-            if *key != "prefix" {
-                assert!(action(key.chars().next().unwrap()).is_some(), "{key} does nothing");
+        for b in KEYS {
+            match b.action {
+                Some(a) => assert_eq!(action(b.key.chars().next().unwrap()), Some(a), "{} runs something else", b.key),
+                None => assert!(matches!(b.key, "prefix" | "1…9"), "{} does nothing", b.key),
             }
         }
         assert_eq!(action('3'), Some(Action::Jump(3)));
         assert_eq!(action('z'), None);
+    }
+
+    #[test]
+    fn the_key_list_shows_every_key_and_finds_the_one_typed_for() {
+        let all = palette_rows("");
+        assert_eq!(all.len(), KEYS.iter().filter(|b| b.action.is_some()).count());
+        assert_eq!(all[0].key, "s");
+        assert_eq!(palette_rows("restart")[0].action, Some(Action::Restart));
+        assert_eq!(palette_rows("detach")[0].action, Some(Action::Detach));
+        assert_eq!(palette_rows("rename")[0].action, Some(Action::Rename));
+        assert!(palette_rows("qqqq").is_empty());
     }
 
     #[test]
@@ -977,7 +1041,7 @@ mod tests {
             agent: "claude",
             prefix_armed: false,
             notice: None,
-            help: false,
+            help: None,
             scrolled: 0,
             menu: None,
             finder: None,
@@ -1026,7 +1090,7 @@ mod tests {
             agent: "claude",
             prefix_armed: false,
             notice: None,
-            help: false,
+            help: None,
             scrolled: 0,
             menu: None,
             finder: None,
@@ -1057,7 +1121,7 @@ mod tests {
         assert!(s.contains("╭ New in desl ") && s.contains(" 1  Claude  agent") && s.contains(" 2  bash    shell"), "{s}");
         assert!(s.lines().last().unwrap().contains("enter start"), "{s}");
         v.menu = None;
-        v.help = true;
+        v.help = Some(PaletteView { query: "", cursor: 0 });
         t.draw(|f| draw(f, &v, &a, vt.screen())).unwrap();
         assert!(screen(&t).contains("Every other key goes to the agent."));
         let diff = String::from_utf8(paint(Some(&before), t.backend().buffer())).unwrap();

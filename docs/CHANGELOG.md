@@ -27,6 +27,8 @@ All notable changes to desl are recorded here. The format follows
 
 ### Changed
 
+- `prefix ?` is a command list as well as help: typing filters the keys, `↑`/`↓` move, `enter`
+  runs the one under the cursor and `esc` closes.
 - A thread takes its agent's own title for the conversation, Claude Code's or Codex's, in place
   of the first sentence of its first prompt, and follows it when the agent retitles it. A name
   given with `prefix ,` or `desl thread rename` stays. Threads renamed before this keep their

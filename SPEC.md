@@ -159,7 +159,7 @@ The workspace screen, in the style of Herdr and T3 Code in a terminal: projects 
 
 **Splits (phase 2).** `prefix %` and `prefix "` show two threads side by side in the pane, as in tmux, through the same emulator; `prefix z` zooms one back. Shell panes work the same way.
 
-**Help.** `prefix ?` opens a box over the pane listing the keys desl owns, grouped by purpose, in the style of lazygit, with one row saying that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
+**Help.** `prefix ?` opens a box over the pane listing the keys desl owns, each with its group and what it does, in the style of lazygit's menu, and the list runs the key picked in it: typing filters the rows as the directory finder does, `↑`/`↓` move, `enter` runs the row under the cursor, `esc` closes. Notes under the rows name `1…9`, the prefix sent to the agent, `alt+j`/`alt+k`, and that every other key goes to the agent. The overlay is generated from the keymap, never hand-written, so it is always correct.
 
 ## Commands, keybindings and CLI
 
@@ -184,7 +184,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |
-| `prefix ?` | Help overlay | lazygit |
+| `prefix ?` | The keys desl owns, in a list that runs the one picked: typing filters it, `↑`/`↓` move, `enter` runs, `esc` closes | lazygit, fzf |
 | `prefix prefix` | Send the prefix key to the agent | tmux |
 
 All keys are remappable in `keys.toml` by named command, with `vim` and `emacs` presets. desl detects when it runs inside tmux and offers to change its prefix on first run.

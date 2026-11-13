@@ -101,7 +101,7 @@ fn repos(root: &Path) -> Vec<PathBuf> {
 }
 
 /// How well `query` matches `text` as an fzf-style subsequence, higher better; None if not.
-fn score(text: &str, query: &str) -> Option<i64> {
+pub(crate) fn score(text: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }

@@ -2,6 +2,7 @@
 
 [![ci](https://github.com/iluxav/desl/actions/workflows/ci.yml/badge.svg)](https://github.com/iluxav/desl/actions/workflows/ci.yml)
 [![release](https://img.shields.io/github/v/release/iluxav/desl?label=release)](https://github.com/iluxav/desl/releases/latest)
+[![licence](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
 
 **One terminal workspace for your coding agents.** Say *diesel*.
 
@@ -178,3 +179,7 @@ make build          # release build only
 ```
 
 Read [AGENTS.md](AGENTS.md) and [SPEC.md](SPEC.md) first; they apply to every change.
+
+## Licence
+
+[MIT](LICENSE).

@@ -2,6 +2,7 @@
 name = "desl-ir"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "desl: the provider-neutral event IR, the Thread and Binding types, and the adapter contract."
 

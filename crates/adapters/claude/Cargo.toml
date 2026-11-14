@@ -2,6 +2,7 @@
 name = "adapter-claude"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish.workspace = true
 description = "desl: the Claude Code adapter. The only code that knows Claude Code's native format."
 

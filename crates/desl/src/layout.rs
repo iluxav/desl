@@ -514,12 +514,12 @@ fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
         if room >= 2 {
             let b = truncate_end(b, room);
             used += 3 + b.width();
-            spans.push(Span::styled(format!(" ⎇ {b}"), theme::dim()));
+            spans.push(Span::styled(format!(" ⎇ {b}"), theme::branch()));
         }
     }
     if !dirty.is_empty() && used + dirty.width() <= w {
         used += dirty.width();
-        spans.push(Span::styled(dirty, theme::normal()));
+        spans.push(Span::styled(dirty, theme::changes()));
     }
     let room = w.saturating_sub(used + 2);
     if room >= 6 && !parent.is_empty() {
@@ -549,16 +549,12 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
     if let Some(t) = v.threads.iter().find(|t| t.id == p.thread_id) {
         // A shell's header names where it started; an agent's, its project.
         let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-        let mut path = tilde(&if p.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
-        // A thread in its own worktree says which branch it works on.
-        if t.worktree.is_some()
-            && let Some(b) = &t.git.branch
-        {
-            path.push_str(&format!(" ⎇ {b}"));
-            if t.git.dirty > 0 {
-                path.push_str(&format!(" ±{}", t.git.dirty));
-            }
-        }
+        let path = tilde(&if p.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        // A thread in its own worktree says which branch it works on, and what is uncommitted there.
+        let (branch, dirty) = match (&t.worktree, &t.git.branch) {
+            (Some(_), Some(b)) => (format!(" ⎇ {b}"), if t.git.dirty > 0 { format!(" ±{}", t.git.dirty) } else { String::new() }),
+            _ => (String::new(), String::new()),
+        };
         let binding = t.bindings.get(p.agent);
         let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
         if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
@@ -577,7 +573,8 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         let agent = if p.agent == SHELL { t.name.clone() } else { agent_title(p.agent) };
         let (icon, icon_style) = agent_icon(p.agent);
         let tail = if model.is_empty() { 0 } else { model.width() + 3 };
-        let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + 10).max(8);
+        let git = branch.width() + dirty.width();
+        let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + git + 10).max(8);
         let mut left = vec![
             Span::raw(" "),
             Span::styled(icon, icon_style),
@@ -585,6 +582,8 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
             Span::styled(agent, theme::accent().add_modifier(Modifier::BOLD)),
             Span::styled(" · ", theme::muted()),
             Span::styled(truncate_start(&path, room), theme::normal()),
+            Span::styled(branch, theme::branch()),
+            Span::styled(dirty, theme::changes()),
         ];
         if !model.is_empty() {
             left.push(Span::styled(" · ", theme::muted()));
@@ -1022,6 +1021,9 @@ mod tests {
         assert_eq!(text(&g, 13), "desl ⎇ ma… ±4", "the branch is cut before the count");
         assert_eq!(text(&GitState { dirty: 0, ..g.clone() }, 48), "desl ⎇ main  /src", "a clean tree shows no count");
         assert_eq!(text(&GitState::default(), 48), "desl  /src", "outside a repository, as before");
+        let row = project_row("/src/desl", Some(&g), 48);
+        assert_eq!(row.spans[1].style.fg, Some(Color::Magenta), "the branch is rose");
+        assert_eq!(row.spans[2].style.fg, Some(Color::Green), "the count is green");
     }
 
     fn screen(t: &Terminal<TestBackend>) -> String {

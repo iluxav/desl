@@ -1,4 +1,5 @@
-//! One accent, one warning, one critical, three greys. The terminal's own palette; NO_COLOR honoured.
+//! One accent, one warning, one critical, three greys, and two hues for git. The terminal's own
+//! palette; NO_COLOR honoured.
 
 use ratatui::style::{Color, Modifier, Style};
 use std::sync::OnceLock;
@@ -39,6 +40,14 @@ pub fn removed() -> Style {
 /// Claude's own orange, for its mark.
 pub fn claude() -> Style {
     if no_color() { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Rgb(217, 119, 87)) }
+}
+/// A branch name: the terminal's magenta, rose in most palettes.
+pub fn branch() -> Style {
+    if no_color() { Style::default() } else { Style::default().fg(Color::Magenta) }
+}
+/// Uncommitted paths: the terminal's green, as added lines in a diff.
+pub fn changes() -> Style {
+    if no_color() { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Green) }
 }
 pub fn normal() -> Style {
     Style::default()

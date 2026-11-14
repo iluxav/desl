@@ -23,8 +23,9 @@ All notable changes to desl are recorded here. The format follows
   The daemon keeps agents alive while desl itself is closed and reopened, so this is how one
   is reloaded.
 - The sidebar's project row shows the branch checked out there and how many paths are
-  uncommitted, `desl ⎇ main ±4  ~/Projects`, read again every five seconds. A worktree thread's
-  header shows its own count beside its branch.
+  uncommitted, `desl ⎇ main ±4  ~/Projects`, the branch in the terminal's magenta and the count
+  in its green, read again every five seconds. A worktree thread's header shows its own count
+  beside its branch.
 
 ### Fixed
 

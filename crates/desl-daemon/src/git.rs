@@ -74,6 +74,10 @@ pub fn state(cwd: &Path) -> GitState {
         state.ahead = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         state.behind = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
     }
+    // Without optional locks this read never contends with the agent's own git for the index.
+    if let Some(status) = git(cwd, &["--no-optional-locks", "status", "--porcelain"]) {
+        state.dirty = u32::try_from(status.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(u32::MAX);
+    }
     state
 }
 
@@ -117,7 +121,9 @@ mod tests {
         assert!(wt.join("a.txt").exists());
         assert_eq!(state(&wt).branch.as_deref(), Some("desl/t-1"));
         assert_eq!(git(&dir, &["status", "--porcelain"]).unwrap(), "", "the main tree stays clean");
+        assert_eq!(state(&dir).dirty, 0);
         std::fs::write(wt.join("b.txt"), "b").unwrap();
+        assert_eq!(state(&wt).dirty, 1, "one new file is uncommitted");
         assert!(worktree_remove(&wt).is_err(), "changes keep it");
         std::fs::remove_file(wt.join("b.txt")).unwrap();
         worktree_remove(&wt).unwrap();

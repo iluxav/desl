@@ -353,6 +353,9 @@ pub struct GitState {
     pub branch: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// How many paths `git status` lists: changed, staged, or new and not ignored.
+    #[serde(default)]
+    pub dirty: u32,
 }
 
 /// An approval the user still has to answer.
@@ -440,6 +443,10 @@ pub struct Project {
     pub path: String,
     pub default_agent: Option<String>,
     pub created_at: i64,
+    /// The branch checked out in the project's folder and what is uncommitted there, read by the
+    /// daemon every few seconds while a client is attached; not stored.
+    #[serde(default)]
+    pub git: GitState,
 }
 
 const STOP: &[&str] = &[

@@ -86,7 +86,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 
 | `what` | Carries | When |
 | --- | --- | --- |
-| `project` | `project` | A project was registered. |
+| `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
 | `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval or branch changed. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |

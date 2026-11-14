@@ -12,7 +12,8 @@ use crate::store::Store;
 use crate::{git, projector};
 use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn};
 use desl_ir::{
-    Binding, Decision, Event, EventKind, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status, Thread, derive_name,
+    Binding, Decision, Event, EventKind, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status, Thread,
+    derive_name,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
@@ -64,6 +65,10 @@ pub enum Msg {
     PtyExit {
         thread_id: String,
         generation: u64,
+    },
+    /// The git worker read these directories' branch and uncommitted count.
+    Git {
+        states: Vec<(String, GitState)>,
     },
     /// Every [`TICK_MS`]: switches check their hidden agent; every second, session files.
     Tick,
@@ -201,6 +206,8 @@ pub struct Engine {
     awaiting_turn: HashMap<String, Instant>,
     /// Threads whose agent was ended to start again on the same conversation when its exit arrives.
     restarting: HashSet<String>,
+    /// A git worker is reading; the next refresh waits for its answer.
+    git_busy: bool,
     /// The user's settings file; none in tests, which run on the defaults.
     config_file: Option<PathBuf>,
     ticks: u64,
@@ -293,6 +300,7 @@ impl Engine {
             typing: HashMap::new(),
             awaiting_turn: HashMap::new(),
             restarting: HashSet::new(),
+            git_busy: false,
             config_file: None,
             ticks: 0,
             stopping: false,
@@ -314,6 +322,9 @@ impl Engine {
         }
         for t in engine.threads.iter_mut() {
             t.git = git::state(Path::new(&t.cwd));
+        }
+        for p in engine.projects.iter_mut() {
+            p.git = git::state(Path::new(&p.path));
         }
         Ok(engine)
     }
@@ -535,7 +546,8 @@ impl Engine {
             id = format!("{base}-{n}");
             n += 1;
         }
-        let project = Project { id: id.clone(), path, default_agent: None, created_at: now() };
+        let git = git::state(Path::new(&path));
+        let project = Project { id: id.clone(), path, default_agent: None, created_at: now(), git };
         self.store.put_project(&project).map_err(|e| format!("Could not save the project ({e:#}). `desl doctor` checks the store."))?;
         self.projects.push(project.clone());
         self.broadcast(Change::Project { project });
@@ -821,7 +833,7 @@ impl Engine {
         self.threads[i].pending_approval = None;
         self.threads[i].status = Status::Idle;
         self.mark_seen(thread_id, agent);
-        self.threads[i].git = git::state(Path::new(&self.threads[i].cwd));
+        self.refresh_git();
         self.persist(thread_id);
         self.dequeue(thread_id);
     }
@@ -869,6 +881,7 @@ impl Engine {
         match msg {
             Msg::Connected { client, out } => {
                 self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: HashSet::new() });
+                self.refresh_git();
             }
             Msg::Disconnected { client } => {
                 self.clients.remove(&client);
@@ -890,6 +903,7 @@ impl Engine {
             }
             Msg::PtyOutput { thread_id, generation, data } => self.pty_output(&thread_id, generation, &data),
             Msg::PtyExit { thread_id, generation } => self.pty_exit(&thread_id, generation),
+            Msg::Git { states } => self.git_states(states),
             Msg::Tick => self.tick(),
         }
     }
@@ -1528,12 +1542,55 @@ impl Engine {
         if !self.ticks.is_multiple_of(5 * TICKS_PER_SECOND) {
             return;
         }
-        let viewed: HashSet<String> = self.clients.values().filter_map(|c| c.viewing.clone()).collect();
-        for id in viewed {
-            let Ok(i) = self.idx(&id) else { continue };
-            let state = git::state(Path::new(&self.threads[i].cwd));
-            if state != self.threads[i].git {
-                self.threads[i].git = state;
+        self.refresh_git();
+    }
+
+    /// Reads every project's branch and uncommitted count, and the shown threads', on a worker
+    /// thread: `git status` on a large tree takes long enough to stall the agents' output if it
+    /// ran here. Nothing is read while no client is attached, or while a read is under way.
+    fn refresh_git(&mut self) {
+        if self.git_busy || self.clients.is_empty() {
+            return;
+        }
+        let mut dirs: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
+        for c in self.clients.values() {
+            for id in c.shows.iter().chain(c.viewing.iter()) {
+                if let Ok(i) = self.idx(id)
+                    && !dirs.contains(&self.threads[i].cwd)
+                {
+                    dirs.push(self.threads[i].cwd.clone());
+                }
+            }
+        }
+        self.git_busy = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let states = dirs
+                .into_iter()
+                .map(|d| {
+                    let state = git::state(Path::new(&d));
+                    (d, state)
+                })
+                .collect();
+            let _ = tx.send(Msg::Git { states });
+        });
+    }
+
+    /// The worker's answer: every project and thread in a directory whose state moved tells the
+    /// clients.
+    fn git_states(&mut self, states: Vec<(String, GitState)>) {
+        self.git_busy = false;
+        for (dir, state) in states {
+            let projects: Vec<usize> =
+                self.projects.iter().enumerate().filter(|(_, p)| p.path == dir && p.git != state).map(|(i, _)| i).collect();
+            for i in projects {
+                self.projects[i].git = state.clone();
+                self.broadcast(Change::Project { project: self.projects[i].clone() });
+            }
+            let threads: Vec<usize> =
+                self.threads.iter().enumerate().filter(|(_, t)| t.cwd == dir && t.git != state).map(|(i, _)| i).collect();
+            for i in threads {
+                self.threads[i].git = state.clone();
                 self.broadcast(Change::Thread { thread: Box::new(self.threads[i].clone()) });
             }
         }

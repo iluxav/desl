@@ -133,7 +133,15 @@ pub fn status(paths: &Paths, out: &Out) -> Result<()> {
         if threads.is_empty() {
             continue;
         }
-        println!("{}", p.id);
+        // As the sidebar's row: `desl ⎇ main ±4`.
+        let mut line = p.id.clone();
+        if let Some(b) = &p.git.branch {
+            line.push_str(&format!(" ⎇ {b}"));
+            if p.git.dirty > 0 {
+                line.push_str(&format!(" ±{}", p.git.dirty));
+            }
+        }
+        println!("{line}");
         for t in threads {
             println!("  {}", thread_line(t));
         }

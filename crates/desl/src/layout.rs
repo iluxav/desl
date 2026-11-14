@@ -4,7 +4,7 @@
 
 use crate::theme;
 use crate::ui::text::truncate_end;
-use desl_ir::{Project, SHELL, Status, Thread};
+use desl_ir::{GitState, Project, SHELL, Status, Thread};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -420,18 +420,9 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
         match row {
             Row::Gap => lines.push(Line::default()),
             Row::Project(id) => {
-                // The folder's name, then dimmer where it lives: `desl  ~/Projects`.
-                let path = v.projects.iter().find(|p| p.id == *id).map_or(id.clone(), |p| p.path.clone());
-                let p = std::path::Path::new(&path);
-                let name = p.file_name().map_or(path.clone(), |n| n.to_string_lossy().into_owned());
-                let parent = p.parent().map(|d| tilde(&d.to_string_lossy())).unwrap_or_default();
-                let name = truncate_end(&name, w);
-                let room = w.saturating_sub(name.width() + 2);
-                let mut spans = vec![Span::styled(name, theme::bold())];
-                if room >= 6 && !parent.is_empty() {
-                    spans.push(Span::styled(format!("  {}", truncate_start(&parent, room)), theme::muted()));
-                }
-                lines.push(Line::from(spans));
+                let p = v.projects.iter().find(|p| p.id == *id);
+                let path = p.map_or(id.clone(), |p| p.path.clone());
+                lines.push(project_row(&path, p.map(|p| &p.git), w));
             }
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
@@ -506,6 +497,37 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
     f.render_widget(Paragraph::new(lines), body);
 }
 
+/// A project's row: the folder's name, the branch checked out there and how many paths are
+/// uncommitted, then dimmer where it lives: `desl ⎇ main ±4  ~/Projects`. On a row too short for
+/// all of it the directory goes first, then the branch is cut; the name and the count stay.
+fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
+    let p = std::path::Path::new(path);
+    let name = p.file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned());
+    let parent = p.parent().map(|d| tilde(&d.to_string_lossy())).unwrap_or_default();
+    let name = truncate_end(&name, w);
+    let mut used = name.width();
+    let mut spans = vec![Span::styled(name, theme::bold())];
+    let dirty = git.filter(|g| g.dirty > 0).map(|g| format!(" ±{}", g.dirty)).unwrap_or_default();
+    if let Some(b) = git.and_then(|g| g.branch.as_deref()) {
+        // ` ⎇ ` and at least two characters of the branch, or none of it.
+        let room = w.saturating_sub(used + dirty.width() + 3);
+        if room >= 2 {
+            let b = truncate_end(b, room);
+            used += 3 + b.width();
+            spans.push(Span::styled(format!(" ⎇ {b}"), theme::dim()));
+        }
+    }
+    if !dirty.is_empty() && used + dirty.width() <= w {
+        used += dirty.width();
+        spans.push(Span::styled(dirty, theme::normal()));
+    }
+    let room = w.saturating_sub(used + 2);
+    if room >= 6 && !parent.is_empty() {
+        spans.push(Span::styled(format!("  {}", truncate_start(&parent, room)), theme::muted()));
+    }
+    Line::from(spans)
+}
+
 /// The agent's panel: its border, with the project, agent and model on top and the thread's
 /// id and status on the right.
 fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) {
@@ -533,6 +555,9 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
             && let Some(b) = &t.git.branch
         {
             path.push_str(&format!(" ⎇ {b}"));
+            if t.git.dirty > 0 {
+                path.push_str(&format!(" ±{}", t.git.dirty));
+            }
         }
         let binding = t.bindings.get(p.agent);
         let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
@@ -984,7 +1009,19 @@ mod tests {
     }
 
     fn project(id: &str) -> Project {
-        Project { id: id.into(), path: format!("/src/{id}"), default_agent: None, created_at: 0 }
+        Project { id: id.into(), path: format!("/src/{id}"), default_agent: None, created_at: 0, git: GitState::default() }
+    }
+
+    #[test]
+    fn a_project_row_keeps_its_name_and_count_and_drops_where_it_lives_first() {
+        let text =
+            |git: &GitState, w: usize| project_row("/src/desl", Some(git), w).spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        let g = GitState { branch: Some("main".into()), dirty: 4, ..GitState::default() };
+        assert_eq!(text(&g, 48), "desl ⎇ main ±4  /src");
+        assert_eq!(text(&g, 15), "desl ⎇ main ±4", "no room for where it lives");
+        assert_eq!(text(&g, 13), "desl ⎇ ma… ±4", "the branch is cut before the count");
+        assert_eq!(text(&GitState { dirty: 0, ..g.clone() }, 48), "desl ⎇ main  /src", "a clean tree shows no count");
+        assert_eq!(text(&GitState::default(), 48), "desl  /src", "outside a repository, as before");
     }
 
     fn screen(t: &Terminal<TestBackend>) -> String {

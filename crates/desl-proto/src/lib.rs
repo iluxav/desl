@@ -441,6 +441,8 @@ pub struct Check {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "what", rename_all = "snake_case")]
 pub enum Change {
+    /// A project was registered, or the branch checked out in its folder or its count of
+    /// uncommitted paths changed.
     Project {
         project: Project,
     },

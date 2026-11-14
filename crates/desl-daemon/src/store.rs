@@ -184,7 +184,9 @@ impl Store {
 
     pub fn projects(&self) -> Result<Vec<Project>> {
         let mut st = self.conn.prepare("SELECT id, path, default_agent, created_at FROM projects ORDER BY created_at, id")?;
-        let rows = st.query_map([], |r| Ok(Project { id: r.get(0)?, path: r.get(1)?, default_agent: r.get(2)?, created_at: r.get(3)? }))?;
+        let rows = st.query_map([], |r| {
+            Ok(Project { id: r.get(0)?, path: r.get(1)?, default_agent: r.get(2)?, created_at: r.get(3)?, git: GitState::default() })
+        })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 

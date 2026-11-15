@@ -21,6 +21,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "adapter-copilot"
+version = "0.1.2"
+dependencies = [
+ "chrono",
+ "desl-ir",
+ "serde_json",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -476,6 +485,7 @@ version = "0.1.2"
 dependencies = [
  "adapter-claude",
  "adapter-codex",
+ "adapter-copilot",
  "anyhow",
  "desl-ir",
  "desl-proto",

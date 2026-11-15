@@ -55,12 +55,12 @@ const fn bind(group: &'static str, key: &'static str, what: &'static str, action
 /// The keys desl owns after the prefix, in the order the list shows them. The list is drawn
 /// from this table and [`action`] reads it, so the two cannot disagree.
 pub const KEYS: &[Bind] = &[
-    bind("Agent", "s", "Switch this thread to the other agent", Some(Action::Switch)),
+    bind("Agent", "s", "Switch this thread to another agent", Some(Action::Switch)),
     bind("Agent", "f", "Fork: this conversation in a new thread, on either agent", Some(Action::Fork)),
     bind("Agent", "i", "Info: agent, session ids, model, directory", Some(Action::Info)),
     bind("Agent", "r", "Restart this agent, keeping the conversation", Some(Action::Restart)),
     bind("Threads", "w", "Move to the thread list (j/k, enter, esc)", Some(Action::Threads)),
-    bind("Threads", "c", "New thread: pick Claude, Codex, a shell or a file manager", Some(Action::New)),
+    bind("Threads", "c", "New thread: pick an agent, a shell or a file manager", Some(Action::New)),
     bind("Threads", "o", "Open a directory: type to find it; a shell opens there", Some(Action::Open)),
     bind("Threads", "n", "Next thread", Some(Action::Next)),
     bind("Threads", "p", "Previous thread", Some(Action::Prev)),
@@ -243,6 +243,10 @@ pub struct Menu<'a> {
     pub title: &'a str,
     pub items: &'a [MenuItem],
     pub cursor: usize,
+    /// What `enter` does to the row, for the key line: `start`, `switch`.
+    pub verb: &'a str,
+    /// The row can get a git worktree of its own (`w`): a new thread can, a switch cannot.
+    pub worktree: bool,
 }
 
 /// `prefix o`: the query, and the directories that match it, as `~/x` with where each is from.
@@ -338,8 +342,8 @@ fn panel(focused: bool) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).border_style(if focused { theme::accent() } else { theme::muted() })
 }
 
-/// Each agent's mark: with a Nerd Font, the Claude and OpenAI logos, a terminal for a shell and
-/// a folder for a file manager; without, a one-cell badge in the agent's colour.
+/// Each agent's mark: with a Nerd Font, the Claude, OpenAI and Copilot logos, a terminal for a
+/// shell and a folder for a file manager; without, a one-cell badge in the agent's colour.
 pub fn agent_icon(agent: &str) -> (&'static str, Style) {
     use ratatui::style::Color;
     let badge =
@@ -347,10 +351,12 @@ pub fn agent_icon(agent: &str) -> (&'static str, Style) {
     match (agent, theme::nerd()) {
         ("claude", true) => ("\u{ec82}", theme::claude()),
         ("codex", true) => ("\u{ec81}", theme::normal()),
+        ("copilot", true) => ("\u{ec1e}", theme::copilot()),
         (SHELL, true) => ("\u{ebca}", theme::dim()),
         (FILES, true) => ("\u{ea83}", theme::dim()),
         ("claude", false) => ("✻", badge(Color::Black, Color::Rgb(217, 119, 87))),
         ("codex", false) => ("›", badge(Color::Black, Color::Rgb(220, 220, 220))),
+        ("copilot", false) => ("∞", badge(Color::Black, Color::Rgb(163, 113, 247))),
         (SHELL, false) => ("$", badge(Color::White, Color::Rgb(70, 70, 70))),
         (FILES, false) => ("/", badge(Color::Black, Color::Rgb(150, 150, 150))),
         (_, true) => ("\u{ec20}", theme::dim()),
@@ -358,11 +364,12 @@ pub fn agent_icon(agent: &str) -> (&'static str, Style) {
     }
 }
 
-/// An agent's own colour: Claude's orange, Codex in the terminal's text colour; a shell and a
-/// file manager grey.
+/// An agent's own colour: Claude's orange, Copilot's violet, Codex in the terminal's text
+/// colour; a shell and a file manager grey.
 pub fn agent_rgb(agent: &str) -> (u8, u8, u8) {
     match agent {
         "claude" => (217, 119, 87),
+        "copilot" => (163, 113, 247),
         SHELL | FILES => (150, 150, 150),
         _ => theme::fg_rgb(),
     }
@@ -388,6 +395,7 @@ fn text_icon(agent: &str) -> &'static str {
     match agent {
         "claude" => "✻",
         "codex" => "◎",
+        "copilot" => "∞",
         SHELL => "$",
         FILES => "/",
         _ => "◆",
@@ -632,9 +640,10 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
         Line::from(spans)
-    } else if v.menu.is_some() {
+    } else if let Some(m) = &v.menu {
         let mut spans = vec![Span::raw("  ")];
-        for (k, what) in [("j/k", "move"), ("enter", "start"), ("1-9", "pick"), ("w", "own worktree"), ("esc", "cancel")] {
+        let worktree = m.worktree.then_some(("w", "own worktree"));
+        for (k, what) in [("j/k", "move"), ("enter", m.verb), ("1-9", "pick")].into_iter().chain(worktree).chain([("esc", "cancel")]) {
             spans.push(Span::styled(k, theme::bold()));
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
@@ -1114,6 +1123,49 @@ mod tests {
     }
 
     #[test]
+    fn copilot_has_its_own_mark_and_a_switch_menu_says_what_enter_does() {
+        let projects = [project("desl")];
+        let mut copilot = thread("t-1a", "desl", 1, Status::Idle, "fix the login");
+        copilot.active_agent = "copilot".into();
+        let threads = [copilot];
+        let a = areas(120, 30, true, None);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let items = [
+            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true },
+            MenuItem { label: "Codex".into(), note: "agent".into(), enabled: true },
+        ];
+        let v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView { thread_id: "t-1a", agent: "copilot", scrolled: 0 }],
+            focus: 0,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: Some(Menu { title: "Switch to", items: &items, cursor: 0, verb: "switch", worktree: false }),
+            finder: None,
+            sub: None,
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("╭ ∞ Copilot · /src/desl "), "{s}");
+        assert!(lines[3].contains("│  ∞ fix the login "), "{s}");
+        assert!(s.contains("╭ Switch to ") && s.contains(" 1  Claude  agent") && s.contains(" 2  Codex   agent"), "{s}");
+        let keys = s.lines().last().unwrap();
+        assert!(keys.contains("enter switch") && !keys.contains("own worktree"), "a switch keeps the thread where it is: {keys}");
+    }
+
+    #[test]
     fn threads_keep_their_place_by_project_then_age() {
         let projects = [project("a"), project("b")];
         let threads = [
@@ -1251,7 +1303,7 @@ mod tests {
             MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true },
             MenuItem { label: "bash".into(), note: "shell".into(), enabled: true },
         ];
-        v.menu = Some(Menu { title: "New in desl", items: &items, cursor: 1 });
+        v.menu = Some(Menu { title: "New in desl", items: &items, cursor: 1, verb: "start", worktree: true });
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         assert!(s.contains("╭ New in desl ") && s.contains(" 1  Claude  agent") && s.contains(" 2  bash    shell"), "{s}");

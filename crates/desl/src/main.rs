@@ -125,7 +125,7 @@ enum Cmd {
     },
     /// Check binaries, logins, the daemon and the store
     Doctor,
-    /// The desl skill, which teaches Claude Code and Codex to drive desl
+    /// The desl skill, which teaches Claude Code, Codex and Copilot to drive desl
     Skill {
         #[command(subcommand)]
         command: SkillCmd,

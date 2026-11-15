@@ -1,11 +1,11 @@
 ---
 name: desl
-description: "Drive desl, the terminal workspace this agent runs in: open threads on Claude Code or Codex, prompt them and read the reply, fork this conversation to the other agent for a second opinion, and wait on threads working in parallel. Use when the user mentions desl, or asks to hand work to another agent or thread, to ask Codex or Claude with this conversation's context, or to run work in parallel threads. Requires DESL_THREAD to be set."
+description: "Drive desl, the terminal workspace this agent runs in: open threads on Claude Code, Codex or GitHub Copilot, prompt them and read the reply, fork this conversation to another agent for a second opinion, and wait on threads working in parallel. Use when the user mentions desl, or asks to hand work to another agent or thread, to ask Codex or Claude with this conversation's context, or to run work in parallel threads. Requires DESL_THREAD to be set."
 ---
 
 # desl
 
-desl (say *diesel*) runs Claude Code and Codex side by side in one terminal workspace. Each conversation is a **thread**; a thread is on one **agent** at a time and belongs to a **project** (a repository). desl owns the conversation, so a thread can be **forked** into a copy on the other agent with everything said so far.
+desl (say *diesel*) runs Claude Code, Codex and GitHub Copilot side by side in one terminal workspace. Each conversation is a **thread**; a thread is on one **agent** at a time (`claude`, `codex` or `copilot`) and belongs to a **project** (a repository). desl owns the conversation, so a thread can be **forked** into a copy on another agent with everything said so far. `desl agents` lists the agents installed on this machine.
 
 ## Check that you are inside desl
 
@@ -36,16 +36,16 @@ desl thread show <thread>             # what another thread said and did
 
 A thread's status is one of `working`, `waiting` (it asks the user something or waits for approval), `idle` (its turn is over), `failed` or `detached`.
 
-## Ask the other agent, with this conversation
+## Ask another agent, with this conversation
 
-A fork copies your thread into a new thread on the other agent. It answers knowing everything said so far:
+A fork copies your thread into a new thread on another agent. It answers knowing everything said so far:
 
 ```bash
 desl fork "$DESL_THREAD" codex --json          # prints {"thread_id": "..."}
 desl send <new-thread> "Review the change we just made to the token refresh. What did we miss?"
 ```
 
-`desl send` types the prompt into the thread's agent and prints the reply when its turn ends. Use `claude` instead of `codex` when you are Codex.
+`desl send` types the prompt into the thread's agent and prints the reply when its turn ends. Name an agent other than your own: `claude`, `codex` or `copilot`, whichever `desl agents` shows as installed.
 
 ## Run work in parallel
 

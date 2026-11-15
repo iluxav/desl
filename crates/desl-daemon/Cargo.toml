@@ -11,6 +11,7 @@ desl-ir = { workspace = true }
 desl-proto = { workspace = true }
 adapter-claude = { workspace = true }
 adapter-codex = { workspace = true }
+adapter-copilot = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

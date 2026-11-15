@@ -60,6 +60,9 @@ impl Adapter for Fake {
             ..Detection::default()
         }
     }
+    fn installed(&self) -> bool {
+        true
+    }
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
     }
@@ -321,7 +324,7 @@ fn switching_is_refused_with_a_sentence_when_it_cannot_happen() {
     let same = r.cmd(Command::Switch { thread_id: t.clone(), agent: "claude".into() }).unwrap_err();
     assert_eq!(same, "This thread is already on claude.");
     let unknown = r.cmd(Command::Switch { thread_id: t.clone(), agent: "gemini".into() }).unwrap_err();
-    assert_eq!(unknown, "desl drives claude and codex, not gemini.");
+    assert_eq!(unknown, "desl drives claude and codex, not gemini.", "two agents are joined with and, three with a comma too");
     r.claude.lock().unwrap().plan.push_back(vec![]);
     r.prompt(&t, "a long task");
     let busy = r.cmd(Command::Switch { thread_id: t.clone(), agent: "codex".into() }).unwrap_err();
@@ -979,4 +982,19 @@ fn a_file_manager_that_is_not_installed_is_not_offered() {
         .unwrap_err();
     assert!(err.contains("is not installed") && err.contains("Install desl-no-such-file-manager"), "{err}");
     assert!(r.engine.threads.iter().all(|t| t.active_agent != FILES), "no thread is left behind");
+}
+
+#[test]
+fn with_three_agents_a_switch_must_name_one_and_sentences_list_them_all() {
+    let dir = std::env::temp_dir().join(format!("desl-engine-test-{}-three", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let project = dir.join("api");
+    std::fs::create_dir_all(&project).unwrap();
+    let store = Store::in_memory(&dir.join("blobs")).unwrap();
+    let (tx, _rx) = channel();
+    let fake = |id: &'static str| -> Arc<dyn Adapter> { Arc::new(Fake { id, state: Arc::new(Mutex::new(FakeState::default())) }) };
+    let engine = Engine::new(store, vec![fake("claude"), fake("codex"), fake("copilot")], tx).unwrap();
+    assert_eq!(engine.usable("gemini").unwrap_err(), "desl drives claude, codex and copilot, not gemini.");
+    assert_eq!(engine.other_agent("claude").unwrap_err(), "Say which agent: codex or copilot.");
+    assert_eq!(engine.default_agent("none").unwrap(), "claude", "the first that is ready, in the order the menus list them");
 }

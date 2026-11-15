@@ -7,6 +7,15 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- GitHub Copilot CLI is the third agent desl drives, in its own interface like the other two:
+  `prefix c` and `desl new --agent copilot` open it, the sidebar shows its status and its own
+  title for the conversation, `desl model` lists its models, and a switch or a fork copies the
+  conversation into a Copilot session and out of one. Verified against Copilot CLI 1.0.112.
+- With more than two agents installed, `prefix s` opens a list of them with the current one
+  marked; with two it switches at once, as before.
+- desl looks again for the agents' programs when a client attaches after one was installed or
+  removed, so the menus follow what is on the machine without `desl agents`.
+
 - A files thread: with [yazi](https://yazi-rs.github.io) installed, `prefix c` offers it under the
   shell (`desl new --agent files` from the CLI). It opens in the directory of the thread on
   screen, in a thread of its own with a folder mark in the sidebar, and it is yazi as the user
@@ -45,6 +54,9 @@ All notable changes to desl are recorded here. The format follows
 
 ### Changed
 
+- The menus list only the agents installed on this machine. One that is missing is no longer
+  a dimmed "not installed" row; `desl agents` and `desl doctor` still name it and how to
+  install it. One that is installed and logged out stays, dimmed, with the reason.
 - `prefix ?` is a command list as well as help: typing filters the keys, `↑`/`↓` move, `enter`
   runs the one under the cursor and `esc` closes.
 - A thread takes its agent's own title for the conversation, Claude Code's or Codex's, in place

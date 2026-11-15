@@ -738,7 +738,7 @@ pub fn skill_install(out: &Out) -> Result<()> {
         installed.push((adapter.id(), file));
     }
     if installed.is_empty() && linked.is_empty() {
-        bail!("Neither Claude Code nor Codex has been set up here. Run `claude` or `codex` once, then `desl skill install` again");
+        bail!("No agent desl drives has been set up here. Run `claude`, `codex` or `copilot` once, then `desl skill install` again");
     }
     let v = json!({
         "installed": installed.iter().map(|(a, f)| json!({ "agent": a, "path": f })).collect::<Vec<_>>(),
@@ -748,7 +748,7 @@ pub fn skill_install(out: &Out) -> Result<()> {
     lines.extend(
         linked.iter().map(|(a, f)| format!("Left {a}'s desl skill alone: {} is a link, so update the folder it points to.", f.display())),
     );
-    lines.push("Agents started from now on can drive desl; ask one to fork this thread to the other agent.".into());
+    lines.push("Agents started from now on can drive desl; ask one to fork this thread to another agent.".into());
     done(out, v, lines.join("\n"));
     Ok(())
 }

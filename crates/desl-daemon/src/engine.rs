@@ -368,9 +368,13 @@ impl Engine {
         self.agents.iter().find(|a| a.id == agent)
     }
 
+    /// The agents desl has adapters for, as a sentence names them: `claude, codex and copilot`.
     fn agent_names(&self) -> String {
         let names: Vec<&str> = self.agents.iter().map(|a| a.id.as_str()).collect();
-        names.join(" and ")
+        match names.split_last() {
+            Some((last, rest)) if !rest.is_empty() => format!("{} and {last}", rest.join(", ")),
+            _ => names.join(""),
+        }
     }
 
     /// An agent desl can start a turn on, or the sentence that says why not.
@@ -393,7 +397,7 @@ impl Engine {
             .iter()
             .map(|a| if a.detection.installed { a.detection.login_hint.clone() } else { a.detection.install_hint.clone() })
             .collect();
-        format!("desl drives {}, and neither is ready on this machine. {}", self.agent_names(), hints.join(" "))
+        format!("desl drives {}, and none of them is ready on this machine. {}", self.agent_names(), hints.join(" "))
     }
 
     /// Reads desl's settings from `file` (SPEC.md "Configuration") from now on.
@@ -1937,6 +1941,13 @@ impl Engine {
     }
 
     fn subscribe(&mut self, client: ClientId, cwd: Option<&str>) -> Outcome {
+        // An agent installed or removed since the daemon last looked: look again, so the menu
+        // a client draws from this answer offers what can be started.
+        if self.adapters.iter().zip(&self.agents).any(|(a, info)| a.installed() != info.detection.installed) {
+            self.models.clear();
+            self.agents = detect(&self.adapters);
+            self.broadcast(Change::Agents { agents: self.agents.clone() });
+        }
         let mut project_id = None;
         let mut focus = None;
         if let Some(cwd) = cwd {

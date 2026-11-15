@@ -90,6 +90,7 @@ like code.
 | --- | --- | --- |
 | Claude Code | `claude --version` prints `2.1.312 (Claude Code)` | `claude auth status --json` prints an object with `loggedIn` (verified; it also holds the account's email, which desl does not read) |
 | Codex | `codex --version` prints `codex-cli 0.165.0` | `codex login status` prints `Logged in using ChatGPT` and exits 0 (verified; the logged-out output was not observed) |
+| GitHub Copilot CLI | `copilot --version` prints `GitHub Copilot CLI 1.0.112.` | Not known to desl (`logged_in` is None). Copilot has no status command, and it may be logged in through `copilot login` (a token in the system credential store) or a token in `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN`. Its own interface asks when it is not. |
 
 ### Models
 
@@ -99,6 +100,7 @@ like code.
 | --- | --- | --- |
 | Claude Code | Start `claude -p --output-format stream-json --input-format stream-json --verbose`, write `{"type":"control_request","request_id":"…","request":{"subtype":"initialize"}}`, read the `control_response`. `response.response.models[]` has `value`, `displayName`, `description`, `resolvedModel` and effort levels. | Verified: answers in about 0.2 s, no prompt is sent, nothing is billed. The same reply carries `account` (email, organization); desl does not read it and the fixture leaves it out. The entry with `value: "default"` is "whatever Claude Code would use"; desl passes no flag for it. |
 | Codex | `codex debug models` prints `{"models":[…]}` with `slug`, `display_name`, `description`, `visibility` (`list` or `hide`) and `priority`. | Verified: 22 ms. Hidden entries are left out. The default is the `model` in `~/.codex/config.toml` when it is on the list, else the first entry. `codex app-server` answers `model/list` with the same models and an `isDefault` flag; not used. |
+| GitHub Copilot CLI | Start `copilot --acp` (the Agent Client Protocol: JSON-RPC, one object per line on stdio), send `initialize`, then `session/new {cwd, mcpServers: []}`. The answer has `models.availableModels[] {modelId, name, description, _meta.copilotUsage}`, `models.currentModelId`, and `configOptions[]` with a `reasoning_effort` entry (`options[].value`, `currentValue`). | Verified 1.0.112: about 1.3 s, no prompt is sent, nothing is billed. `copilotUsage` is what a prompt costs against the plan (`1x`, `0.33x`); desl shows it after the description. `session/new` leaves an empty session folder, which Copilot's own picker does not list. The first entry is `auto`. |
 
 The pick reaches the agent as a flag on its next process: `claude --resume <id> --model sonnet`
 and `codex exec -s … -m gpt-6-luna resume <id> …`. Both verified: the native session is kept and
@@ -121,6 +123,7 @@ folder it has not seen, in its own interface, before anything else.
 | --- | --- | --- | --- |
 | Claude Code | `claude --session-id <uuid>` (desl picks the id, so the session file is known) | `claude --resume <id>` | `--permission-mode manual` (ask), `acceptEdits` (edits, worktree), `bypassPermissions` (yolo); `--model`, `--effort` when picked |
 | Codex | `codex --no-daemon` (Codex names the session) | `codex --no-daemon … resume <id>` | `-s read-only -a on-request` (ask: Codex asks before anything that writes), `-s workspace-write -a on-request` (edits, worktree; asks before anything outside the project). 0.166 takes only `on-request` and `never` for `-a`; `untrusted` fails at start, `--dangerously-bypass-approvals-and-sandbox` (yolo); `-m`, `-c model_reasoning_effort="…"` when picked; all before `resume` |
+| GitHub Copilot CLI | `copilot --session-id=<uuid>` (desl picks the id; the flag names a new session) | the same flag, which opens the session when it exists | nothing (ask: Copilot's own "Manual Approval"), `--allow-tool=write` (edits), `--allow-all-tools` (worktree), `--allow-all` (yolo); `--model`, `--reasoning-effort` when picked |
 
 Claude Code's interface sends a kitty graphics query (`ESC _ G … a=q … ESC \`) at start; tmux
 takes any APC as a pane title, so the client puts desl's title back after one. On `/exit` Claude
@@ -143,6 +146,8 @@ the end of the file. Verified 2026-11-05 on Claude Code 2.1.318 and Codex CLI 0.
 | Waiting (bottom 14 rows, only mid-turn) | `Do you want to` with `1. Yes`; the trust question | `Would you like to run the following command?` (seen live), `Trust this folder` |
 | Model and effort chosen inside | each reply's `message.model`; `/effort`'s "Set effort level to …" (Claude Code also saves both as the user's default) | `event_msg` `thread_settings_applied` `{model, reasoning_effort}`; Codex's `/model` with `s` changes only the session, and its file holds nothing until the first turn |
 
+GitHub Copilot CLI is read the same way, from the session desl named with `--session-id`; its events and what each is read as are under "GitHub Copilot CLI 1.0.112" below.
+
 In `ask` mode (`-s read-only -a on-request`) Codex asks only when the model decides to request
 more: asked plainly to create a file it reported the sandbox refusal; asked to request
 permission, it showed the approval above.
@@ -163,6 +168,8 @@ round-trip tests (written, then read back by the same adapter's reader).
 | `fetch` | `WebFetch {url}` | told as a comment, with its output |
 | `edit` and anything else | told in the assistant's words, an edit with its diff | a commented `exec` call whose output is the diff |
 
+Copilot gets `bash {command, description}`, `view {path}`, `rg {pattern}` and `web_fetch {url}` as real calls with their results, and every other call as the assistant's own words, as Claude Code does. Verified 2026-11-15: Copilot 1.0.112 opened a written session, drew its history, and answered a question about a prompt and a command's output in it.
+
 Outputs are cut at 4,000 bytes. Driven 2026-11-05 on a thread of two Claude turns (a `cat`, a
 `touch`): Codex opened on both, showed the commands with their output, and answered from memory;
 switched back, Claude showed Codex's turn as its own. Measured in tmux every 200 ms, the screen
@@ -179,6 +186,8 @@ Codex's folder-trust question the first time it sees a directory.
 | `edits` | `--permission-mode acceptEdits`. Edits pass, commands arrive as requests. | `-s workspace-write`. Edits and commands stay inside the workspace (and `/tmp`). |
 | `yolo` | `--permission-mode acceptEdits`, and desl's broker allows every request at once. Verified: a command that asks in `edits` runs without a question, and the log holds "policy answered Allow". `bypassPermissions` is not used: it would leave nothing in the log. | `-s danger-full-access`. Verified: a write outside the workspace succeeds. |
 
+Copilot asks before every edit and every command it does not know to be read-only, which is `ask` nearly as written (`permission_note` says so). `--allow-tool=write` is `edits`: its file tools stop asking and commands still do. `--allow-all` is `yolo`. Its dialogs are its own, so nothing reaches desl's broker.
+
 A mode change replaces the agent's process before its next turn and resumes the native
 session; both agents were verified to keep the conversation across it. `Adapter::permission_note`
 is how Codex says what `ask` and `edits` mean for it.
@@ -191,6 +200,7 @@ Each model lists its effort levels, and `/model` offers them after a model is pi
 | --- | --- | --- | --- |
 | Claude Code | `supportedEffortLevels` on each entry of `models[]`, when `supportsEffort` is set. Names only. | `--effort <level>` | Verified: accepted with `--resume`, and a different level on the next process keeps the session. An unknown level is a warning on stderr and Claude Code falls back to its default, so desl checks the level first. Claude Code does not report which level a session uses when none is passed; the list says "claude's own setting" and no more. |
 | Codex | `supported_reasoning_levels[] {effort, description}` and `default_reasoning_level` on each entry of `codex debug models`. | `-c model_reasoning_effort="<level>"`, before `resume` | Verified: accepted on a new and on a resumed session. A level the model does not take fails the turn with a 400 from the API, so desl checks the level first. With no pick the level is `model_reasoning_effort` from `~/.codex/config.toml` when the model takes it, else the model's default; the list names it. |
+| GitHub Copilot CLI | The `reasoning_effort` entry of `configOptions[]` in the `session/new` answer: the levels of the model in use only (`low` … `max` for GPT-5.6 Terra). | `--reasoning-effort <level>` | desl lists every model with the levels of the one in use, because the answer has no others. The session file's `session.model_change` carries `reasoningEffort`, null for a model without one. |
 
 `StartOpts.effort` carries the pick. `ModelInfo.efforts` and `ModelInfo.default_effort` carry
 the lists; an adapter whose agent has no such setting leaves both empty and the second list
@@ -206,6 +216,7 @@ desl"). The default is None, for an agent without skills.
 | --- | --- | --- |
 | Claude Code 2.1.319 | `~/.claude/skills` | The user's personal skills live there on this machine, and Claude Code lists them. desl's Claude adapter reads `~/.claude` for sessions too and does not follow `CLAUDE_CONFIG_DIR`; the skill folder does the same. |
 | Codex 0.167.0 | `$CODEX_HOME/skills`, or `~/.codex/skills` when it is unset | The binary's own skill-creator text says so, and it also reads `~/.agents/skills`; `~/.codex/skills/.system` holds Codex's bundled skills. |
+| GitHub Copilot CLI 1.0.112 | `$COPILOT_HOME/skills`, or `~/.copilot/skills` when it is unset | `copilot help config`, "Files and directories": `agents/`, `skills/` and `hooks/` there are the personal ones. In a project it also reads `.claude/skills/`. |
 
 ### Titles
 
@@ -216,6 +227,7 @@ Each agent writes a short title for a conversation, and the thread shows it (SPE
 | --- | --- | --- |
 | Claude Code 2.1.319 | `{"type":"ai-title","aiTitle":"…","sessionId":"…"}` lines in the session file, written after the first prompt and again as the session goes on | The session reader returns `Reading::Title`. Seen: written within seconds of the first reply. Not written in a session desl copied into Claude Code after a switch, so the thread keeps the name it had. |
 | Codex 0.167.0 | `$CODEX_HOME/session_index.jsonl`, one line `{"id","thread_name","updated_at"}` per naming; the newest line for an id wins. Not in the rollout file. | `session_title(session_id)`, asked every 5 seconds while the agent runs; only the last 256 KB of the index is read. Seen: written about a minute into a new session, and also for a session desl copied in, named from its newest prompt. |
+| GitHub Copilot CLI 1.0.112 | `name:` in the session's `workspace.yaml`, written by a utility model after the first turn. Not in the event log. | `session_title(session_id)`. Seen: "Extract Deadline From notes.txt" a few seconds after the first reply, and also for a session desl copied in. |
 
 ### Interrupting and dialogs (the native route)
 
@@ -227,6 +239,7 @@ agent then records the interruption in its session file, and the reader ends the
 | --- | --- | --- | --- |
 | Claude Code 2.1.319 | `esc` | 2026-11-08: a running turn ended about a second later; the partial reply and `[Request interrupted by user]` reach the thread as an assistant message and an interrupt. | A permission question with "1. Yes", the folder-trust question. |
 | Codex 0.167.0 | `esc` | 2026-11-08: a running turn ended within half a second, as `turn_aborted`. | An approval, "Trust this folder?" (drawn at the top of the screen, which the bottom rows of the terminal missed until this change), and the "Use session directory" choice when a resumed session's directory differs. |
+| GitHub Copilot CLI 1.0.112 | `ctrl+c` | 2026-11-15: a running `sleep` ended at once, as `abort {reason: "user_initiated"}`. A single `esc` only says what a second one would do, so it is not the key; `ctrl+c` on an idle prompt only warns. | A tool approval ("Do you want to run this command?", "Do you want to create …?") and the folder-trust question, each a numbered list over "enter to select · esc to cancel"; the form its `ask_user` tool opens ("Copilot needs information."). |
 
 Before the drawn-tail change, desl typed a prompt into Codex 0.167's folder-trust dialog in a new
 folder: the keys chose "Back to Agent Command Center" and walked into Codex's resume picker,
@@ -241,6 +254,7 @@ resumes the session and adds "No response requested." for the turn that was cut 
 | --- | --- | --- |
 | Claude Code | 2.1.312 | mise (`~/.local/share/mise/installs/claude/latest/claude`) |
 | Codex CLI | 0.165.0 | mise (`~/.local/share/mise/installs/codex/latest/bin/codex`) |
+| GitHub Copilot CLI | 1.0.112 | mise (`~/.local/share/mise/installs/copilot/latest/copilot`) |
 
 ## Claude Code 2.1.312
 
@@ -397,6 +411,59 @@ codex exec -s workspace-write [resume <thread-id>] --json --skip-git-repo-check 
   Codex in Prototype A unless app-server is used.
 - Session files: `~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<thread-id>.jsonl`, which is
   what Prototype B will tail.
+
+## GitHub Copilot CLI 1.0.112
+
+Added 2026-11-15, on the native route only: desl never runs Copilot headless, so `start()` is
+an error sentence. Everything here was seen on this machine against 1.0.112, with
+`COPILOT_HOME` pointed at a scratch folder so the user's own sessions stayed untouched.
+
+### Flags and files
+
+| What | Finding |
+| --- | --- |
+| `--session-id=<uuid>` | Names a new session, or opens the session with that id. desl uses it for both, so it always knows the id. `--resume=<id>` only opens. |
+| `--model <id>`, `--reasoning-effort <level>` | The model and level for the session. A resumed session keeps its own unless they are given. |
+| `--allow-tool=write`, `--allow-all-tools`, `--allow-all` | See "Permission modes". `--allow-tool` takes several values, so desl writes it with `=`. |
+| `--acp` | The Agent Client Protocol server desl asks for the model list. |
+| `COPILOT_HOME` | Moves `~/.copilot`, sessions included; the adapter follows it. |
+| `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN` | Copilot logs in through them, so the adapter keeps them out of desl's secrets denylist. |
+| `$COPILOT_HOME/session-state/<id>/` | One folder per session: `events.jsonl` (the event log), `workspace.yaml` (`id`, `cwd`, `name`, `user_named`, times), `checkpoints/`, `files/`. The folder appears at start; `events.jsonl` with the first event, which may be after the folder-trust question. |
+| `$COPILOT_HOME/config.json` | `trustedFolders`, written when the user answers "Yes, and remember this folder". desl never writes it. |
+
+### Session events
+
+One JSON object per line: `{type, data, id, timestamp, parentId}`, each naming the event before it.
+
+| `type` | Read as |
+| --- | --- |
+| `session.start` | The header: `sessionId`, `copilotVersion`, `context.cwd`. `session.resume` follows each later opening. |
+| `session.model_change` | `newModel`, `reasoningEffort`: at every start (`cause: "initial_resolution"`) and when the user picks in `/model`. Reported as settings when they differ from the last. |
+| `user.message` with no `source` | The prompt the user typed, in `content`. Opens a turn. |
+| `user.message` with a `source` | Copilot's own record in the user's place: `source: "memory"` is the memories it recalls before a turn, with empty `content`. Not a prompt. |
+| `assistant.turn_start`, `assistant.turn_end` | One pair per model call, numbered by `turnId` from 0 within a prompt. A prompt answered after one tool call has two pairs. |
+| `assistant.message` | `content` (the reply, empty when the model only called tools), `toolRequests[]`, `model`. An empty `toolRequests` means this model call is the turn's last. |
+| `tool.execution_start` | `toolCallId`, `toolName`, `arguments`: an object, or for `apply_patch` the patch itself as a string. |
+| `tool.execution_complete` | `success`, `result.content`, `result.detailedContent` (a git diff after an edit), `fileEdits[] {path, kind}`, `shellExecution.exitCode`. A shell result ends with Copilot's own line for the model, `<shellId: 0 completed with exit code 0>`, which the reader drops. |
+| `permission.requested`, `permission.completed` | The approval dialog, and its answer (`result.kind: "approved"`, `decisionSource`). Not read: `waiting` comes from the screen, as for the other agents. |
+| `abort` | `reason: "user_initiated"` after `ctrl+c`. Ends the turn; the call in flight gets no `tool.execution_complete`. |
+| `session.usage_checkpoint` | Written once after every turn, finished or stopped. Read as the end of the turn too, so a turn that fails after a tool call still ends. |
+| `session.shutdown` | Copilot quit. |
+| `system.message`, `instruction.update`, `model.*`, `session.usage_record`, `session.info` | Ignored. `system.message` holds the whole system prompt; `model.*` are calls to a utility model that labels the task and names the session. |
+
+No event says "the turn is over". The reader ends it when a model call that asked for no tools
+ends (`assistant.turn_end` after such an `assistant.message`), on `abort`, and on
+`session.usage_checkpoint`; `assistant.turn_start` sets it working again, so a wrong end would
+last one model call at most.
+
+Tools seen on GPT-5.6 Terra: `bash`, `view`, `rg`, `glob`, `web_fetch`, `apply_patch`, `task`,
+`ask_user`, `sql`, `skill` and the GitHub MCP server's. The reader maps `bash` to a command,
+`view` to a read, `apply_patch`, `edit` and `create` to an edit of the file named, `rg`, `grep`
+and `glob` to a search, `web_fetch` to a fetch and `task` to an agent; others keep their names.
+
+Not done yet: Copilot's subagents (`task`) are not listed under the thread. Events that carry a
+`parentToolCallId` are skipped so a subagent's messages do not read as the thread's own.
+
 
 ## Session files (Prototype B)
 

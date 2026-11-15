@@ -157,9 +157,14 @@ impl fmt::Display for AdapterError {
 impl std::error::Error for AdapterError {}
 
 pub trait Adapter: Send + Sync {
-    /// `claude`, `codex`: the word the user types after `/switch`.
+    /// `claude`, `codex`, `copilot`: the word the user types after `desl switch`.
     fn id(&self) -> &'static str;
     fn detect(&self) -> Detection;
+    /// Whether the agent's program is on PATH now. Cheap, so the daemon can notice an install
+    /// or a removal between two detections; the program is named as the agent is.
+    fn installed(&self) -> bool {
+        which(self.id()).is_some()
+    }
     fn capabilities(&self) -> Capabilities;
     /// What the agent does in `mode` when it cannot do what the mode says (SPEC.md "Permission
     /// modes": an adapter reports what it could not enforce). A few words that take the place

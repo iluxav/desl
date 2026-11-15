@@ -41,6 +41,10 @@ pub fn removed() -> Style {
 pub fn claude() -> Style {
     if no_color() { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Rgb(217, 119, 87)) }
 }
+/// Copilot's own violet, for its mark.
+pub fn copilot() -> Style {
+    if no_color() { Style::default().add_modifier(Modifier::BOLD) } else { Style::default().fg(Color::Rgb(163, 113, 247)) }
+}
 /// A branch name: the terminal's magenta, rose in most palettes.
 pub fn branch() -> Style {
     if no_color() { Style::default() } else { Style::default().fg(Color::Magenta) }

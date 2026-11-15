@@ -145,6 +145,8 @@ pub fn apply(into: &mut Config, text: &str, source: &str) {
             | "agents.claude.extra_args"
             | "agents.codex.model"
             | "agents.codex.extra_args"
+            | "agents.copilot.model"
+            | "agents.copilot.extra_args"
             | "permissions.destructive_patterns"
             | "brief.token_budget"
             | "brief.agent_summary" => false,

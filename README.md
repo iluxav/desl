@@ -6,8 +6,8 @@
 
 **One terminal workspace for your coding agents.** Say *diesel*.
 
-Claude Code and Codex run side by side, each in its own interface, in sessions that outlive
-your terminal. One key hands a conversation from one agent to the other, forks it to try
+Claude Code, Codex and GitHub Copilot CLI run side by side, each in its own interface, in
+sessions that outlive your terminal. One key hands a conversation from one agent to the other, forks it to try
 something else, or splits the screen to watch two threads at once.
 
 <p align="center">
@@ -24,7 +24,7 @@ something else, or splits the screen to watch two threads at once.
   SSH connection, come back from another machine: `desl` reattaches to the same screen, with
   every agent where it was.
 - **Switch agents mid-conversation.** `ctrl+space s` copies the conversation so far into a new
-  session of the other agent and swaps the screen in one frame. Codex continues where Claude
+  session of another agent and swaps the screen in one frame. Codex continues where Claude
   left off, knowing everything that was said. `ctrl+space f` forks instead, so both keep going.
 - **See everything at a glance.** The sidebar lists every project with its branch and how much
   is uncommitted, and every thread with its status: a pulsing logo while the agent works, a
@@ -33,7 +33,7 @@ something else, or splits the screen to watch two threads at once.
 - **Your files, one key away.** With [yazi](https://yazi-rs.github.io) installed, `ctrl+space c`
   opens it in a thread of its own, in the directory you are working in: the file list beside a
   syntax-highlighted preview, next to your agents or split beside one.
-- **Your agents can drive it too.** `desl skill install` teaches Claude Code and Codex to open
+- **Your agents can drive it too.** `desl skill install` teaches Claude Code, Codex and Copilot to open
   threads, hand work to the other agent for a second opinion, and wait on threads working in
   parallel, each in its own git worktree.
 
@@ -42,7 +42,8 @@ under your own logins and subscriptions, on your own machine, and never calls a 
 
 ## Install
 
-You need `claude` or `codex` on your PATH, logged in the way you already use them.
+You need at least one of `claude`, `codex` and `copilot` on your PATH, logged in the way you
+already use it. desl finds the ones you have and offers only those.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/iluxav/desl/main/install.sh | sh
@@ -64,9 +65,9 @@ make install        # release build into ~/.local/bin
 1. Inside a repository, run `desl`. The daemon starts, the repository becomes a project, and
    the agent opens in its own interface beside the sidebar.
 2. Work as you always do. Everything you type goes to the agent.
-3. `ctrl+space c` opens a second thread: Claude, Codex or a shell. `alt+j` and `alt+k` move
-   between threads.
-4. `ctrl+space s` hands the conversation to the other agent. Ask it what it thinks.
+3. `ctrl+space c` opens a second thread: any agent you have installed, or a shell. `alt+j`
+   and `alt+k` move between threads.
+4. `ctrl+space s` hands the conversation to another agent. Ask it what it thinks.
 5. `ctrl+space d` detaches. The agents keep working. `desl` brings you back.
 
 `ctrl+space ?` lists every key, filters as you type, and runs the one you pick.
@@ -77,11 +78,11 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 
 | After `ctrl+space` | |
 | --- | --- |
-| `s` | Switch this thread to the other agent, on the whole conversation |
-| `f` | Fork this conversation into a new thread, on either agent |
+| `s` | Switch this thread to another agent, on the whole conversation. With more than two installed, a list asks which |
+| `f` | Fork this conversation into a new thread, on any agent |
 | `r` | Restart this agent on the same conversation, with the binary and settings installed now |
 | `i` | Info: agent, session ids, model, directory |
-| `c` | New thread: Claude, Codex, a shell, or [yazi](https://yazi-rs.github.io) when it is installed. `w` in the menu gives an agent a git worktree of its own |
+| `c` | New thread: Claude, Codex or Copilot, whichever are installed, a shell, or [yazi](https://yazi-rs.github.io) when it is installed. `w` in the menu gives an agent a git worktree of its own |
 | `o` | Open a directory: type to find it among your projects, recent directories and repositories; a shell opens there |
 | `w` | Move into the sidebar: `j`/`k` show each thread as you move, `enter` or `esc` return |
 | `n` `p` `1`…`9` `l` | Next, previous, by number, the one shown before |
@@ -106,7 +107,8 @@ desl new --agent claude --worktree -m "Write property tests for src/parser.rs"
 desl send t-7f3a "And update the docs"     # type a prompt into the thread's agent, print the reply
 desl wait t-7f3a                           # block until the thread needs you or is done
 desl thread show t-7f3a                    # what it said and did
-desl switch t-7f3a codex                   # continue on the other agent
+desl switch t-7f3a codex                   # continue on another agent: claude, codex or copilot
+desl agents                                # the agents desl found on this machine
 desl fork t-7f3a claude --at 12 --worktree # a copy from message 12, on its own branch
 desl model t-7f3a haiku --effort low       # pick the model and effort for its next prompt
 desl interrupt t-7f3a                      # as esc in the agent's own screen
@@ -123,7 +125,7 @@ desl skill install
 
 installs the desl skill into every agent's skill folder. Inside desl, each agent's shell has
 `DESL_THREAD` set to its own thread, and the skill teaches it to look around with
-`desl status --json`, fork its conversation to the other agent and ask it a question with
+`desl status --json`, fork its conversation to another agent and ask it a question with
 `desl send`, or run independent work in parallel threads and `desl wait` on each. Only the
 thread's own agent is kept from switching, restarting or closing itself.
 
@@ -169,9 +171,10 @@ socket in `$XDG_RUNTIME_DIR`. `DESL_HOME` moves all three into one directory.
 
 ## Status
 
-desl is young and in daily use by its author. Claude Code and Codex are the supported agents,
-with a shell and a file manager (yazi) as the other kinds of thread; Linux and macOS are the
-supported systems. Coming
+desl is young and in daily use by its author. Claude Code, Codex and GitHub Copilot CLI are
+the supported agents, with a shell and a file manager (yazi) as the other kinds of thread;
+Linux and macOS are the supported systems. Copilot is the newest: its subagents are not shown
+in the sidebar yet. Coming
 next: worktree tooling (`desl diff`, `desl pr`), threads for agents without an adapter, and
 built-in themes. Issues and ideas are welcome.
 

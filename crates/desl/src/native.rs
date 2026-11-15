@@ -196,8 +196,8 @@ struct Client {
     closing: Option<String>,
     /// A subagent's conversation shown in the pane.
     sub: Option<Sub>,
-    /// The menu is `prefix f`'s (fork onto an agent), not `prefix c`'s.
-    forking: bool,
+    /// Which key opened the menu, and so what a row in it does.
+    menu_for: MenuFor,
     /// `prefix ,`: the name being typed.
     renaming: Option<String>,
     /// `prefix i`: the facts shown.
@@ -221,10 +221,46 @@ struct Sub {
     last: Instant,
 }
 
+/// What the menu on screen picks for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MenuFor {
+    /// `prefix c`: a new thread on an agent, a shell or the file manager.
+    New,
+    /// `prefix f`: this conversation in a new thread, on an agent.
+    Fork,
+    /// `prefix s` with more than one other agent installed: which one takes the thread.
+    Switch,
+}
+
 /// What a new-thread menu row starts: an agent's id, [`SHELL`] or [`FILES`].
 struct Choice {
     start: String,
     item: MenuItem,
+}
+
+/// The agents a menu offers: those installed on this machine. A switch marks the thread's own
+/// agent, which it cannot switch to; one that is installed and logged out stays, dimmed, to
+/// say what is missing.
+fn agent_choices(agents: &[AgentInfo], menu_for: MenuFor, current: &str) -> Vec<Choice> {
+    agents
+        .iter()
+        .filter(|a| a.detection.installed)
+        .map(|a| {
+            let own = menu_for == MenuFor::Switch && a.id == current;
+            let note = if own {
+                "✓ current"
+            } else if a.detection.logged_in == Some(false) {
+                "not logged in"
+            } else {
+                "agent"
+            };
+            let mut label = a.id.clone();
+            if let Some(f) = label.get_mut(0..1) {
+                f.make_ascii_uppercase();
+            }
+            Choice { start: a.id.clone(), item: MenuItem { label, note: note.to_string(), enabled: a.usable() && !own } }
+        })
+        .collect()
 }
 
 /// The user's shell by name: `bash`, `zsh`.
@@ -656,6 +692,7 @@ impl Client {
                 self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id().to_string())).unwrap_or(0));
                 self.side_from = Some(self.thread_id().to_string());
             }
+            Action::New | Action::Fork | Action::Switch if self.menu.is_some() => self.menu = None,
             Action::Switch if !is_agent(self.agent()) => {
                 self.notice(&format!(
                     "A {} has no conversation to switch. Press {} c to start an agent where it is.",
@@ -671,10 +708,19 @@ impl Client {
             }
             Action::Switch => {
                 self.side = None;
-                let to = if self.agent() == "claude" { "codex" } else { "claude" };
-                self.notice(&format!("Switching to {to}…"));
-                let id = self.link.request(Command::Switch { thread_id: self.thread_id().to_string(), agent: to.to_string() });
-                self.busy = Some(Busy::Switch(id));
+                // The agents installed here besides this thread's own: one is switched to at
+                // once, as the key always did; more open a menu to pick from.
+                let others: Vec<String> =
+                    self.agents.iter().filter(|a| a.detection.installed && a.id != self.agent()).map(|a| a.id.clone()).collect();
+                match others.as_slice() {
+                    [] => self.notice("No other agent is installed to hand this thread to. `desl agents` shows what desl looks for."),
+                    [one] => self.switch_to(&one.clone()),
+                    _ => {
+                        self.menu_for = MenuFor::Switch;
+                        self.menu_worktree = false;
+                        self.menu = Some(self.choices().iter().position(|c| c.item.enabled).unwrap_or(0));
+                    }
+                }
             }
             Action::Restart if self.agent() == SHELL => {
                 self.notice("A shell has no conversation to restart; `exec $SHELL` typed in it starts it again.")
@@ -689,13 +735,12 @@ impl Client {
                 let id = self.link.request(Command::Restart { thread_id: self.thread_id().to_string() });
                 self.busy = Some(Busy::Restart(id));
             }
-            Action::New | Action::Fork if self.menu.is_some() => self.menu = None,
             Action::Fork if !is_agent(self.agent()) => {
                 self.notice(&format!("A {} has no conversation to fork.", program_word(self.agent())))
             }
             Action::Fork => {
                 self.side = None;
-                self.forking = true;
+                self.menu_for = MenuFor::Fork;
                 self.menu_worktree = false;
                 // The cursor starts on the thread's own agent.
                 let at = self.choices().iter().position(|c| c.start == self.agent()).unwrap_or(0);
@@ -712,7 +757,7 @@ impl Client {
             }
             Action::New => {
                 self.side = None;
-                self.forking = false;
+                self.menu_for = MenuFor::New;
                 self.menu_worktree = false;
                 // The cursor starts on the project's default agent, else the first that works.
                 let choices = self.choices();
@@ -842,28 +887,12 @@ impl Client {
         out
     }
 
-    /// What `prefix c` offers: every agent desl drives, then the user's shell and, when it is
-    /// installed, their file manager. `prefix f` offers the agents only.
+    /// What `prefix c` offers: every agent installed here, then the user's shell and, when it
+    /// is installed, their file manager. `prefix f` and `prefix s` offer the agents only, the
+    /// second with the thread's own marked. An agent that is not installed is not a row.
     fn choices(&self) -> Vec<Choice> {
-        let mut out: Vec<Choice> = self
-            .agents
-            .iter()
-            .map(|a| {
-                let note = if !a.detection.installed {
-                    "not installed".to_string()
-                } else if a.detection.logged_in == Some(false) {
-                    "not logged in".to_string()
-                } else {
-                    "agent".to_string()
-                };
-                let mut label = a.id.clone();
-                if let Some(f) = label.get_mut(0..1) {
-                    f.make_ascii_uppercase();
-                }
-                Choice { start: a.id.clone(), item: MenuItem { label, note, enabled: a.usable() } }
-            })
-            .collect();
-        if !self.forking {
+        let mut out = agent_choices(&self.agents, self.menu_for, self.agent());
+        if self.menu_for == MenuFor::New {
             out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
             if let Some(name) = &self.file_manager {
                 out.push(Choice { start: FILES.into(), item: MenuItem { label: name.clone(), note: "files".into(), enabled: true } });
@@ -876,6 +905,9 @@ impl Client {
     fn start(&mut self, i: usize) {
         let choices = self.choices();
         let Some(choice) = choices.get(i) else { return };
+        if self.menu_for == MenuFor::Switch && choice.start == self.agent() {
+            return self.notice(&format!("This thread is already on {}. Pick another agent, or esc to cancel.", choice.start));
+        }
         if !choice.item.enabled {
             let hint = self
                 .agents
@@ -886,7 +918,10 @@ impl Client {
             return;
         }
         self.menu = None;
-        if self.forking {
+        if self.menu_for == MenuFor::Switch {
+            return self.switch_to(&choice.start);
+        }
+        if self.menu_for == MenuFor::Fork {
             let id = self.link.request(Command::Fork {
                 thread_id: self.thread_id().to_string(),
                 agent: Some(choice.start.clone()),
@@ -913,6 +948,13 @@ impl Client {
         self.busy = Some(Busy::Create(id));
     }
 
+    /// Hands this thread, with its whole conversation, to agent `to`.
+    fn switch_to(&mut self, to: &str) {
+        self.notice(&format!("Switching to {to}…"));
+        let id = self.link.request(Command::Switch { thread_id: self.thread_id().to_string(), agent: to.to_string() });
+        self.busy = Some(Busy::Switch(id));
+    }
+
     fn menu_key(&mut self, key: SKey) {
         let Some(at) = self.menu else { return };
         let n = self.choices().len();
@@ -922,7 +964,8 @@ impl Client {
             SKey::Up | SKey::Char('k') => self.menu = Some(at.saturating_sub(1)),
             SKey::Enter => self.start(at),
             SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
-            SKey::Char('w') => self.menu_worktree = !self.menu_worktree,
+            // A switch keeps the thread where it is; only a new thread can get a worktree.
+            SKey::Char('w') if self.menu_for != MenuFor::Switch => self.menu_worktree = !self.menu_worktree,
             SKey::Char(_) | SKey::Back => {}
         }
     }
@@ -1202,10 +1245,10 @@ impl Client {
         };
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
-        let mut title = if self.forking {
-            "Fork onto".to_string()
-        } else {
-            format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone()))
+        let mut title = match self.menu_for {
+            MenuFor::Fork => "Fork onto".to_string(),
+            MenuFor::Switch => "Switch to".to_string(),
+            MenuFor::New => format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone())),
         };
         if self.menu_worktree {
             title.push_str(" · ⎇ own worktree");
@@ -1239,7 +1282,15 @@ impl Client {
             cursor: f.cursor.min(finder_rows.len().saturating_sub(1)),
             scanning: f.scanning(),
         });
-        let view = View { menu: self.menu.map(|cursor| Menu { title: &title, items: &items, cursor }), sub: sub_view, finder, ..view };
+        let switching = self.menu_for == MenuFor::Switch;
+        let menu = self.menu.map(|cursor| Menu {
+            title: &title,
+            items: &items,
+            cursor,
+            verb: if switching { "switch" } else { "start" },
+            worktree: !switching,
+        });
+        let view = View { menu, sub: sub_view, finder, ..view };
         let screens: Vec<&vt100::Screen> = self.panes.iter().map(|p| p.vt.screen()).collect();
         let _ = self.term.draw(|f| layout::draw(f, &view, &a, &screens));
         let screen = self.pane().vt.screen();
@@ -1576,7 +1627,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         finder: None,
         closing: None,
         sub: None,
-        forking: false,
+        menu_for: MenuFor::New,
         renaming: None,
         info: None,
         menu_worktree: false,
@@ -1633,4 +1684,35 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
     // Give the last keys a moment to reach the daemon before the socket closes.
     std::thread::sleep(Duration::from_millis(30));
     Ok(farewell)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use desl_ir::adapter::Detection;
+
+    fn agent(id: &str, installed: bool, logged_in: Option<bool>) -> AgentInfo {
+        AgentInfo {
+            id: id.into(),
+            detection: Detection { installed, logged_in, ..Detection::default() },
+            capabilities: Default::default(),
+            mode_notes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_menu_offers_the_agents_installed_here_and_a_switch_marks_the_threads_own() {
+        let agents = [agent("claude", true, Some(true)), agent("codex", false, None), agent("copilot", true, None)];
+        let rows = |menu_for, current: &str| -> Vec<(String, bool)> {
+            agent_choices(&agents, menu_for, current).into_iter().map(|c| (c.item.label, c.item.enabled)).collect()
+        };
+        assert_eq!(rows(MenuFor::New, "claude"), [("Claude".to_string(), true), ("Copilot".to_string(), true)], "codex is not installed");
+        assert_eq!(rows(MenuFor::Fork, "claude").len(), 2, "a fork may stay on the same agent");
+        assert_eq!(rows(MenuFor::Switch, "claude"), [("Claude".to_string(), false), ("Copilot".to_string(), true)]);
+        assert_eq!(agent_choices(&agents, MenuFor::Switch, "claude")[0].item.note, "✓ current", "the thread's own agent is marked");
+        // Installed and logged out: shown, and not startable, so the row can say why.
+        let out = [agent("claude", true, Some(false))];
+        let row = &agent_choices(&out, MenuFor::New, "")[0];
+        assert_eq!((row.item.note.as_str(), row.item.enabled), ("not logged in", false));
+    }
 }

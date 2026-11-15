@@ -6,6 +6,7 @@ use crate::engine::{ClientId, Engine, Msg};
 use crate::store::Store;
 use adapter_claude::Claude;
 use adapter_codex::Codex;
+use adapter_copilot::Copilot;
 use anyhow::{Context, Result, bail};
 use desl_ir::adapter::Adapter;
 use desl_proto::paths::Paths;
@@ -74,7 +75,7 @@ fn accept(listener: UnixListener, tx: Sender<Msg>) {
 /// Runs the daemon in this process until a client sends `shutdown`.
 /// Every agent desl has an adapter for, in the order lists show them.
 pub fn adapters() -> Vec<Arc<dyn Adapter>> {
-    vec![Arc::new(Claude), Arc::new(Codex)]
+    vec![Arc::new(Claude), Arc::new(Codex), Arc::new(Copilot)]
 }
 
 pub fn serve(paths: &Paths) -> Result<()> {

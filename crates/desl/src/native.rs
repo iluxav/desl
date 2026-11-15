@@ -7,7 +7,7 @@ use crate::finder::Finder;
 use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
-use desl_ir::{Event, Project, SHELL, Status, Thread};
+use desl_ir::{Event, FILES, Project, SHELL, Status, Thread, is_agent, program_word};
 use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -186,6 +186,8 @@ struct Client {
     /// An action picked in the key list, run once its key is handled.
     run: Option<Action>,
     agents: Vec<AgentInfo>,
+    /// The file manager `prefix c` offers, when the daemon found one installed.
+    file_manager: Option<String>,
     /// The new-thread menu's cursor while it is open.
     menu: Option<usize>,
     /// `prefix o`: the directory finder while it is open.
@@ -219,7 +221,7 @@ struct Sub {
     last: Instant,
 }
 
-/// What a new-thread menu row starts: an agent's id, or [`SHELL`].
+/// What a new-thread menu row starts: an agent's id, [`SHELL`] or [`FILES`].
 struct Choice {
     start: String,
     item: MenuItem,
@@ -631,12 +633,12 @@ impl Client {
             Action::Close => {
                 self.side = None;
                 let what = match self.threads.iter().find(|t| t.id == self.thread_id()) {
-                    Some(t) if t.active_agent == SHELL => format!("the shell {}", t.name),
+                    Some(t) if !is_agent(&t.active_agent) => format!("the {} {}", program_word(&t.active_agent), t.name),
                     Some(t) => format!("{} · {}", t.active_agent, if t.name.is_empty() { "new" } else { t.name.as_str() }),
                     None => self.thread_id().to_string(),
                 };
                 let wt = self.threads.iter().find(|t| t.id == self.thread_id()).and_then(|t| t.worktree.clone());
-                let note = match (&wt, self.agent() == SHELL) {
+                let note = match (&wt, !is_agent(self.agent())) {
                     (Some(name), _) => format!(" Its worktree goes if nothing in it is uncommitted; the branch desl/{name} stays."),
                     (None, true) => String::new(),
                     (None, false) => " The agent keeps the conversation in its own history.".to_string(),
@@ -654,9 +656,10 @@ impl Client {
                 self.side = Some(rows.iter().position(|r| *r == Row::Thread(self.thread_id().to_string())).unwrap_or(0));
                 self.side_from = Some(self.thread_id().to_string());
             }
-            Action::Switch if self.agent() == SHELL => {
+            Action::Switch if !is_agent(self.agent()) => {
                 self.notice(&format!(
-                    "A shell has no conversation to switch. Press {} c to start an agent where it is.",
+                    "A {} has no conversation to switch. Press {} c to start an agent where it is.",
+                    program_word(self.agent()),
                     self.prefix_label
                 ));
             }
@@ -676,6 +679,10 @@ impl Client {
             Action::Restart if self.agent() == SHELL => {
                 self.notice("A shell has no conversation to restart; `exec $SHELL` typed in it starts it again.")
             }
+            Action::Restart if self.agent() == FILES => self.notice(&format!(
+                "A file manager has no conversation to restart; q closes it, and {} c opens it again.",
+                self.prefix_label
+            )),
             Action::Restart => {
                 self.side = None;
                 self.notice(&format!("Restarting {}…", self.agent()));
@@ -683,7 +690,9 @@ impl Client {
                 self.busy = Some(Busy::Restart(id));
             }
             Action::New | Action::Fork if self.menu.is_some() => self.menu = None,
-            Action::Fork if self.agent() == SHELL => self.notice("A shell has no conversation to fork."),
+            Action::Fork if !is_agent(self.agent()) => {
+                self.notice(&format!("A {} has no conversation to fork.", program_word(self.agent())))
+            }
             Action::Fork => {
                 self.side = None;
                 self.forking = true;
@@ -833,8 +842,8 @@ impl Client {
         out
     }
 
-    /// What `prefix c` offers: every agent desl drives, then the user's shell. `prefix f`
-    /// offers the agents only.
+    /// What `prefix c` offers: every agent desl drives, then the user's shell and, when it is
+    /// installed, their file manager. `prefix f` offers the agents only.
     fn choices(&self) -> Vec<Choice> {
         let mut out: Vec<Choice> = self
             .agents
@@ -856,6 +865,9 @@ impl Client {
             .collect();
         if !self.forking {
             out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
+            if let Some(name) = &self.file_manager {
+                out.push(Choice { start: FILES.into(), item: MenuItem { label: name.clone(), note: "files".into(), enabled: true } });
+            }
         }
         out
     }
@@ -889,7 +901,7 @@ impl Client {
             (None, Some(t)) => t.cwd.clone(),
             (None, None) => return self.notice("desl does not know this thread's project yet. Try again in a moment."),
         };
-        let worktree = self.menu_worktree && choice.start != SHELL;
+        let worktree = self.menu_worktree && is_agent(&choice.start);
         let command = Command::NewThread {
             cwd,
             agent: Some(choice.start.clone()),
@@ -1287,7 +1299,7 @@ impl Client {
                     self.busy = None;
                 }
                 let agent = self.panes[i].agent.clone();
-                let name = if agent == SHELL { "The shell".to_string() } else { agent };
+                let name = if is_agent(&agent) { agent } else { format!("The {}", program_word(&agent)) };
                 if self.panes.len() > 1 {
                     // Its pane closes; the other one stays.
                     self.panes.remove(i);
@@ -1559,6 +1571,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         help: None,
         run: None,
         agents: ws.agents,
+        file_manager: ws.file_manager,
         menu: None,
         finder: None,
         closing: None,

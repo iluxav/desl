@@ -48,6 +48,9 @@ impl Pty {
         let mut cmd = CommandBuilder::new(&launch.program);
         cmd.args(&launch.args);
         cmd.cwd(cwd);
+        // The daemon's own PWD is where it was started. A program that trusts PWD over the
+        // directory it runs in, as yazi does, would open there.
+        cmd.env("PWD", cwd);
         for var in &launch.env_remove {
             cmd.env_remove(var);
         }
@@ -271,6 +274,18 @@ mod tests {
             }
         }
         assert!(seen.contains("thread=t-7f3a;"), "{seen:?}");
+    }
+
+    #[test]
+    fn what_runs_in_a_thread_is_told_where_it_starts() {
+        let launch = Launch { program: "env".into(), args: Vec::new(), env_remove: Vec::new(), keep: Vec::new(), session_id: None };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let _pty = Pty::spawn("files", "t-7f3a", &launch, Path::new("/"), 24, 80, move |b| drop(tx.send(b)), || {}).expect("env starts");
+        let mut seen = String::new();
+        while let Ok(b) = rx.recv_timeout(Duration::from_secs(5)) {
+            seen.push_str(&String::from_utf8_lossy(&b));
+        }
+        assert!(seen.lines().any(|l| l.trim_end() == "PWD=/"), "PWD is the daemon's own, not the thread's: {seen:?}");
     }
 
     #[test]

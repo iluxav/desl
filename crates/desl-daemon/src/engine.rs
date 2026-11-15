@@ -10,10 +10,10 @@
 use crate::pty::Pty;
 use crate::store::Store;
 use crate::{git, projector};
-use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn};
+use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which};
 use desl_ir::{
-    Binding, Decision, Event, EventKind, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status, Thread,
-    derive_name,
+    Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status,
+    Thread, derive_name, is_agent, program_word,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
@@ -210,6 +210,8 @@ pub struct Engine {
     git_busy: bool,
     /// The user's settings file; none in tests, which run on the defaults.
     config_file: Option<PathBuf>,
+    /// The program a files thread runs: `yazi`. Tests name one every machine has.
+    file_manager: String,
     ticks: u64,
     pub stopping: bool,
 }
@@ -231,6 +233,12 @@ fn shell_launch() -> Launch {
         keep: std::env::vars_os().map(|(k, _)| k.to_string_lossy().into_owned()).collect(),
         session_id: None,
     }
+}
+
+/// The user's own file manager, with their whole environment and their own configuration, as
+/// their shell: it opens on the directory it starts in.
+fn files_launch(program: &str) -> Launch {
+    Launch { program: program.to_string(), ..shell_launch() }
 }
 
 /// The shell's name for the sidebar: `bash`, `zsh`.
@@ -265,7 +273,7 @@ impl Engine {
         let projects = store.projects()?;
         let mut threads = store.threads()?;
         // Threads named before titles carry one word from their first prompt: give them the title.
-        for t in threads.iter_mut().filter(|t| t.head > 0 && !t.name.contains(' ') && t.active_agent != SHELL) {
+        for t in threads.iter_mut().filter(|t| t.head > 0 && !t.name.contains(' ') && is_agent(&t.active_agent)) {
             let first = store.events(&t.id, 1, t.head.min(50)).unwrap_or_default().into_iter().find_map(|e| match e.kind {
                 EventKind::UserMessage { text, .. } => Some(text),
                 _ => None,
@@ -302,6 +310,7 @@ impl Engine {
             restarting: HashSet::new(),
             git_busy: false,
             config_file: None,
+            file_manager: desl_ir::FILE_MANAGER.to_string(),
             ticks: 0,
             stopping: false,
         };
@@ -340,6 +349,19 @@ impl Engine {
 
     fn adapter(&self, agent: &str) -> Option<Arc<dyn Adapter>> {
         self.adapters.iter().find(|a| a.id() == agent).cloned()
+    }
+
+    /// The file manager's name while it is on the daemon's PATH: looked up each time, so one
+    /// installed while the daemon runs is found.
+    fn file_manager(&self) -> Option<String> {
+        which(&self.file_manager).map(|_| self.file_manager.clone())
+    }
+
+    fn no_file_manager(&self) -> String {
+        format!(
+            "{0} is not installed, or not on the PATH the desl daemon started with. Install {0} (https://yazi-rs.github.io/docs/installation) and open it again.",
+            self.file_manager
+        )
     }
 
     fn agent_info(&self, agent: &str) -> Option<&AgentInfo> {
@@ -914,15 +936,15 @@ impl Engine {
     fn start_pty(&mut self, i: usize, rows: u16, cols: u16) -> Result<(), String> {
         let t = &self.threads[i];
         let (thread_id, agent) = (t.id.clone(), t.active_agent.clone());
-        let shell = agent == SHELL;
-        let adapter = if shell {
-            None
-        } else {
+        let adapter = if is_agent(&agent) {
             self.usable(&agent)?;
             Some(self.adapter(&agent).ok_or_else(|| format!("desl has no adapter for {agent}."))?)
+        } else {
+            None
         };
         let binding = t.bindings.get(&agent);
         let launch = match &adapter {
+            None if agent == FILES => files_launch(&self.file_manager().ok_or_else(|| self.no_file_manager())?),
             None => shell_launch(),
             Some(adapter) => {
                 let open = match binding.and_then(|b| b.session_id.clone()) {
@@ -1188,7 +1210,7 @@ impl Engine {
     fn retitle(&mut self, i: usize, title: &str) -> bool {
         let t = &mut self.threads[i];
         let name = derive_name(title);
-        if t.named || t.active_agent == SHELL || title.trim().is_empty() || t.name == name {
+        if t.named || !is_agent(&t.active_agent) || title.trim().is_empty() || t.name == name {
             return false;
         }
         tracing::info!(thread = %t.id, from = %t.name, to = %name, "the agent titled the thread");
@@ -1495,7 +1517,7 @@ impl Engine {
             }
         }
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
-        let was_shell = self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL);
+        let own_program = self.idx(thread_id).is_ok_and(|i| !is_agent(&self.threads[i].active_agent));
         let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
@@ -1503,8 +1525,8 @@ impl Engine {
                 c.shows.remove(thread_id);
             }
         }
-        // A shell that exited is gone: there is nothing to come back to.
-        if was_shell {
+        // A shell or a file manager that exited is gone: there is nothing to come back to.
+        if own_program {
             self.remove_thread(thread_id);
         }
     }
@@ -1601,6 +1623,7 @@ impl Engine {
             projects: self.projects.clone(),
             threads: self.threads.clone(),
             agents: self.agents.clone(),
+            file_manager: self.file_manager(),
             view: self.store.meta_get("view").ok().flatten().and_then(|v| serde_json::from_str(&v).ok()),
             project_id,
             focus,
@@ -1942,8 +1965,12 @@ impl Engine {
             return Err("The prompt is empty. Type something to send.".to_string());
         }
         let agent = self.threads[i].active_agent.clone();
-        if agent == SHELL {
-            return Err(format!("A shell thread has no agent to prompt. Start one with {} c, or desl new.", self.prefix()));
+        if !is_agent(&agent) {
+            return Err(format!(
+                "A {} thread has no agent to prompt. Start one with {} c, or desl new.",
+                program_word(&agent),
+                self.prefix()
+            ));
         }
         // An agent desl runs in its own interface gets the prompt typed there; the headless
         // turn is left for agents without one.
@@ -2034,9 +2061,10 @@ impl Engine {
     fn end_agent(&mut self, thread_id: &str) -> Result<(), String> {
         let i = self.idx(thread_id)?;
         let agent = self.threads[i].active_agent.clone();
-        if agent == SHELL {
+        if !is_agent(&agent) {
+            let what = program_word(&agent);
             return Err(format!(
-                "{thread_id} is a shell, and a shell that ends closes its thread. `desl thread rm {thread_id}` closes it."
+                "{thread_id} is a {what}, and a {what} that ends closes its thread. `desl thread rm {thread_id}` closes it."
             ));
         }
         let Some((_, pty)) = self.ptys.get_mut(thread_id) else {
@@ -2113,8 +2141,12 @@ impl Engine {
 
     /// SPEC.md switch algorithm, step 1. The brief goes out with the next prompt (steps 3 to 5).
     fn switch(&mut self, thread_id: &str, to: &str) -> Outcome {
-        if self.idx(thread_id).is_ok_and(|i| self.threads[i].active_agent == SHELL) {
-            return Err(format!("A shell has no conversation to switch. Press {} c to start an agent in its directory.", self.prefix()));
+        if let Some(what) = self.idx(thread_id).ok().map(|i| &self.threads[i].active_agent).filter(|a| !is_agent(a)) {
+            return Err(format!(
+                "A {} has no conversation to switch. Press {} c to start an agent in its directory.",
+                program_word(what),
+                self.prefix()
+            ));
         }
         if self.ptys.contains_key(thread_id) {
             return self.switch_native(thread_id, to);
@@ -2163,6 +2195,13 @@ impl Engine {
     fn fork(&mut self, thread_id: &str, agent: Option<&str>, at: Option<u64>, worktree: bool) -> Outcome {
         let i = self.idx(thread_id)?;
         let parent = self.threads[i].clone();
+        if !is_agent(&parent.active_agent) {
+            return Err(format!(
+                "A {} has no conversation to fork. Press {} c to start an agent in its directory.",
+                program_word(&parent.active_agent),
+                self.prefix()
+            ));
+        }
         if parent.head == 0 {
             return Err("There is nothing to fork yet. Send a prompt first.".to_string());
         }
@@ -2239,8 +2278,29 @@ impl Engine {
             self.persist(&id);
             return Ok(Reply::Created { thread_id: id });
         }
-        // From a shell: where the shell is now becomes the project, and the shell joins it.
-        let from_shell = beside.filter(|&b| self.threads[b].active_agent == SHELL).map(|b| self.threads[b].id.clone());
+        if agent == Some(FILES) {
+            let program = self.file_manager().ok_or_else(|| self.no_file_manager())?;
+            // In the folder of the thread the user is on: where its shell or file manager is
+            // now, else the thread's own directory, which is its worktree when it has one.
+            let (project_id, dir) = match beside {
+                Some(b) => {
+                    let t = &self.threads[b];
+                    let live = if is_agent(&t.active_agent) { None } else { self.ptys.get(&t.id).and_then(|(_, p)| p.cwd()) };
+                    (t.project_id.clone(), live.unwrap_or_else(|| PathBuf::from(&t.cwd)))
+                }
+                None => (self.project_for(Path::new(cwd))?, PathBuf::from(cwd)),
+            };
+            let id = self.create_thread(&project_id, FILES)?;
+            let i = self.idx(&id)?;
+            if dir.is_dir() {
+                self.threads[i].cwd = dir.to_string_lossy().into_owned();
+            }
+            self.threads[i].name = program;
+            self.persist(&id);
+            return Ok(Reply::Created { thread_id: id });
+        }
+        // From a shell or a file manager: where it is now becomes the project, and it joins it.
+        let from_shell = beside.filter(|&b| !is_agent(&self.threads[b].active_agent)).map(|b| self.threads[b].id.clone());
         let here = from_shell.as_ref().and_then(|id| self.ptys.get(id)).and_then(|(_, p)| p.cwd());
         let dir = here.clone().unwrap_or_else(|| cwd.into());
         let project_id = self.project_for(&dir)?;

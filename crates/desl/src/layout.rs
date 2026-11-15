@@ -4,7 +4,7 @@
 
 use crate::theme;
 use crate::ui::text::truncate_end;
-use desl_ir::{GitState, Project, SHELL, Status, Thread};
+use desl_ir::{FILES, GitState, Project, SHELL, Status, Thread, is_agent};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -60,14 +60,14 @@ pub const KEYS: &[Bind] = &[
     bind("Agent", "i", "Info: agent, session ids, model, directory", Some(Action::Info)),
     bind("Agent", "r", "Restart this agent, keeping the conversation", Some(Action::Restart)),
     bind("Threads", "w", "Move to the thread list (j/k, enter, esc)", Some(Action::Threads)),
-    bind("Threads", "c", "New thread: pick Claude, Codex or a shell", Some(Action::New)),
+    bind("Threads", "c", "New thread: pick Claude, Codex, a shell or a file manager", Some(Action::New)),
     bind("Threads", "o", "Open a directory: type to find it; a shell opens there", Some(Action::Open)),
     bind("Threads", "n", "Next thread", Some(Action::Next)),
     bind("Threads", "p", "Previous thread", Some(Action::Prev)),
     bind("Threads", "1…9", "Jump to thread n", None),
     bind("Threads", "l", "Back to the thread shown before", Some(Action::Last)),
     bind("Threads", ",", "Rename this thread", Some(Action::Rename)),
-    bind("Threads", "x", "Close this thread: its agent or shell ends", Some(Action::Close)),
+    bind("Threads", "x", "Close this thread: its agent, shell or file manager ends", Some(Action::Close)),
     bind("Panes", "%", "Split: another thread beside this one", Some(Action::SplitBeside)),
     bind("Panes", "\"", "Split: another thread under this one", Some(Action::SplitStacked)),
     bind("Panes", "z", "Zoom: back to one pane, this one", Some(Action::Zoom)),
@@ -338,8 +338,8 @@ fn panel(focused: bool) -> Block<'static> {
     Block::bordered().border_type(BorderType::Rounded).border_style(if focused { theme::accent() } else { theme::muted() })
 }
 
-/// Each agent's mark: with a Nerd Font, the Claude and OpenAI logos and a terminal; without,
-/// a one-cell badge in the agent's colour.
+/// Each agent's mark: with a Nerd Font, the Claude and OpenAI logos, a terminal for a shell and
+/// a folder for a file manager; without, a one-cell badge in the agent's colour.
 pub fn agent_icon(agent: &str) -> (&'static str, Style) {
     use ratatui::style::Color;
     let badge =
@@ -348,19 +348,22 @@ pub fn agent_icon(agent: &str) -> (&'static str, Style) {
         ("claude", true) => ("\u{ec82}", theme::claude()),
         ("codex", true) => ("\u{ec81}", theme::normal()),
         (SHELL, true) => ("\u{ebca}", theme::dim()),
+        (FILES, true) => ("\u{ea83}", theme::dim()),
         ("claude", false) => ("✻", badge(Color::Black, Color::Rgb(217, 119, 87))),
         ("codex", false) => ("›", badge(Color::Black, Color::Rgb(220, 220, 220))),
         (SHELL, false) => ("$", badge(Color::White, Color::Rgb(70, 70, 70))),
+        (FILES, false) => ("/", badge(Color::Black, Color::Rgb(150, 150, 150))),
         (_, true) => ("\u{ec20}", theme::dim()),
         (_, false) => ("◆", theme::dim()),
     }
 }
 
-/// An agent's own colour: Claude's orange, Codex in the terminal's text colour, a shell grey.
+/// An agent's own colour: Claude's orange, Codex in the terminal's text colour; a shell and a
+/// file manager grey.
 pub fn agent_rgb(agent: &str) -> (u8, u8, u8) {
     match agent {
         "claude" => (217, 119, 87),
-        SHELL => (150, 150, 150),
+        SHELL | FILES => (150, 150, 150),
         _ => theme::fg_rgb(),
     }
 }
@@ -386,6 +389,7 @@ fn text_icon(agent: &str) -> &'static str {
         "claude" => "✻",
         "codex" => "◎",
         SHELL => "$",
+        FILES => "/",
         _ => "◆",
     }
 }
@@ -441,7 +445,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 };
                 let on = |s: Style| if lit { theme::pill() } else { base.patch(s) };
                 let (icon, icon_style) = status_icon(t, v.pulse);
-                let mut right = if t.active_agent == SHELL { String::new() } else { age(v.now, t.updated_at) };
+                let mut right = if is_agent(&t.active_agent) { age(v.now, t.updated_at) } else { String::new() };
                 if t.worktree.is_some() {
                     right = format!("⎇ {right}").trim_end().to_string();
                 }
@@ -547,9 +551,9 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         return;
     }
     if let Some(t) = v.threads.iter().find(|t| t.id == p.thread_id) {
-        // A shell's header names where it started; an agent's, its project.
+        // A shell's or a file manager's header names where it started; an agent's, its project.
         let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-        let path = tilde(&if p.agent == SHELL { t.cwd.clone() } else { project.unwrap_or_else(|| t.cwd.clone()) });
+        let path = tilde(&if is_agent(p.agent) { project.unwrap_or_else(|| t.cwd.clone()) } else { t.cwd.clone() });
         // A thread in its own worktree says which branch it works on, and what is uncommitted there.
         let (branch, dirty) = match (&t.worktree, &t.git.branch) {
             (Some(_), Some(b)) => (format!(" ⎇ {b}"), if t.git.dirty > 0 { format!(" ±{}", t.git.dirty) } else { String::new() }),
@@ -570,7 +574,7 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
                 Span::styled(format!("{} ", t.id), theme::muted()),
             ])
         };
-        let agent = if p.agent == SHELL { t.name.clone() } else { agent_title(p.agent) };
+        let agent = if is_agent(p.agent) { agent_title(p.agent) } else { t.name.clone() };
         let (icon, icon_style) = agent_icon(p.agent);
         let tail = if model.is_empty() { 0 } else { model.width() + 3 };
         let git = branch.width() + dirty.width();
@@ -1069,6 +1073,44 @@ mod tests {
         assert_eq!(s.mains[0].height + s.mains[1].height, s.body.height);
         assert_eq!(s.mains[1].y, s.mains[0].height);
         assert_eq!(areas(150, 40, true, None).mains, vec![a.body]);
+    }
+
+    #[test]
+    fn a_files_thread_is_titled_by_its_file_manager_and_shows_where_it_opened() {
+        let projects = [project("desl")];
+        let mut files = thread("t-2b", "desl", 2, Status::Idle, "yazi");
+        files.active_agent = FILES.into();
+        files.cwd = "/src/desl/docs".into();
+        files.bindings.clear();
+        let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), files];
+        let a = areas(120, 30, true, None);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView { thread_id: "t-2b", agent: FILES, scrolled: 0 }],
+            focus: 0,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: None,
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[0].contains("╭ / yazi · /src/desl/docs ") && lines[0].contains("○ idle t-2b ╮"), "{s}");
+        assert!(lines[4].contains("│  / yazi ") && !lines[4].contains("now"), "no age, as a shell: {s}");
     }
 
     #[test]

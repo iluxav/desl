@@ -14,6 +14,23 @@ use std::collections::BTreeMap;
 /// The `active_agent` of a thread that runs the user's shell instead of an agent.
 pub const SHELL: &str = "shell";
 
+/// The `active_agent` of a thread that runs the user's file manager instead of an agent.
+pub const FILES: &str = "files";
+
+/// The file manager a files thread runs.
+pub const FILE_MANAGER: &str = "yazi";
+
+/// False for a thread that runs a program of the user's own, their shell or their file manager:
+/// it has no conversation, and it closes when its program ends.
+pub fn is_agent(kind: &str) -> bool {
+    kind != SHELL && kind != FILES
+}
+
+/// What a thread that runs no agent is called in a sentence: `shell`, `file manager`.
+pub fn program_word(kind: &str) -> &'static str {
+    if kind == FILES { "file manager" } else { "shell" }
+}
+
 /// The status words, used identically in the sidebar, the CLI and notifications.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[serde(rename_all = "lowercase")]

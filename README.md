@@ -30,6 +30,9 @@ something else, or splits the screen to watch two threads at once.
   is uncommitted, and every thread with its status: a pulsing logo while the agent works, a
   yellow one and a bell when it needs you, a faded one when it is idle. Subagents hang under
   their thread.
+- **Your files, one key away.** With [yazi](https://yazi-rs.github.io) installed, `ctrl+space c`
+  opens it in a thread of its own, in the directory you are working in: the file list beside a
+  syntax-highlighted preview, next to your agents or split beside one.
 - **Your agents can drive it too.** `desl skill install` teaches Claude Code and Codex to open
   threads, hand work to the other agent for a second opinion, and wait on threads working in
   parallel, each in its own git worktree.
@@ -78,7 +81,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `f` | Fork this conversation into a new thread, on either agent |
 | `r` | Restart this agent on the same conversation, with the binary and settings installed now |
 | `i` | Info: agent, session ids, model, directory |
-| `c` | New thread: Claude, Codex or a shell. `w` in the menu gives it a git worktree of its own |
+| `c` | New thread: Claude, Codex, a shell, or [yazi](https://yazi-rs.github.io) when it is installed. `w` in the menu gives an agent a git worktree of its own |
 | `o` | Open a directory: type to find it among your projects, recent directories and repositories; a shell opens there |
 | `w` | Move into the sidebar: `j`/`k` show each thread as you move, `enter` or `esc` return |
 | `n` `p` `1`…`9` `l` | Next, previous, by number, the one shown before |
@@ -167,7 +170,8 @@ socket in `$XDG_RUNTIME_DIR`. `DESL_HOME` moves all three into one directory.
 ## Status
 
 desl is young and in daily use by its author. Claude Code and Codex are the supported agents,
-with a shell as the third kind of thread; Linux and macOS are the supported systems. Coming
+with a shell and a file manager (yazi) as the other kinds of thread; Linux and macOS are the
+supported systems. Coming
 next: worktree tooling (`desl diff`, `desl pr`), threads for agents without an adapter, and
 built-in themes. Issues and ideas are welcome.
 

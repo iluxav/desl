@@ -932,3 +932,51 @@ fn restart_needs_a_running_agent_and_never_a_shell() {
     let err = r.cmd(Command::Restart { thread_id: shell.clone() }).unwrap_err();
     assert!(err.contains("is a shell"), "{err}");
 }
+
+#[test]
+fn a_files_thread_opens_where_the_thread_beside_it_is_and_has_no_conversation() {
+    let mut r = rig("files");
+    let t = r.t.clone();
+    // A program every machine has stands in for yazi.
+    r.engine.file_manager = "sh".into();
+    let Ok(Reply::Workspace(ws)) = r.cmd(Command::Workspace) else { panic!("the workspace") };
+    assert_eq!(ws.file_manager.as_deref(), Some("sh"), "an installed file manager is offered");
+    // The thread on screen works in a directory of its own, as one with a worktree does.
+    let project = r.thread(&t).cwd;
+    let sub = PathBuf::from(&project).join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.threads[i].cwd = sub.to_string_lossy().into_owned();
+    let Ok(Reply::Created { thread_id: files }) =
+        r.cmd(Command::NewThread { cwd: project, agent: Some(FILES.into()), prompt: None, beside: Some(t.clone()), worktree: false })
+    else {
+        panic!("a files thread")
+    };
+    let f = r.thread(&files);
+    assert_eq!((f.active_agent.as_str(), f.name.as_str()), (FILES, "sh"), "titled by its program, as a shell is");
+    assert_eq!(f.cwd, sub.to_string_lossy(), "in the directory of the thread it was opened from");
+    assert_eq!(f.project_id, r.thread(&t).project_id);
+    for (command, says) in [
+        (Command::Prompt { thread_id: files.clone(), text: "hello".into() }, "A file manager thread has no agent to prompt"),
+        (Command::Switch { thread_id: files.clone(), agent: "codex".into() }, "A file manager has no conversation to switch"),
+        (Command::Fork { thread_id: files.clone(), agent: None, at: None, worktree: false }, "A file manager has no conversation to fork"),
+        (Command::Restart { thread_id: files.clone() }, "is a file manager"),
+    ] {
+        let err = r.cmd(command).unwrap_err();
+        assert!(err.contains(says), "{err}");
+    }
+}
+
+#[test]
+fn a_file_manager_that_is_not_installed_is_not_offered() {
+    let mut r = rig("nofiles");
+    let t = r.t.clone();
+    r.engine.file_manager = "desl-no-such-file-manager".into();
+    let Ok(Reply::Workspace(ws)) = r.cmd(Command::Workspace) else { panic!("the workspace") };
+    assert_eq!(ws.file_manager, None);
+    let err = r
+        .cmd(Command::NewThread { cwd: r.thread(&t).cwd, agent: Some(FILES.into()), prompt: None, beside: Some(t), worktree: false })
+        .unwrap_err();
+    assert!(err.contains("is not installed") && err.contains("Install desl-no-such-file-manager"), "{err}");
+    assert!(r.engine.threads.iter().all(|t| t.active_agent != FILES), "no thread is left behind");
+}

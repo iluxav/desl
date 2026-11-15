@@ -7,6 +7,12 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- A files thread: with [yazi](https://yazi-rs.github.io) installed, `prefix c` offers it under the
+  shell (`desl new --agent files` from the CLI). It opens in the directory of the thread on
+  screen, in a thread of its own with a folder mark in the sidebar, and it is yazi as the user
+  set it up: the list, the highlighted preview, its keys. `q` closes the thread, and `prefix c`
+  from it starts an agent where it is browsing.
+
 - `desl interrupt <thread>` stops a thread's current turn, as `esc` does in the agent's own
   screen, and `desl exit <thread>` ends a thread's agent while the thread stays; its next
   prompt resumes the conversation. The desl skill teaches both, and neither works on the
@@ -31,6 +37,8 @@ All notable changes to desl are recorded here. The format follows
 
 - desl no longer types a prompt into a question the agent draws near the top of its screen,
   such as Codex's "Trust this folder?" in a new folder. The thread waits for the user instead.
+- What runs in a thread is told where it starts: `PWD` was the directory the daemon was
+  started in, so a program that trusts it over its working directory opened there.
 - A Claude thread no longer shows as working for hours after Claude Code compacts its
   conversation while idle (2.1.325 writes the summary in the user's place). The summary is
   Claude's own record: it opens no turn and is not an event of the thread.

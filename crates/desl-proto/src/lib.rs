@@ -124,7 +124,8 @@ pub enum Command {
         #[serde(default)]
         worktree: bool,
     },
-    /// `agent` "shell" opens a shell instead of an agent.
+    /// `agent` "shell" opens a shell instead of an agent, and "files" the user's file manager,
+    /// in the directory of the thread `beside`.
     NewThread {
         cwd: String,
         agent: Option<String>,
@@ -376,6 +377,9 @@ pub struct Workspace {
     pub projects: Vec<Project>,
     pub threads: Vec<Thread>,
     pub agents: Vec<AgentInfo>,
+    /// The file manager a files thread runs (`yazi`), when it is on the daemon's `PATH` now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_manager: Option<String>,
     pub view: Option<Value>,
     /// The project of the directory the client subscribed from.
     pub project_id: Option<String>,

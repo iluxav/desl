@@ -41,7 +41,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | Command | Fields | Reply | Notes |
 | --- | --- | --- | --- |
 | `hello` | `protocol`, `client` | `hello {protocol, version, pid}` | First frame on every connection. A different major `protocol` is refused. |
-| `workspace` | | `workspace` | Projects, threads, agents. No subscription. |
+| `workspace` | | `workspace` | Projects, threads, agents, and `file_manager`: the program a files thread runs (`yazi`) when it is on the daemon's `PATH` now, absent otherwise. No subscription. |
 | `subscribe` | `cwd?` | `workspace` | As `workspace`, and from now on every change arrives as an event. `cwd` registers that directory's repository as a project, makes sure it has a thread, and sets `project_id` and `focus` in the reply. |
 | `open_thread` | `thread_id` | `thread {thread, events, partial}` | The thread's whole log, and its token stream from now on. `partial` is the text of a block still being generated. |
 | `view` | `thread_id` | `viewing {thread_id, partial}` | Moves the token stream to a thread whose events the client already has. |
@@ -54,7 +54,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `switch` | `thread_id`, `agent` | `done` | The brief goes out with the next prompt. |
 | `fork` | `thread_id`, `agent?`, `at?` | `created {thread_id}` | A new thread with the history up to event `at` (the newest when absent). |
 | `subagent` | `thread_id`, `subagent_id` | `events {events}` | One of the thread's subagents' conversation, read-only, numbered from 1 |
-| `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`; from a shell `beside`, the agent opens where the shell is, as its own project, and the shell joins it |
+| `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`, and `files` their file manager in the directory `beside` is in (an error when none is installed); from a shell or file manager `beside`, the agent opens where it is, as its own project, and it joins it |
 | `rename` | `thread_id`, `name` | `done` | |
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
 | `brief` | `thread_id`, `to?` | `brief {to, text, token_estimate, turns, delta, needed}` | What a switch to `to` would send now. `needed` is false when `to` has seen everything. |

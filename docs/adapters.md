@@ -137,7 +137,7 @@ the end of the file. Verified 2026-11-05 on Claude Code 2.1.318 and Codex CLI 0.
 | | Claude Code | Codex |
 | --- | --- | --- |
 | Found by | the id desl gave it (`--session-id`) | the newest rollout for the cwd created after the start; its id becomes the binding's |
-| Working | a user line whose content is a string (not a tag) | `event_msg` `task_started` |
+| Working | a user line whose content is a string (not a tag, not `isCompactSummary`) | `event_msg` `task_started` |
 | Idle | `system` `turn_duration`; `[Request interrupted…]` | `task_complete`; `turn_aborted` |
 | Events | user, assistant and tool-result lines through the stream parser (`toolUseResult` is the stream's `tool_use_result`); `isSidechain` lines skipped | `response_item` messages, `custom_tool_call` (`exec` scripts unpacked to their command, `apply_patch` to an edit), `function_call`, outputs |
 | Waiting (bottom 14 rows, only mid-turn) | `Do you want to` with `1. Yes`; the trust question | `Would you like to run the following command?` (seen live), `Trust this folder` |
@@ -413,11 +413,12 @@ line, appended as the session runs. The file appears with the first prompt.
 | --- | --- |
 | `user` with `message.content` a string | The prompt the user typed (`origin.kind` is `human`, `turnOrigin` is `human`), unless the text starts with a tag. |
 | `user`, string starting with a tag | Claude Code's own record, not a prompt. A local command such as `/model` writes three lines and no turn follows: `<local-command-caveat>` (`isMeta: true`), `<command-name>`, `<local-command-stdout>`; none has `turnOrigin`. Bash mode (`!echo hi`) writes `<bash-input>` and then `<bash-stdout>`; the second has `turnOrigin: "human"` and Claude answers it, so it opens a turn. `/cost` writes no user line at all. |
+| `user` with `isCompactSummary: true` | The summary Claude Code writes when it compacts the conversation: on `/compact`, when the context fills mid-turn, and (2.1.325) while the session sits idle, before the prompt cache expires (`idleCompaction` in settings). A `system` `compact_boundary` line comes first and, for the idle case, a `system` `informational` line ("Compacted while idle…") after; no `turn_duration` follows. Not a prompt: it opens no turn and is not an event. |
 | `user` with a `tool_result` block | The result of a tool call: `tool_use_id`, `is_error`, `content`. |
 | `user` with a text block `[Request interrupted by user]` or `[Request interrupted by user for tool use]` | Esc. Ends the turn; neither `end_turn` nor `turn_duration` follows. An interrupted tool also gets an error `tool_result` first. |
 | `assistant` | One line per content block: `text`, `tool_use` (`id`, `name`, `input`), `thinking` (ignored). Lines are written when the message is complete, not as it streams. `message.stop_reason == "end_turn"` ends the turn; it repeats on every line of the same `message.id`, so it is counted once, and the thinking line carries it before the text line arrives. |
 | `system` with `subtype: "turn_duration"` | Written once after every finished turn, after the last line of its last message. The dependable end of a turn. |
-| other `system`, `summary` | Ignored. |
+| other `system` (`compact_boundary`, `informational`, `away_summary`), `summary` | Ignored. |
 | `attachment`, `api-request-blob`, `api-request-shape`, `file-history-snapshot`, `mode`, `permission-mode` | Ignored. `api-request-blob` holds the full request including the system prompt. |
 
 `isSidechain: true` lines belong to subagents and are skipped. A pending permission dialog is not

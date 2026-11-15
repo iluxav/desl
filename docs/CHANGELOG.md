@@ -31,6 +31,9 @@ All notable changes to desl are recorded here. The format follows
 
 - desl no longer types a prompt into a question the agent draws near the top of its screen,
   such as Codex's "Trust this folder?" in a new folder. The thread waits for the user instead.
+- A Claude thread no longer shows as working for hours after Claude Code compacts its
+  conversation while idle (2.1.325 writes the summary in the user's place). The summary is
+  Claude's own record: it opens no turn and is not an event of the thread.
 
 ### Changed
 

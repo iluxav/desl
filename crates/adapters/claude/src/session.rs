@@ -1,7 +1,7 @@
 //! Claude Code's session files (the native route): where they are, and their lines as events.
 //! `~/.claude/projects/<cwd with every non-alphanumeric character as ->/<session-id>.jsonl`.
 //! Message lines have the shape of the stream-json output, so [`Parser`] reads them; the
-//! differences are handled here. Shapes verified against Claude Code 2.1.318; see docs/adapters.md.
+//! differences are handled here. Shapes verified against Claude Code 2.1.325; see docs/adapters.md.
 
 use crate::parse::Parser;
 use desl_ir::adapter::{AdapterEvent, CopyItem, Reading, SessionReader, copy_items, new_uuid};
@@ -72,6 +72,12 @@ impl SessionReader for Reader {
         }
         match v.get("type").and_then(Value::as_str) {
             Some("user") => {
+                // Claude Code writes its compaction summary in the user's place, also while the
+                // session sits idle (2.1.325 compacts before the prompt cache expires). It is
+                // Claude's own record: no prompt, no turn, and nothing a switch carries.
+                if v.get("isCompactSummary").and_then(Value::as_bool) == Some(true) {
+                    return Vec::new();
+                }
                 let content = &v["message"]["content"];
                 if let Some(text) = content.as_str() {
                     if tagged(text) {
@@ -337,6 +343,18 @@ mod tests {
         let got =
             read(&[r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#]);
         assert_eq!(got, vec![Reading::Event(EventKind::Interrupt), Reading::Idle]);
+    }
+
+    #[test]
+    fn a_compaction_summary_opens_no_turn() {
+        // While a session sits idle, Claude Code 2.1.325 compacts it and writes the summary as a
+        // user line; a thread that was idle must stay idle.
+        let got = read(&[
+            r#"{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","compactMetadata":{"trigger":"auto"}}"#,
+            r#"{"type":"user","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"message":{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}"#,
+            r#"{"type":"system","subtype":"informational","content":"Compacted while idle, before the prompt cache expired"}"#,
+        ]);
+        assert_eq!(got, vec![]);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! `prefix o`: open a directory as a project, the way fzf and zoxide find one. Typing filters a
-//! list of the projects desl knows, the directories zoxide remembers and the git repositories
-//! under the home directory; a typed path (`~/src/x`, `/srv`, `../y`) lists its directory
-//! instead, and tab completes it. Enter picks the highlighted directory.
+//! list of the projects desl knows, the directories zoxide remembers, the git repositories
+//! under the home directory and the plain folders beside those; a typed path (`~/src/x`,
+//! `/srv`, `../y`) lists its directory instead, and tab completes it. Enter picks the
+//! highlighted directory.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -20,6 +21,8 @@ pub enum Kind {
     Project,
     Recent,
     Repo,
+    /// A plain folder beside a project or a repository: where the next project is made.
+    Folder,
     Dir,
 }
 
@@ -29,6 +32,7 @@ impl Kind {
             Kind::Project => "project",
             Kind::Recent => "recent",
             Kind::Repo => "git",
+            Kind::Folder => "folder",
             Kind::Dir => "",
         }
     }
@@ -100,18 +104,61 @@ fn repos(root: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The plain folders beside `beside`, the projects and repositories: a folder that holds
+/// projects is where the next one is made, before it has a `.git` or a visit zoxide remembers.
+/// The home folder's own children and the filesystem root's are left out: those hold everything.
+fn folders_beside(beside: &[PathBuf], home: &Path) -> Vec<PathBuf> {
+    let mut parents: Vec<&Path> = Vec::new();
+    for p in beside {
+        if let Some(parent) = p.parent().filter(|d| *d != home && d.parent().is_some())
+            && !parents.contains(&parent)
+        {
+            parents.push(parent);
+        }
+    }
+    let mut out = Vec::new();
+    for parent in parents {
+        let Ok(entries) = std::fs::read_dir(parent) else { continue };
+        let mut dirs: Vec<PathBuf> = entries
+            .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+            .filter(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                !name.starts_with('.') && !SKIP.contains(&name.as_ref())
+            })
+            .map(|e| e.path())
+            .filter(|p| !beside.contains(p))
+            .collect();
+        dirs.sort();
+        out.extend(dirs);
+    }
+    out
+}
+
 /// How well `query` matches `text` as an fzf-style subsequence, higher better; None if not.
+/// The letters are looked for in the path's last name first, since the name is what people
+/// type: `reb` is `~/Projects/rebrand`, not the `r` and `e` of `Projects` and a later `b`.
 pub(crate) fn score(text: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
     }
     let t: Vec<char> = text.to_lowercase().chars().collect();
+    let q: Vec<char> = query.to_lowercase().chars().filter(|c| !c.is_whitespace()).collect();
     let base = t.iter().rposition(|&c| c == '/').map_or(0, |i| i + 1);
+    let s = subsequence(&t, &q, base, base).max(subsequence(&t, &q, 0, base))?;
+    // Shorter paths win ties: `desl` over `desl/crates/desl`.
+    Some(s * 100 - t.len() as i64)
+}
+
+/// The leftmost match of `q` in `t` from `from` on, scored: a point a letter, more for a run
+/// of letters, for one in the last name (from `base` on) and for one that starts a word.
+fn subsequence(t: &[char], q: &[char], from: usize, base: usize) -> Option<i64> {
     let mut s = 0i64;
-    let mut at = 0;
+    let mut at = from;
     let mut last: Option<usize> = None;
-    for q in query.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
-        let i = (at..t.len()).find(|&i| t[i] == q)?;
+    for &c in q {
+        let i = (at..t.len()).find(|&i| t[i] == c)?;
         s += 1;
         if last == Some(i.wrapping_sub(1)) {
             s += 8;
@@ -125,8 +172,7 @@ pub(crate) fn score(text: &str, query: &str) -> Option<i64> {
         last = Some(i);
         at = i + 1;
     }
-    // Shorter paths win ties: `desl` over `desl/crates/desl`.
-    Some(s * 100 - t.len() as i64)
+    Some(s)
 }
 
 impl Finder {
@@ -136,11 +182,15 @@ impl Finder {
         let found = known.iter().map(|p| (PathBuf::from(p), Kind::Project)).collect();
         let (tx, rx) = mpsc::channel();
         let root = home.clone();
+        let mut beside: Vec<PathBuf> = known.iter().map(PathBuf::from).collect();
         std::thread::spawn(move || {
             let mut more: Vec<(PathBuf, Kind)> = zoxide().into_iter().map(|p| (p, Kind::Recent)).collect();
             let _ = tx.send(std::mem::take(&mut more));
             if let Some(root) = root {
-                let _ = tx.send(repos(&root).into_iter().map(|p| (p, Kind::Repo)).collect());
+                let repos = repos(&root);
+                beside.extend(repos.iter().cloned());
+                let _ = tx.send(repos.into_iter().map(|p| (p, Kind::Repo)).collect());
+                let _ = tx.send(folders_beside(&beside, &root).into_iter().map(|p| (p, Kind::Folder)).collect());
             }
         });
         Finder { query: String::new(), cursor: 0, found, scan: Some(rx), home }
@@ -231,7 +281,7 @@ impl Finder {
             .enumerate()
             .filter_map(|(i, (p, k))| score(&tilde(p, self.home.as_deref()), &self.query).map(|s| (s, i, p, *k)))
             .collect();
-        // With nothing typed, the sources keep their order: projects, recent, repositories.
+        // With nothing typed, the sources keep their order: projects, recent, repositories, folders.
         if !self.query.trim().is_empty() {
             scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         }
@@ -285,6 +335,10 @@ mod tests {
         let c = score("~/d/e/s/l", "desl").unwrap();
         assert!(a > b && a > c, "{a} {b} {c}");
         assert!(score("~/Projects/desl", "xyz").is_none());
+        // The letters of the name are not taken from the folders above it.
+        assert!(score("~/Projects/rebrand", "reb").unwrap() > score("~/Projects/plybox", "reb").unwrap());
+        assert!(score("~/Projects/rebrand", "re").unwrap() > score("~/Projects/ply", "re").unwrap());
+        assert!(score("~/Projects/desl", "pd").is_some(), "letters across the path still match");
         assert_eq!(score("anything", ""), Some(0));
     }
 
@@ -303,6 +357,23 @@ mod tests {
         assert_eq!(f.matches()[0], (dir.path().join("alpha"), Kind::Dir), "the directory itself comes first");
         f.query = format!("{}/", dir.path().display());
         assert_eq!(f.matches().len(), 4, "itself, alpha, alps, beta; not .hidden");
+    }
+
+    #[test]
+    fn a_plain_folder_beside_a_project_is_listed_and_the_home_folders_own_are_not() {
+        let home = Temp::new("beside");
+        for d in ["Projects/api/.git", "Projects/rebrand", "Projects/.cache", "Projects/node_modules", "Documents", "solo/.git", "Work"] {
+            std::fs::create_dir_all(home.path().join(d)).unwrap();
+        }
+        std::fs::write(home.path().join("Projects/notes.txt"), "").unwrap();
+        // A repository the scan found, one directly in the home folder, and a project desl knows there.
+        let beside = [home.path().join("Projects/api"), home.path().join("solo"), home.path().join("Work")];
+        assert_eq!(
+            folders_beside(&beside, home.path()),
+            [home.path().join("Projects/rebrand")],
+            "not the repository itself, hidden or skipped names, files, or Documents beside a project in the home folder"
+        );
+        assert!(folders_beside(&[PathBuf::from("/srv")], home.path()).is_empty(), "nor everything under the root");
     }
 
     #[test]

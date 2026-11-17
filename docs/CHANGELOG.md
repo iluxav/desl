@@ -54,6 +54,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Changed
 
+- `prefix o` also lists the plain folders beside your projects and repositories, marked
+  `folder`: a directory made a minute ago in `~/Projects` is found before it has a `.git`.
+  The home folder's own children are still listed only when they are projects, repositories
+  or recent.
 - The menus list only the agents installed on this machine. One that is missing is no longer
   a dimmed "not installed" row; `desl agents` and `desl doctor` still name it and how to
   install it. One that is installed and logged out stays, dimmed, with the reason.

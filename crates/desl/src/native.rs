@@ -121,9 +121,13 @@ struct Palette {
 }
 
 /// A key the sidebar understands, from whichever encoding the terminal used.
+#[derive(Debug, PartialEq, Eq)]
 enum SKey {
     Up,
     Down,
+    /// An arrow with shift held: moves what the cursor is on, where something can move.
+    MoveUp,
+    MoveDown,
     Enter,
     Close,
     Back,
@@ -206,6 +210,8 @@ struct Client {
     menu_worktree: bool,
     /// The close request in flight, whose answer may say what became of a worktree.
     removing: Option<u64>,
+    /// The request to move a project in flight, whose answer may say it is at the edge already.
+    moving: Option<u64>,
     prefix: desl_proto::config::Prefix,
     /// The prefix as the interface writes it: `ctrl+space`.
     prefix_label: String,
@@ -261,6 +267,21 @@ fn agent_choices(agents: &[AgentInfo], menu_for: MenuFor, current: &str) -> Vec<
             Choice { start: a.id.clone(), item: MenuItem { label, note: note.to_string(), enabled: a.usable() && !own } }
         })
         .collect()
+}
+
+/// An up or down arrow as the terminal reports it, plain (`CSI A`) or with shift held
+/// (`CSI 1;2 A`, and `CSI 1;2:1 A` when a program asked for event types).
+fn arrow(raw: &[u8]) -> Option<SKey> {
+    let (params, last) = raw.strip_prefix(b"\x1b[")?.split_last().map(|(l, p)| (p, *l))?;
+    let mods = std::str::from_utf8(params).ok()?.split(';').nth(1).and_then(|m| m.split(':').next()?.parse::<u32>().ok()).unwrap_or(1);
+    let shift = mods.saturating_sub(1) & 1 != 0;
+    match (last, shift) {
+        (b'A', false) => Some(SKey::Up),
+        (b'A', true) => Some(SKey::MoveUp),
+        (b'B', false) => Some(SKey::Down),
+        (b'B', true) => Some(SKey::MoveDown),
+        _ => None,
+    }
 }
 
 /// The user's shell by name: `bash`, `zsh`.
@@ -500,9 +521,10 @@ impl Client {
                         Some(ch) => SKey::Char(ch),
                         None => continue,
                     },
-                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"A") => SKey::Up,
-                    None if raw.starts_with(b"\x1b[") && raw.ends_with(b"B") => SKey::Down,
-                    None => continue,
+                    None => match arrow(&raw) {
+                        Some(key) => key,
+                        None => continue,
+                    },
                 };
                 self.side_key(key);
                 if let Some(a) = self.run.take()
@@ -604,6 +626,14 @@ impl Client {
                 Some(Row::Sub(id, k)) => {
                     self.side = None;
                     self.open_sub(&id, k);
+                }
+                // A click on a project's row puts the sidebar's cursor on it, ready to be moved.
+                Some(row @ Row::Project(_)) => {
+                    let rows = layout::rows(&self.projects, &self.threads);
+                    self.side = rows.iter().position(|r| *r == row);
+                    self.side_from = Some(self.thread_id().to_string());
+                    self.sub = None;
+                    self.dirty = true;
                 }
                 _ => {}
             }
@@ -966,7 +996,7 @@ impl Client {
             SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
             // A switch keeps the thread where it is; only a new thread can get a worktree.
             SKey::Char('w') if self.menu_for != MenuFor::Switch => self.menu_worktree = !self.menu_worktree,
-            SKey::Char(_) | SKey::Back => {}
+            SKey::Char(_) | SKey::Back | SKey::MoveUp | SKey::MoveDown => {}
         }
     }
 
@@ -999,7 +1029,7 @@ impl Client {
                 // `?` is this list; picking it just closes it.
                 self.run = bind.action.filter(|a| *a != Action::Help);
             }
-            SKey::Char(_) => {}
+            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown => {}
         }
     }
 
@@ -1046,7 +1076,7 @@ impl Client {
                 self.busy = Some(Busy::Create(id));
                 self.notice(&format!("A shell in {shown}. Press {} c to start an agent here.", self.prefix_label));
             }
-            SKey::Char(_) => {}
+            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown => {}
         }
     }
 
@@ -1102,6 +1132,19 @@ impl Client {
 
     fn side_key(&mut self, key: SKey) {
         self.dirty = true;
+        // Shift and an arrow reorder in the thread list; in a menu or a list over it they are the arrow.
+        let listing = self.help.is_none()
+            && self.finder.is_none()
+            && self.sub.is_none()
+            && self.info.is_none()
+            && self.renaming.is_none()
+            && self.closing.is_none()
+            && self.menu.is_none();
+        let key = match key {
+            SKey::MoveUp if !listing => SKey::Up,
+            SKey::MoveDown if !listing => SKey::Down,
+            key => key,
+        };
         if self.help.is_some() {
             return self.palette_key(key);
         }
@@ -1155,9 +1198,20 @@ impl Client {
             Some(Row::Thread(id)) => Some(id.clone()),
             _ => None,
         };
-        let pickable = |i: usize| matches!(rows.get(i), Some(Row::Thread(_) | Row::Sub(..)));
-        // A click or a cursor on a thread's second line means the thread.
+        // The cursor stops on a project's row too: that is where a project is moved from.
+        let pickable = |i: usize| matches!(rows.get(i), Some(Row::Project(_) | Row::Thread(_) | Row::Sub(..)));
         match key {
+            SKey::MoveUp | SKey::MoveDown => match rows.get(cursor) {
+                Some(Row::Project(id)) => {
+                    self.moving = Some(self.link.request(Command::MoveProject { project_id: id.clone(), up: key == SKey::MoveUp }));
+                }
+                _ => self.notice("Shift and an arrow move a project. Put the cursor on the project's row first, with k."),
+            },
+            // A project's row stands for its first thread.
+            SKey::Enter if matches!(rows.get(cursor), Some(Row::Project(_))) => {
+                self.side = None;
+                self.preview(thread_at(cursor + 1));
+            }
             SKey::Enter if matches!(rows.get(cursor), Some(Row::Sub(..))) => {
                 if let Some(Row::Sub(id, k)) = rows.get(cursor).cloned() {
                     self.side = None;
@@ -1407,6 +1461,13 @@ impl Client {
             }
             return;
         }
+        if self.moving == Some(id) {
+            self.moving = None;
+            if let Some(sentence) = error {
+                self.notice(&sentence);
+            }
+            return;
+        }
         if let Some(sub) = &mut self.sub
             && sub.asked == Some(id)
         {
@@ -1506,6 +1567,14 @@ impl Client {
                             None => return Some("That was the last thread. Run desl to start a new one.".to_string()),
                         }
                     }
+                }
+            }
+            Change::ProjectOrder { ids } => {
+                // The cursor stays on the row it was on, wherever that row is now.
+                let on = self.side.and_then(|i| layout::rows(&self.projects, &self.threads).get(i).cloned());
+                self.projects.sort_by_key(|p| ids.iter().position(|id| *id == p.id).unwrap_or(usize::MAX));
+                if let Some(row) = on {
+                    self.side = layout::rows(&self.projects, &self.threads).iter().position(|r| *r == row).or(self.side);
                 }
             }
             Change::Project { project } => match self.projects.iter_mut().find(|p| p.id == project.id) {
@@ -1632,6 +1701,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         info: None,
         menu_worktree: false,
         removing: None,
+        moving: None,
         prefix: settings.prefix,
         prefix_label: settings.prefix.label(),
     };
@@ -1698,6 +1768,18 @@ mod tests {
             capabilities: Default::default(),
             mode_notes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn shift_and_an_arrow_is_told_from_the_arrow_in_every_encoding() {
+        assert_eq!(arrow(b"\x1b[A"), Some(SKey::Up));
+        assert_eq!(arrow(b"\x1b[B"), Some(SKey::Down));
+        assert_eq!(arrow(b"\x1b[1;2A"), Some(SKey::MoveUp));
+        assert_eq!(arrow(b"\x1b[1;2B"), Some(SKey::MoveDown));
+        assert_eq!(arrow(b"\x1b[1;2:1B"), Some(SKey::MoveDown), "with an event type, as the kitty protocol reports it");
+        assert_eq!(arrow(b"\x1b[1;5A"), Some(SKey::Up), "ctrl is not shift");
+        assert_eq!(arrow(b"\x1b[1;2C"), None);
+        assert_eq!(arrow(b"j"), None);
     }
 
     #[test]

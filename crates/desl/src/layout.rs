@@ -434,7 +434,16 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
             Row::Project(id) => {
                 let p = v.projects.iter().find(|p| p.id == *id);
                 let path = p.map_or(id.clone(), |p| p.path.clone());
-                lines.push(project_row(&path, p.map(|p| &p.git), w));
+                let mut line = project_row(&path, p.map(|p| &p.git), w);
+                // The cursor lights the whole row, as it does a thread's.
+                if v.cursor == Some(i) {
+                    let used: usize = line.spans.iter().map(|s| s.content.width()).sum();
+                    line.spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+                    for s in &mut line.spans {
+                        s.style = theme::pill();
+                    }
+                }
+                lines.push(line);
             }
             Row::Thread(id) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
@@ -650,7 +659,9 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
         Line::from(spans)
     } else if v.cursor.is_some() {
         let mut spans = vec![Span::raw("  ")];
-        for (k, what) in [("j/k", "move, the pane follows"), ("enter esc", "back to the agent"), ("1-9", "jump")] {
+        for (k, what) in
+            [("j/k", "move, the pane follows"), ("shift+↑↓", "move a project"), ("enter esc", "back to the agent"), ("1-9", "jump")]
+        {
             spans.push(Span::styled(k, theme::bold()));
             spans.push(Span::styled(format!(" {what}   "), theme::dim()));
         }
@@ -1163,6 +1174,46 @@ mod tests {
         assert!(s.contains("╭ Switch to ") && s.contains(" 1  Claude  agent") && s.contains(" 2  Codex   agent"), "{s}");
         let keys = s.lines().last().unwrap();
         assert!(keys.contains("enter switch") && !keys.contains("own worktree"), "a switch keeps the thread where it is: {keys}");
+    }
+
+    #[test]
+    fn the_cursor_lights_a_projects_row_and_the_key_line_says_how_to_move_it() {
+        let projects = [project("desl"), project("api")];
+        let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), thread("t-2b", "api", 2, Status::Idle, "add a route")];
+        let a = areas(120, 30, true, None);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let r = rows(&projects, &threads);
+        let at = r.iter().position(|x| *x == Row::Project("api".into())).unwrap();
+        let v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            focus: 0,
+            cursor: Some(at),
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: None,
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        let y = SIDE_TOP + at as u16;
+        assert!(s.lines().nth(y as usize).unwrap().contains("│ api  /src "), "{s}");
+        let b = t.backend().buffer();
+        // Lit from the first column of the row to the last, past where its text ends.
+        assert_eq!((b[(2, y)].bg, b[(30, y)].bg), (Color::Blue, Color::Blue), "{s}");
+        assert_eq!(b[(2, SIDE_TOP)].bg, Color::Reset, "the other project's row is not: {s}");
+        assert!(s.lines().last().unwrap().contains("shift+↑↓ move a project"), "{s}");
     }
 
     #[test]

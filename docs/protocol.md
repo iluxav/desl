@@ -57,6 +57,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`, and `files` their file manager in the directory `beside` is in (an error when none is installed); from a shell or file manager `beside`, the agent opens where it is, as its own project, and it joins it |
 | `rename` | `thread_id`, `name` | `done` | |
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
+| `move_project` | `project_id`, `up` | `done` | Moves the project one place up or down among the projects that have a thread, the ones a sidebar lists, and keeps the order across restarts. An error sentence when it is already first or last. |
 | `brief` | `thread_id`, `to?` | `brief {to, text, token_estimate, turns, delta, needed}` | What a switch to `to` would send now. `needed` is false when `to` has seen everything. |
 | `clear` | `thread_id` | `done` | A fresh native session on the same thread; the history stays. |
 | `models` | `thread_id` | `models {agent, models, current, effort?}` | The models the thread's active agent offers, each with `id`, `name`, `description`, `default`, and where the model has them `efforts[] {id, description?}` and `default_effort`. `current` is the id this thread uses; `effort` is the thread's own pick of a reasoning effort, absent on the agent's own setting. The first ask per agent may take a second: the daemon asks the agent, then remembers. |
@@ -88,6 +89,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | --- | --- | --- |
 | `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
 | `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval or branch changed. |
+| `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |
 | `agents` | `agents` | Detection ran again. |

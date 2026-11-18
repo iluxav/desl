@@ -84,7 +84,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `i` | Info: agent, session ids, model, directory |
 | `c` | New thread: Claude, Codex or Copilot, whichever are installed, a shell, or [yazi](https://yazi-rs.github.io) when it is installed. `w` in the menu gives an agent a git worktree of its own |
 | `o` | Open a directory: type to find it among your projects, recent directories and repositories; a shell opens there |
-| `w` | Move into the sidebar: `j`/`k` show each thread as you move, `enter` or `esc` return |
+| `w` | Move into the sidebar: `j`/`k` show each thread as you move, `enter` or `esc` return. On a project's row, `shift+↑` and `shift+↓` reorder the projects |
 | `n` `p` `1`…`9` `l` | Next, previous, by number, the one shown before |
 | `,` `x` | Rename this thread, close it |
 | `%` `"` `z` | Split: another thread beside or under this one; zoom back to one pane |

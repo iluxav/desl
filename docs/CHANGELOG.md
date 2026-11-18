@@ -7,6 +7,9 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- The projects in the sidebar can be reordered. `prefix w` now stops on a project's row too;
+  `shift+↑` and `shift+↓` there move the project up or down, and a click on the row puts the
+  cursor on it. The order is the daemon's, so it holds across clients and restarts.
 - GitHub Copilot CLI is the third agent desl drives, in its own interface like the other two:
   `prefix c` and `desl new --agent copilot` open it, the sidebar shows its status and its own
   title for the conversation, `desl model` lists its models, and a switch or a fork copies the

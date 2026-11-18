@@ -266,11 +266,18 @@ fn detect(adapters: &[Arc<dyn Adapter>]) -> Vec<AgentInfo> {
         .collect()
 }
 
+/// Where the store keeps the order the user gave the projects: a JSON list of their ids.
+const PROJECT_ORDER: &str = "project_order";
+
 type Outcome = Result<Reply, String>;
 
 impl Engine {
     pub fn new(store: Store, adapters: Vec<Arc<dyn Adapter>>, tx: Sender<Msg>) -> anyhow::Result<Engine> {
-        let projects = store.projects()?;
+        let mut projects = store.projects()?;
+        // The order the user gave the projects; one registered since comes after them, oldest first.
+        let order: Vec<String> =
+            store.meta_get(PROJECT_ORDER).ok().flatten().and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        projects.sort_by_key(|p| order.iter().position(|id| *id == p.id).unwrap_or(usize::MAX));
         let mut threads = store.threads()?;
         // Threads named before titles carry one word from their first prompt: give them the title.
         for t in threads.iter_mut().filter(|t| t.head > 0 && !t.name.contains(' ') && is_agent(&t.active_agent)) {
@@ -1708,6 +1715,7 @@ impl Engine {
                 self.persist(&thread_id);
                 Ok(Reply::Done)
             }),
+            Command::MoveProject { project_id, up } => self.move_project(&project_id, up),
             Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
                 let t = &self.threads[i];
                 let wt = t.worktree.clone().map(|name| (t.git.branch.clone().unwrap_or(name), t.cwd.clone()));
@@ -2340,6 +2348,31 @@ impl Engine {
             self.prompt(&id, text)?;
         }
         Ok(Reply::Created { thread_id: id })
+    }
+
+    /// Moves a project past the nearest one above or below it that the sidebar lists: a
+    /// project without a thread has no row, and moving past it would look like nothing moved.
+    fn move_project(&mut self, project_id: &str, up: bool) -> Outcome {
+        let Some(i) = self.projects.iter().position(|p| p.id == project_id) else {
+            return Err(format!("There is no project {project_id}. `desl status` lists the projects."));
+        };
+        let listed = |p: &Project| self.threads.iter().any(|t| t.project_id == p.id);
+        let to = if up {
+            (0..i).rev().find(|&j| listed(&self.projects[j]))
+        } else {
+            (i + 1..self.projects.len()).find(|&j| listed(&self.projects[j]))
+        };
+        let Some(to) = to else {
+            return Err(format!("{project_id} is already the {} project.", if up { "first" } else { "last" }));
+        };
+        let project = self.projects.remove(i);
+        self.projects.insert(to, project);
+        let ids: Vec<String> = self.projects.iter().map(|p| p.id.clone()).collect();
+        if let Err(e) = self.store.meta_set(PROJECT_ORDER, &serde_json::json!(ids).to_string()) {
+            tracing::warn!("could not save the order of the projects: {e:#}");
+        }
+        self.broadcast(Change::ProjectOrder { ids });
+        Ok(Reply::Done)
     }
 
     fn doctor(&self) -> Vec<Check> {

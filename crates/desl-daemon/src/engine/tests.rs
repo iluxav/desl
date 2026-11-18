@@ -998,3 +998,49 @@ fn with_three_agents_a_switch_must_name_one_and_sentences_list_them_all() {
     assert_eq!(engine.other_agent("claude").unwrap_err(), "Say which agent: codex or copilot.");
     assert_eq!(engine.default_agent("none").unwrap(), "claude", "the first that is ready, in the order the menus list them");
 }
+
+#[test]
+fn a_project_moves_past_the_ones_the_sidebar_lists_and_the_order_is_kept() {
+    let mut r = rig("move-project");
+    // Three more folders: `web` and `docs` get a thread, `empty` is only registered.
+    let dir = |name: &str| {
+        let p = r.dir.join(name);
+        std::fs::create_dir_all(&p).unwrap();
+        p.to_string_lossy().into_owned()
+    };
+    let (web, empty, docs) = (dir("web"), dir("empty"), dir("docs"));
+    r.cmd(Command::Subscribe { cwd: Some(web) }).unwrap();
+    r.engine.project_for(Path::new(&empty)).unwrap();
+    r.cmd(Command::Subscribe { cwd: Some(docs) }).unwrap();
+    let order = |r: &Rig| r.engine.projects.iter().map(|p| p.id.clone()).collect::<Vec<_>>();
+    assert_eq!(order(&r), ["api", "web", "empty", "docs"]);
+    // Up from the last row lands above `web`: `empty` has no row to stop at.
+    r.cmd(Command::MoveProject { project_id: "docs".into(), up: true }).unwrap();
+    assert_eq!(order(&r), ["api", "docs", "web", "empty"]);
+    r.cmd(Command::MoveProject { project_id: "docs".into(), up: true }).unwrap();
+    assert_eq!(order(&r), ["docs", "api", "web", "empty"]);
+    let err = r.cmd(Command::MoveProject { project_id: "docs".into(), up: true }).unwrap_err();
+    assert_eq!(err, "docs is already the first project.");
+    let err = r.cmd(Command::MoveProject { project_id: "web".into(), up: false }).unwrap_err();
+    assert_eq!(err, "web is already the last project.", "nothing listed is below it");
+    assert!(r.cmd(Command::MoveProject { project_id: "nope".into(), up: true }).unwrap_err().starts_with("There is no project nope."));
+    let saved = r.engine.store.meta_get(PROJECT_ORDER).unwrap().unwrap();
+    assert_eq!(saved, r#"["docs","api","web","empty"]"#);
+}
+
+#[test]
+fn the_projects_come_back_in_the_order_the_user_gave_them_and_new_ones_last() {
+    let dir = std::env::temp_dir().join(format!("desl-engine-test-{}-order", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = Store::in_memory(&dir.join("blobs")).unwrap();
+    for (n, id) in ["api", "web", "docs", "late"].iter().enumerate() {
+        let project =
+            Project { id: (*id).into(), path: format!("/src/{id}"), default_agent: None, created_at: n as i64, git: GitState::default() };
+        store.put_project(&project).unwrap();
+    }
+    // Saved before `late` was registered.
+    store.meta_set(PROJECT_ORDER, r#"["docs","api","web"]"#).unwrap();
+    let (tx, _rx) = channel();
+    let engine = Engine::new(store, vec![Arc::new(Fake { id: "claude", state: Arc::new(Mutex::new(FakeState::default())) })], tx).unwrap();
+    assert_eq!(engine.projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["docs", "api", "web", "late"]);
+}

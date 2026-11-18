@@ -146,6 +146,12 @@ pub enum Command {
     RemoveThread {
         thread_id: String,
     },
+    /// Moves a project one place up or down among the projects that have a thread, which are
+    /// the ones the sidebar lists. The order is kept across restarts.
+    MoveProject {
+        project_id: String,
+        up: bool,
+    },
     /// The brief desl would send if the thread switched to `to` now (the other agent when absent).
     Brief {
         thread_id: String,
@@ -449,6 +455,10 @@ pub enum Change {
     /// uncommitted paths changed.
     Project {
         project: Project,
+    },
+    /// The user moved a project: every project's id, in the order the sidebar lists them now.
+    ProjectOrder {
+        ids: Vec<String>,
     },
     /// A thread was created or its name, status, agent, bindings, queue or approval changed.
     Thread {

@@ -514,6 +514,7 @@ dependencies = [
  "desl-ir",
  "serde",
  "serde_json",
+ "vt100",
 ]
 
 [[package]]

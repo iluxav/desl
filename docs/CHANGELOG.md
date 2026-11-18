@@ -51,6 +51,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- Resizing the window, hiding the sidebar or opening a split wraps the text in a pane again at
+  its new width, history included, as the terminal itself does. Before, a line stayed wrapped
+  where it had been, and a narrower pane cut the end of each line off for good. The screen
+  behind an editor or a pager is wrapped again too, so it is right when the program quits.
 - desl no longer types a prompt into a question the agent draws near the top of its screen,
   such as Codex's "Trust this folder?" in a new folder. The thread waits for the user instead.
 - What runs in a thread is told where it starts: `PWD` was the directory the daemon was

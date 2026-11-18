@@ -8,7 +8,7 @@ use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, R
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Event, FILES, Project, SHELL, Status, Thread, is_agent, program_word};
-use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, term};
+use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, reflow, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
@@ -1398,7 +1398,7 @@ impl Client {
         let a = self.areas();
         for (i, p) in self.panes.iter_mut().enumerate() {
             let Some(r) = a.panes.get(i) else { continue };
-            p.vt.screen_mut().set_size(nz(r.height), nz(r.width));
+            reflow::resize(&mut p.vt, r.height, r.width);
             p.select = None;
             self.link.request(Command::Resize { thread_id: p.thread_id.clone(), rows: r.height, cols: r.width });
         }

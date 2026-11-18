@@ -12,6 +12,10 @@ use std::time::{Duration, Instant};
 /// How much of an agent's output is kept for a client that attaches (SPEC.md "Process hygiene").
 pub const KEEP: usize = 8 * 1024 * 1024;
 
+/// How many rows above the screen the daemon's own model of it keeps. They are what comes back
+/// onto the screen when it grows wider, so the model stays what a client shows.
+const HISTORY: usize = 1000;
+
 pub struct Pty {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -87,7 +91,7 @@ impl Pty {
             master: pair.master,
             writer,
             child,
-            screen: vt100::Parser::new(nz(rows), nz(cols), 0),
+            screen: vt100::Parser::new(nz(rows), nz(cols), HISTORY),
             log: Vec::new(),
             agent: agent.to_string(),
             started: Instant::now(),
@@ -159,7 +163,7 @@ impl Pty {
             return;
         }
         let _ = self.master.resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 });
-        self.screen.screen_mut().set_size(nz(rows), nz(cols));
+        desl_proto::reflow::resize(&mut self.screen, rows, cols);
     }
 
     /// The directory the program is in now: where a shell has `cd`-ed to.
@@ -286,6 +290,31 @@ mod tests {
             seen.push_str(&String::from_utf8_lossy(&b));
         }
         assert!(seen.lines().any(|l| l.trim_end() == "PWD=/"), "PWD is the daemon's own, not the thread's: {seen:?}");
+    }
+
+    #[test]
+    fn a_new_width_wraps_what_was_drawn_again() {
+        let launch = Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "printf 'aaaaaaaaaabbbbbbbbbbcccccccccc\\n'; sleep 5".into()],
+            env_remove: Vec::new(),
+            keep: Vec::new(),
+            session_id: None,
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let mut pty = Pty::spawn("shell", "t-test", &launch, Path::new("/"), 24, 20, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        while let Ok(b) = rx.recv_timeout(Duration::from_secs(5)) {
+            pty.took(&b);
+            if pty.tail_text(4).contains("cccccccccc") {
+                break;
+            }
+        }
+        assert_eq!(pty.tail_text(4), "aaaaaaaaaabbbbbbbbbb\ncccccccccc");
+        pty.resize(24, 10);
+        assert_eq!(pty.size(), (24, 10));
+        assert_eq!(pty.tail_text(4), "aaaaaaaaaa\nbbbbbbbbbb\ncccccccccc", "the row that no longer fits is not cut off");
+        pty.resize(24, 40);
+        assert_eq!(pty.tail_text(4), "aaaaaaaaaabbbbbbbbbbcccccccccc");
     }
 
     #[test]

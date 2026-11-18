@@ -4,7 +4,7 @@
 
 use crate::conn::{Conn, Link};
 use crate::finder::Finder;
-use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, SubView, View};
+use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, Selection, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Event, FILES, Project, SHELL, Status, Thread, is_agent, program_word};
@@ -143,11 +143,75 @@ struct Pane {
     /// The key modes its agent set (kitty keys, bracketed paste), for the terminal while this
     /// pane has the keys.
     modes: Vec<u8>,
+    /// Text being marked with the mouse, or just marked.
+    select: Option<Select>,
+}
+
+/// A mark made with the mouse in a pane whose program does not take the mouse: from the cell
+/// the button went down on to the one the pointer is on, as (row, column) on the pane.
+struct Select {
+    anchor: (u16, u16),
+    head: (u16, u16),
+    /// The button is still down.
+    dragging: bool,
+    /// The pointer has left the cell it went down on: a drag, not a click.
+    moved: bool,
 }
 
 impl Pane {
     fn new(thread_id: String, agent: String, area: Rect) -> Pane {
-        Pane { thread_id, agent, vt: vt100::Parser::new(nz(area.height), nz(area.width), SCROLLBACK), scrolled: 0, modes: Vec::new() }
+        Pane {
+            thread_id,
+            agent,
+            vt: vt100::Parser::new(nz(area.height), nz(area.width), SCROLLBACK),
+            scrolled: 0,
+            modes: Vec::new(),
+            select: None,
+        }
+    }
+
+    /// What is marked, once it is more than a click.
+    fn selection(&self) -> Option<Selection> {
+        self.select.as_ref().filter(|s| s.moved || !s.dragging).map(|s| Selection::between(s.anchor, s.head))
+    }
+}
+
+/// Two presses on one cell within this long are a double click, three a triple.
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Puts `text` on the clipboard: through the terminal (OSC 52), which reaches the user's own
+/// machine over SSH too, and, when desl runs on that machine, through the desktop's tool as
+/// well, for a terminal that does not take OSC 52.
+fn clipboard(text: &str) {
+    out(format!("\x1b]52;c;{}\x07", b64::encode(text.as_bytes())).as_bytes());
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    if set("SSH_CONNECTION") || set("SSH_TTY") {
+        return;
+    }
+    let tool: &[&str] = if cfg!(target_os = "macos") {
+        &["pbcopy"]
+    } else if set("WAYLAND_DISPLAY") {
+        &["wl-copy"]
+    } else if set("DISPLAY") {
+        &["xclip", "-selection", "clipboard"]
+    } else {
+        return;
+    };
+    let child = std::process::Command::new(tool[0])
+        .args(&tool[1..])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        let text = text.to_string();
+        // Off the interface's thread: the tool may take a moment, and is not there on every machine.
+        std::thread::spawn(move || {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+        });
     }
 }
 
@@ -208,6 +272,8 @@ struct Client {
     info: Option<Vec<(String, String)>>,
     /// The menu's choice gets a git worktree of its own (`w` in the menu).
     menu_worktree: bool,
+    /// The last press of the left button in a pane: when, on which cell, and how many in a row.
+    clicked: Option<(Instant, (u16, u16), u8)>,
     /// The close request in flight, whose answer may say what became of a worktree.
     removing: Option<u64>,
     /// The request to move a project in flight, whose answer may say it is at the edge already.
@@ -368,10 +434,68 @@ impl Client {
         p.vt.process(replay);
         p.modes = term::key_modes(replay);
         p.scrolled = 0;
+        p.select = None;
         if i == self.focus {
             self.apply_modes();
         }
         self.dirty = true;
+    }
+
+    /// The left button in a pane desl marks text in, as tmux does with the mouse on: a drag
+    /// marks from where it began to where it is, a double click a word and a triple click a
+    /// line, and the mark is copied when the button is let go.
+    fn select(&mut self, i: usize, m: Mouse, r: Rect) {
+        let cell = (m.y.saturating_sub(r.y).min(r.height.saturating_sub(1)), m.x.saturating_sub(r.x).min(r.width.saturating_sub(1)));
+        self.dirty = true;
+        if m.press && !m.motion() {
+            let now = Instant::now();
+            let clicks = match self.clicked {
+                Some((at, on, n)) if on == cell && now.duration_since(at) < DOUBLE_CLICK => n % 3 + 1,
+                _ => 1,
+            };
+            self.clicked = Some((now, cell, clicks));
+            // A word or a line is marked at once and copied, like a drag, when the button is let go.
+            let whole = |s: Selection| Select { anchor: s.from, head: s.to, dragging: true, moved: true };
+            self.panes[i].select = match clicks {
+                2 => Selection::word(self.panes[i].vt.screen(), cell.0, cell.1).map(whole),
+                3 => Some(whole(Selection { from: (cell.0, 0), to: (cell.0, r.width.saturating_sub(1)) })),
+                _ => Some(Select { anchor: cell, head: cell, dragging: true, moved: false }),
+            };
+            return;
+        }
+        let Some(s) = &mut self.panes[i].select else { return };
+        if !s.dragging {
+            return;
+        }
+        if m.press {
+            s.moved |= cell != s.anchor;
+            s.head = cell;
+        } else if s.moved {
+            s.dragging = false;
+            self.copy_marked(i);
+        } else {
+            // A click that went nowhere marks nothing.
+            self.panes[i].select = None;
+        }
+    }
+
+    /// Copies what is marked in pane `i` and says how much; a mark over blank cells is dropped.
+    fn copy_marked(&mut self, i: usize) {
+        let Some(sel) = self.panes[i].selection() else { return };
+        let text = sel.text(self.panes[i].vt.screen());
+        if text.trim().is_empty() {
+            self.panes[i].select = None;
+            return;
+        }
+        clipboard(&text);
+        let lines = text.trim_end_matches('\n').lines().count();
+        let what = if lines > 1 {
+            format!("{lines} lines")
+        } else {
+            let n = text.trim_end_matches('\n').chars().count();
+            format!("{n} character{}", if n == 1 { "" } else { "s" })
+        };
+        self.notice(&format!("Copied {what}."));
     }
 
     /// Keys for the agent in the focused pane.
@@ -390,8 +514,9 @@ impl Client {
         if keys.is_empty() {
             return;
         }
-        if self.pane().scrolled > 0 {
+        if self.pane().scrolled > 0 || self.pane().select.is_some() {
             self.pane_mut().scrolled = 0;
+            self.pane_mut().select = None;
             self.dirty = true;
         }
         if self.busy.is_some() {
@@ -542,6 +667,14 @@ impl Client {
 
     fn mouse(&mut self, m: Mouse) {
         let a = self.areas();
+        // A drag that began in a pane is that pane's until the button is let go, wherever the
+        // pointer has gone since.
+        if let Some(i) = self.panes.iter().position(|p| p.select.as_ref().is_some_and(|s| s.dragging))
+            && m.wheel().is_none()
+            && (m.motion() || !m.press)
+        {
+            return self.select(i, m, a.panes.get(i).copied().unwrap_or_default());
+        }
         let inside = |r: Rect| m.x >= r.x && m.x < r.x + r.width && m.y >= r.y && m.y < r.y + r.height;
         if let Some(i) = a.mains.iter().position(|r| inside(*r)) {
             // A click in the other pane gives it the keys first.
@@ -590,8 +723,14 @@ impl Client {
                 } else {
                     let p = &mut self.panes[i];
                     p.scrolled = if up { p.scrolled + 3 } else { p.scrolled.saturating_sub(3) };
+                    // The mark is on cells of the pane, and other lines are under them now.
+                    p.select = None;
                     self.dirty = true;
                 }
+            } else if m.button & 3 == 0 && self.sub.is_none() {
+                // The program does not take the mouse (a shell), or desl's own scrollback is
+                // on screen: desl marks the text itself.
+                self.select(i, m, r);
             }
             if m.press
                 && !m.motion()
@@ -1260,6 +1399,7 @@ impl Client {
         for (i, p) in self.panes.iter_mut().enumerate() {
             let Some(r) = a.panes.get(i) else { continue };
             p.vt.screen_mut().set_size(nz(r.height), nz(r.width));
+            p.select = None;
             self.link.request(Command::Resize { thread_id: p.thread_id.clone(), rows: r.height, cols: r.width });
         }
         self.dirty = true;
@@ -1280,7 +1420,11 @@ impl Client {
         let view = View {
             projects: &self.projects,
             threads: &self.threads,
-            panes: self.panes.iter().map(|p| PaneView { thread_id: &p.thread_id, agent: &p.agent, scrolled: p.scrolled }).collect(),
+            panes: self
+                .panes
+                .iter()
+                .map(|p| PaneView { thread_id: &p.thread_id, agent: &p.agent, scrolled: p.scrolled, selection: p.selection() })
+                .collect(),
             focus: self.focus,
             cursor: self.side,
             skip,
@@ -1381,6 +1525,10 @@ impl Client {
                 let bytes = b64::decode(&data)?;
                 let p = &mut self.panes[i];
                 p.vt.process(&bytes);
+                // A finished mark was on what the screen showed; one being dragged stays with the pointer.
+                if p.select.as_ref().is_some_and(|s| !s.dragging) {
+                    p.select = None;
+                }
                 // Nothing else is there to answer what the agent asks its terminal.
                 let replies = term::replies(&bytes, &self.answers, p.vt.screen().cursor_position());
                 let modes = term::key_modes(&bytes);
@@ -1700,6 +1848,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         renaming: None,
         info: None,
         menu_worktree: false,
+        clicked: None,
         removing: None,
         moving: None,
         prefix: settings.prefix,

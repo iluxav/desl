@@ -7,6 +7,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- Text can be selected with the mouse in a shell pane, and in any pane scrolled back: a drag
+  marks it inside that pane only, a double click takes a word and a triple click a line, and
+  letting go copies it to the clipboard, through the terminal (OSC 52) and the desktop's own
+  tool. Before, desl held the mouse and a shell, which never asks for it, got no selection.
 - The projects in the sidebar can be reordered. `prefix w` now stops on a project's row too;
   `shift+↑` and `shift+↓` there move the project up or down, and a click on the row puts the
   cursor on it. The order is the daemon's, so it holds across clients and restarts.

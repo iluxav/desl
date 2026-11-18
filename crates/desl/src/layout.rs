@@ -284,6 +284,51 @@ pub struct PaneView<'a> {
     pub agent: &'a str,
     /// Lines scrolled back in the agent's screen, 0 when following it.
     pub scrolled: usize,
+    /// The text marked with the mouse, drawn reversed.
+    pub selection: Option<Selection>,
+}
+
+/// Text marked in a pane: from one cell to another in reading order, both included, each a
+/// (row, column) on the pane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Selection {
+    pub from: (u16, u16),
+    pub to: (u16, u16),
+}
+
+impl Selection {
+    /// From the cell the drag began on to the one it is on now, whichever comes first.
+    pub fn between(a: (u16, u16), b: (u16, u16)) -> Selection {
+        if a <= b { Selection { from: a, to: b } } else { Selection { from: b, to: a } }
+    }
+
+    pub fn holds(&self, row: u16, col: u16) -> bool {
+        (row, col) >= self.from && (row, col) <= self.to
+    }
+
+    /// The marked text as the screen holds it: a line that wrapped is one line again.
+    pub fn text(&self, screen: &vt100::Screen) -> String {
+        screen.contents_between(self.from.0, self.from.1, self.to.0, self.to.1 + 1)
+    }
+
+    /// The run of non-blank cells around (`row`, `col`), for a double click: a word, and a whole
+    /// path or address. None on a blank cell.
+    pub fn word(screen: &vt100::Screen, row: u16, col: u16) -> Option<Selection> {
+        let blank = |c: u16| screen.cell(row, c).is_none_or(|cell| !cell.is_wide_continuation() && cell.contents().trim().is_empty());
+        if blank(col) {
+            return None;
+        }
+        let (_, cols) = screen.size();
+        let mut from = col;
+        while from > 0 && !blank(from - 1) {
+            from -= 1;
+        }
+        let mut to = col;
+        while to + 1 < cols.get() && !blank(to + 1) {
+            to += 1;
+        }
+        Some(Selection { from: (row, from), to: (row, to) })
+    }
 }
 
 pub struct View<'a> {
@@ -849,17 +894,21 @@ fn colour(c: vt100::Color) -> Color {
     }
 }
 
-/// Copies the agent's screen into `area`.
-pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
+/// Copies the agent's screen into `area`, the marked text reversed.
+pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen, selection: Option<Selection>) {
     for r in 0..area.height {
         for c in 0..area.width {
             let out = &mut buf[(area.x + c, area.y + r)];
+            let marked = selection.is_some_and(|s| s.holds(r, c));
             let Some(cell) = screen.cell(r, c) else {
                 out.reset();
                 continue;
             };
             if cell.is_wide_continuation() {
                 out.reset();
+                if marked {
+                    out.modifier = Modifier::REVERSED;
+                }
                 continue;
             }
             let s = cell.contents();
@@ -875,6 +924,10 @@ pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen) {
                 if on {
                     m |= flag;
                 }
+            }
+            // A cell the program already reversed is put back, so the mark shows on it too.
+            if marked {
+                m ^= Modifier::REVERSED;
             }
             out.fg = colour(cell.fgcolor());
             out.bg = colour(cell.bgcolor());
@@ -903,7 +956,7 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
             }
             _ => {
                 if let Some(screen) = screens.get(i) {
-                    pane(f.buffer_mut(), *area, screen);
+                    pane(f.buffer_mut(), *area, screen, p.selection);
                 }
             }
         }
@@ -1108,7 +1161,7 @@ mod tests {
         let v = View {
             projects: &projects,
             threads: &threads,
-            panes: vec![PaneView { thread_id: "t-2b", agent: FILES, scrolled: 0 }],
+            panes: vec![PaneView { thread_id: "t-2b", agent: FILES, scrolled: 0, selection: None }],
             focus: 0,
             cursor: None,
             skip: 0,
@@ -1148,7 +1201,7 @@ mod tests {
         let v = View {
             projects: &projects,
             threads: &threads,
-            panes: vec![PaneView { thread_id: "t-1a", agent: "copilot", scrolled: 0 }],
+            panes: vec![PaneView { thread_id: "t-1a", agent: "copilot", scrolled: 0, selection: None }],
             focus: 0,
             cursor: None,
             skip: 0,
@@ -1187,7 +1240,7 @@ mod tests {
         let v = View {
             projects: &projects,
             threads: &threads,
-            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0, selection: None }],
             focus: 0,
             cursor: Some(at),
             skip: 0,
@@ -1214,6 +1267,29 @@ mod tests {
         assert_eq!((b[(2, y)].bg, b[(30, y)].bg), (Color::Blue, Color::Blue), "{s}");
         assert_eq!(b[(2, SIDE_TOP)].bg, Color::Reset, "the other project's row is not: {s}");
         assert!(s.lines().last().unwrap().contains("shift+↑↓ move a project"), "{s}");
+    }
+
+    #[test]
+    fn marked_text_is_what_the_screen_holds_and_is_drawn_reversed() {
+        let mut vt = vt100::Parser::new(4u16.try_into().unwrap(), 20u16.try_into().unwrap(), 0);
+        // The second line is longer than the pane and wraps onto the third.
+        vt.process(b"$ ls ~/src/desl\r\nalpha beta gamma delta epsilon\r\n");
+        let s = vt.screen();
+        // Dragged backwards, from the end of the wrapped line to the path on the first.
+        let sel = Selection::between((2, 9), (0, 5));
+        assert_eq!(sel, Selection { from: (0, 5), to: (2, 9) });
+        assert_eq!(sel.text(s), "~/src/desl\nalpha beta gamma delta epsilon", "a wrapped line is one line again");
+        assert!(sel.holds(0, 5) && sel.holds(1, 0) && sel.holds(2, 9));
+        assert!(!sel.holds(0, 4) && !sel.holds(2, 10));
+        assert_eq!(Selection::word(s, 0, 8).map(|w| w.text(s)).as_deref(), Some("~/src/desl"), "a path is one word");
+        assert_eq!(Selection::word(s, 1, 0).map(|w| w.text(s)).as_deref(), Some("alpha"));
+        assert_eq!(Selection::word(s, 0, 1), None, "a blank cell is no word");
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buf = Buffer::empty(area);
+        pane(&mut buf, area, s, Some(Selection { from: (1, 6), to: (1, 9) }));
+        assert!(buf[(6, 1)].modifier.contains(Modifier::REVERSED) && buf[(9, 1)].modifier.contains(Modifier::REVERSED));
+        assert!(!buf[(5, 1)].modifier.contains(Modifier::REVERSED) && !buf[(10, 1)].modifier.contains(Modifier::REVERSED));
+        assert_eq!((6..=9).map(|x| buf[(x, 1)].symbol()).collect::<String>(), "beta");
     }
 
     #[test]
@@ -1276,7 +1352,7 @@ mod tests {
         let mut v = View {
             projects: &projects,
             threads: &threads,
-            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0, selection: None }],
             focus: 0,
             cursor: None,
             skip: 0,
@@ -1324,7 +1400,7 @@ mod tests {
         let v2 = View {
             projects: &projects,
             threads: &with_sub,
-            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0 }],
+            panes: vec![PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0, selection: None }],
             focus: 0,
             cursor: None,
             skip: 0,

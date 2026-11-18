@@ -91,7 +91,9 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `b` `d` `?` | Hide the sidebar, detach, the key list |
 
 Without the prefix: `alt+j` / `alt+k` move between threads, `alt+h` / `alt+l` between panes
-while two are open, and a click opens a thread or focuses a pane.
+while two are open, and a click opens a thread or focuses a pane. In a shell pane a drag
+selects text inside the pane and copies it when you let go; a double click takes a word and a
+triple click a line. The agents select and copy by themselves, as they do outside desl.
 
 The prefix is a setting; `ctrl+a` or any `ctrl+<letter>` works. Press it twice to send it to
 the agent.

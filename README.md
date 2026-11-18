@@ -60,6 +60,9 @@ git clone https://github.com/iluxav/desl && cd desl
 make install        # release build into ~/.local/bin
 ```
 
+Installing over a running desl ends nothing: the daemon starts again from the new build and
+keeps every agent and shell running, and an open desl reconnects by itself.
+
 ## The first five minutes
 
 1. Inside a repository, run `desl`. The daemon starts, the repository becomes a project, and
@@ -116,6 +119,7 @@ desl model t-7f3a haiku --effort low       # pick the model and effort for its n
 desl interrupt t-7f3a                      # as esc in the agent's own screen
 desl restart t-7f3a                        # reload the agent after an update or a new MCP server
 desl doctor                                # agents, logins, the daemon, the store
+desl daemon restart                        # the daemon starts again from the build installed now; agents keep running
 desl daemon stop                           # ends the agents; every thread is kept
 ```
 

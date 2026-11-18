@@ -8,6 +8,19 @@ use std::io::BufReader;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
+/// The daemon closed the connection before it answered: it stopped, or it handed its agents to
+/// a new daemon, which answers on the same socket.
+#[derive(Debug)]
+pub struct Closed;
+
+impl std::fmt::Display for Closed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The desl daemon closed the connection. Run desl again to reconnect.")
+    }
+}
+
+impl std::error::Error for Closed {}
+
 pub struct Conn {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -101,7 +114,7 @@ impl Conn {
                     };
                 }
                 Some(_) => {}
-                None => bail!("The desl daemon closed the connection. Run desl again to reconnect."),
+                None => return Err(Closed.into()),
             }
         }
     }

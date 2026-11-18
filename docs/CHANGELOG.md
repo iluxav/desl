@@ -51,6 +51,14 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- Installing a new build no longer ends the agents. `make install` stopped the daemon, which
+  killed every agent and shell at once: a turn in the middle of its work was cut, and a server
+  started in a shell went down. `desl daemon restart`, which `make install` now runs, starts
+  the daemon again from the new binary and hands it every running program's terminal, so a
+  turn goes on, nothing drawn is lost, and an open desl reconnects by itself. If the new
+  daemon cannot start, the old one carries on and says why. The first install of this build
+  still restarts the old way, once: the daemon it replaces cannot hand over, so that restart
+  waits until no agent is working.
 - Resizing the window, hiding the sidebar or opening a split wraps the text in a pane again at
   its new width, history included, as the terminal itself does. Before, a line stayed wrapped
   where it had been, and a narrower pane cut the end of each line off for good. The screen

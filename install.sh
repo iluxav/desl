@@ -84,7 +84,7 @@ case ":$PATH:" in
     *) say "Note: $INSTALL_DIR is not on your PATH. Add it, for example: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
 esac
 if "$INSTALL_DIR/desl" status --json 2>/dev/null | grep -q '"running":true'; then
-    say "A desl daemon of the old build is running. \`desl daemon restart\` moves to the new one (its agents end; every thread is kept)."
+    say "A desl daemon of the old build is running. \`desl daemon restart\` moves to the new one and keeps its agents running."
 fi
 say ""
 say "Run desl inside a repository. You need claude or codex on your PATH, logged in."

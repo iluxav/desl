@@ -250,6 +250,12 @@ pub enum Command {
     },
     /// Stops every agent and the daemon.
     Shutdown,
+    /// The daemon starts again from the desl binary at `exe` and hands it the terminal of every
+    /// running agent and shell, so nothing that runs in a thread ends. The daemon that leaves
+    /// replies with `handed_over` once the new one serves; an error means it stays as it was.
+    Handover {
+        exe: String,
+    },
 }
 
 /// Daemon to client.
@@ -317,6 +323,11 @@ pub enum Reply {
         partial: Option<String>,
     },
     Done,
+    /// The answer to `handover`: the new daemon's process id, and how many terminals it took.
+    HandedOver {
+        pid: u32,
+        kept: usize,
+    },
     /// The answer to `remove_thread`: a sentence about the thread's worktree, if it had one.
     Removed {
         note: Option<String>,
@@ -477,6 +488,9 @@ pub enum Change {
     },
     /// The daemon is stopping.
     Bye,
+    /// The daemon handed its agents to a new daemon and is leaving: a client connects again,
+    /// and finds every thread as it was.
+    Restarting,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

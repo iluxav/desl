@@ -21,6 +21,30 @@ impl Out {
 
 /// Connects to the daemon. With `start`, a daemon that is not running is started: every thread
 /// is in the store, so any command can be answered from a cold start.
+static OWN_BINARY: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+/// Called first thing: once an install has replaced the file, the system no longer says where
+/// this binary was.
+pub fn remember_own_binary() {
+    OWN_BINARY.get_or_init(|| std::env::current_exe().ok());
+}
+
+/// The desl binary this process was started from; after an install, the new one.
+pub fn own_binary() -> Result<std::path::PathBuf> {
+    match OWN_BINARY.get_or_init(|| std::env::current_exe().ok()) {
+        Some(p) => Ok(p.clone()),
+        None => bail!("desl could not find its own binary. Run it by its full path."),
+    }
+}
+
+/// A connection to the daemon that took over from the one that just closed this command's
+/// connection. None when no daemon answers: it was stopped.
+fn again(paths: &Paths) -> Option<Conn> {
+    // The daemon that left closes its connections a moment before it is gone.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    Conn::open(paths, false, "cli").ok().flatten()
+}
+
 fn connect(paths: &Paths, start: bool) -> Result<Conn> {
     match Conn::open(paths, start, "cli")? {
         Some(c) => Ok(c),
@@ -337,6 +361,22 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
                 _ => {}
             },
             ServerFrame::Event { change: Change::Bye } => bail!("The desl daemon was stopped."),
+            // The daemon started again in place: the agent kept working, so follow it there.
+            ServerFrame::Event { change: Change::Restarting } => {
+                let Some(next) = again(paths) else { bail!("The desl daemon was stopped. `desl thread show {}` has what was said.", t.id) };
+                conn = next;
+                let Reply::Workspace(ws) = conn.call(Command::Subscribe { cwd: None })? else {
+                    bail!("The desl daemon did not answer. `desl thread show {}` has what was said.", t.id)
+                };
+                conn.call(Command::View { thread_id: t.id.clone() })?;
+                // The turn may have ended while nobody was listening.
+                if sent && ws.threads.iter().find(|x| x.id == t.id).is_none_or(|x| !x.status.busy() && x.queued.is_empty()) {
+                    if streaming {
+                        println!();
+                    }
+                    return Ok(());
+                }
+            }
             _ => {}
         }
     }
@@ -457,8 +497,21 @@ pub fn wait(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;
     not_own(paths, &t, OwnThread::Wait)?;
-    let Reply::Waited { status } = conn.call(Command::Wait { thread_id: t.id.clone() })? else {
-        bail!("The desl daemon did not answer the wait.")
+    let mut tries = 0;
+    let status = loop {
+        match conn.call(Command::Wait { thread_id: t.id.clone() }) {
+            Ok(Reply::Waited { status }) => break status,
+            Ok(_) => bail!("The desl daemon did not answer the wait."),
+            // The daemon started again in place and the agent kept working: wait on the new one.
+            Err(e) if tries < 5 && e.downcast_ref::<crate::conn::Closed>().is_some() => match again(paths) {
+                Some(next) => {
+                    conn = next;
+                    tries += 1;
+                }
+                None => return Err(e),
+            },
+            Err(e) => return Err(e),
+        }
     };
     done(out, json!({ "thread_id": t.id, "status": status }), format!("{} is {}.", t.id, status.word()));
     if status == Status::Failed {
@@ -652,10 +705,55 @@ pub fn daemon_stop(paths: &Paths, out: &Out) -> Result<()> {
     Ok(())
 }
 
+/// Starts the daemon again from this binary. A daemon that can hands every running agent and
+/// shell to the new one, so nothing ends (SPEC.md "Upgrades"). One from a build before that
+/// can only be stopped, which ends its agents: that is done when none of them is working.
 pub fn daemon_restart(paths: &Paths, out: &Out) -> Result<()> {
+    let Some(mut conn) = Conn::open(paths, false, "cli")? else {
+        let conn = connect(paths, true)?;
+        let text = format!("The desl daemon was not running. Started it (pid {}).", conn.daemon_pid);
+        done(out, json!({ "running": true, "pid": conn.daemon_pid, "kept": 0 }), text);
+        return Ok(());
+    };
+    let exe = own_binary()?;
+    conn.set_read_timeout(std::time::Duration::from_secs(120));
+    let id = conn.send(Command::Handover { exe: exe.to_string_lossy().into_owned() })?;
+    loop {
+        match conn.read() {
+            Ok(Some(ServerFrame::Reply { id: got, ok: Some(Reply::HandedOver { pid, kept }), .. })) if got == id => {
+                let what = match kept {
+                    0 => "Nothing was running in it.".to_string(),
+                    1 => "The one program running in it kept running.".to_string(),
+                    n => format!("The {n} agents and shells running in it kept running."),
+                };
+                let text = format!("The desl daemon started again from {} (pid {pid}). {what}", exe.display());
+                done(out, json!({ "running": true, "pid": pid, "kept": kept }), text);
+                return Ok(());
+            }
+            Ok(Some(ServerFrame::Reply { id: got, error: Some(sentence), .. })) if got == id => return Err(anyhow::Error::msg(sentence)),
+            Ok(Some(_)) => {}
+            // It hung up on a command it does not know: a build from before the handover.
+            Ok(None) => break,
+            Err(e) => bail!("The desl daemon did not say whether it started again ({e:#}). `desl status` shows whether it runs."),
+        }
+    }
+    let Some(mut conn) = again(paths) else { bail!("The desl daemon went away. Run desl to start it.") };
+    let working: Vec<String> = workspace(&mut conn)?.threads.iter().filter(|t| t.status.busy()).map(|t| t.id.clone()).collect();
+    if !working.is_empty() {
+        let (n, verb) = if working.len() == 1 { ("one agent".to_string(), "is") } else { (format!("{} agents", working.len()), "are") };
+        bail!(
+            "The running daemon is from a build of desl that cannot keep its agents across a restart, and {n} {verb} working ({}). It was left running. Run `desl daemon restart` again when the work is done, or `desl daemon stop` to end it now.",
+            working.join(", ")
+        );
+    }
+    drop(conn);
     stop_daemon(paths)?;
     let conn = connect(paths, true)?;
-    done(out, json!({ "running": true, "pid": conn.daemon_pid }), format!("Restarted the desl daemon (pid {}).", conn.daemon_pid));
+    let text = format!(
+        "Restarted the desl daemon (pid {}). It was from a build that cannot keep its agents across a restart, so they ended: each thread resumes its conversation when you open it. From this build on a restart keeps them running.",
+        conn.daemon_pid
+    );
+    done(out, json!({ "running": true, "pid": conn.daemon_pid, "kept": 0 }), text);
     Ok(())
 }
 

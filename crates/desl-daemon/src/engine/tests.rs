@@ -1044,3 +1044,123 @@ fn the_projects_come_back_in_the_order_the_user_gave_them_and_new_ones_last() {
     let engine = Engine::new(store, vec![Arc::new(Fake { id: "claude", state: Arc::new(Mutex::new(FakeState::default())) })], tx).unwrap();
     assert_eq!(engine.projects.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["docs", "api", "web", "late"]);
 }
+
+/// Handles what arrives until `done` says so, for up to five seconds.
+fn until(r: &mut Rig, what: &str, done: impl Fn(&Engine) -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done(&r.engine) {
+        assert!(Instant::now() < deadline, "{what}");
+        if let Ok(msg) = r.rx.recv_timeout(Duration::from_millis(50)) {
+            r.engine.handle(msg);
+        }
+    }
+}
+
+fn drew(engine: &Engine, thread: &str, text: &str) -> bool {
+    engine.ptys.get(thread).is_some_and(|(_, p)| String::from_utf8_lossy(p.log()).contains(text))
+}
+
+#[test]
+fn a_daemon_hands_its_running_programs_to_the_next_one() {
+    use std::os::unix::net::UnixStream;
+    let mut r = rig("handover");
+    let t = r.t.clone();
+    // A program every machine has, which repeats what is typed, runs in a thread of its own.
+    r.engine.file_manager = "cat".into();
+    let project = r.thread(&t).cwd;
+    let Ok(Reply::Created { thread_id: id }) =
+        r.cmd(Command::NewThread { cwd: project, agent: Some(FILES.into()), prompt: None, beside: Some(t.clone()), worktree: false })
+    else {
+        panic!("a thread")
+    };
+    r.cmd(Command::Attach { thread_id: id.clone(), rows: 10, cols: 40, answers: term::Answers::default() }).unwrap();
+    let typed = |text: &str| Command::Input { thread_id: id.clone(), data: b64::encode(text.as_bytes()) };
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 900, command: typed("before\r") } });
+    until(&mut r, "the program repeats what was typed", |e| drew(e, &id, "before\r\nbefore"));
+    let pid = r.engine.ptys[&id].1.pid().expect("a process");
+
+    // A client asks; the daemon is ready at once, with nothing half done.
+    let exe = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 901, command: Command::Handover { exe } } });
+    assert!(r.engine.handover_due().is_some());
+    r.engine.hold_terminals();
+    r.pump();
+    assert!(!r.engine.reading_terminals());
+    // Typed while nobody reads: it waits in the terminal for the next daemon.
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 902, command: typed("between\r") } });
+
+    let (mut ours, theirs) = UnixStream::pair().unwrap();
+    let taker = std::thread::spawn(move || crate::handover::take(&theirs).unwrap());
+    {
+        let (answers, all) = r.engine.giving();
+        assert_eq!(all.len(), 1);
+        crate::handover::give(&mut ours, &answers, &all).unwrap();
+    }
+    let (answers, given) = taker.join().unwrap();
+    assert_eq!((given[0].kept.thread_id.as_str(), given[0].kept.agent.as_str(), given[0].kept.pid), (id.as_str(), FILES, Some(pid)));
+
+    // The next daemon: a new engine over the same store.
+    let (tx, rx) = channel();
+    let store = std::mem::replace(&mut r.engine.store, Store::in_memory(&r.dir.join("blobs2")).unwrap());
+    let adapters: Vec<Arc<dyn Adapter>> = vec![Arc::new(Fake { id: "claude", state: r.claude.clone() })];
+    let mut next = Engine::taking_over(store, adapters, tx, answers, given).unwrap();
+    assert_eq!(next.terminals(), 1);
+    assert!(!next.reading_terminals(), "it reads nothing before it has said that it serves");
+
+    // The one that leaves says so, and ends nothing when it goes.
+    r.engine.handed_over(4242);
+    let mut said = Vec::new();
+    while let Ok(bytes) = r.out.try_recv() {
+        said.push(desl_proto::read_frame::<_, ServerFrame>(&mut &bytes[..]).unwrap().unwrap());
+    }
+    assert!(
+        said.iter().any(|f| matches!(f, ServerFrame::Reply { id: 901, ok: Some(Reply::HandedOver { pid: 4242, kept: 1 }), .. })),
+        "{said:?}"
+    );
+    assert!(matches!(said.last(), Some(ServerFrame::Event { change: Change::Restarting })), "{said:?}");
+    assert_eq!(r.engine.terminals(), 0);
+    let (out_tx, out) = channel();
+    next.handle(Msg::Connected { client: 1, out: out_tx });
+    let old = std::mem::replace(&mut r.engine, next);
+    drop(old);
+    (r.rx, r.out) = (rx, out);
+
+    r.engine.read_terminals();
+    until(&mut r, "what was typed in between reaches the next daemon", |e| drew(e, &id, "between\r\nbetween"));
+    let Ok(Reply::Attached { replay, .. }) =
+        r.cmd(Command::Attach { thread_id: id.clone(), rows: 10, cols: 40, answers: term::Answers::default() })
+    else {
+        panic!("attached")
+    };
+    assert!(String::from_utf8_lossy(&b64::decode(&replay).unwrap()).contains("before\r\nbefore"), "what it drew before came along");
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 903, command: typed("after\r") } });
+    until(&mut r, "the same program answers the next daemon", |e| drew(e, &id, "after\r\nafter"));
+    assert_eq!(r.engine.ptys[&id].1.pid(), Some(pid));
+    // Its end is noticed without it being this daemon's child: the thread closes, as a shell's does.
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 904, command: typed("\x04") } });
+    until(&mut r, "the program's end closes its thread", |e| !e.threads.iter().any(|x| x.id == id));
+}
+
+#[test]
+fn a_turn_whose_agent_was_handed_over_is_not_called_interrupted() {
+    let mut r = rig("handover-turn");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().plan.push_back(vec![]);
+    r.prompt(&t, "a long task");
+    assert_eq!(r.thread(&t).status, Status::Working);
+    // The agent's terminal, here a file, comes along to the next daemon.
+    let file = std::fs::File::create(r.dir.join("terminal")).unwrap();
+    let given =
+        vec![Given { kept: Kept::new(&t, "claude", None, (24, 80), 0), master: file.into(), log: b"drawn".to_vec(), partial: Vec::new() }];
+    let (tx, _rx) = channel();
+    let store = std::mem::replace(&mut r.engine.store, Store::in_memory(&r.dir.join("blobs2")).unwrap());
+    let mut engine =
+        Engine::taking_over(store, vec![Arc::new(Fake { id: "claude", state: r.claude.clone() })], tx, term::Answers::default(), given)
+            .unwrap();
+    assert_eq!(engine.threads.iter().find(|x| x.id == t).unwrap().status, Status::Working);
+    assert!(!matches!(engine.store.all_events(&t).unwrap().pop().unwrap().kind, EventKind::Error { .. }));
+    assert_eq!(engine.ptys[&t].1.log(), b"drawn");
+    // A daemon that cannot serve after all lets go of it: nothing here ends the agent.
+    engine.let_go();
+    assert_eq!(engine.terminals(), 0);
+}

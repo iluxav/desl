@@ -53,6 +53,20 @@ impl Drop for Raw {
     }
 }
 
+/// How the client ended.
+pub enum End {
+    /// The user detached, or the last program quit: the line to print, if any.
+    Line(Option<String>),
+    /// The daemon started again in place (SPEC.md "Upgrades"): desl is to start again too, and
+    /// finds every thread as it was. The screen is left as it is, for the next desl to draw over.
+    Again,
+}
+
+/// Puts the terminal back to plain, for a desl that was to start again and could not.
+pub fn leave() {
+    out(term::RESET);
+}
+
 /// The alternate screen, button and wheel reports in SGR encoding.
 const SCREEN_ON: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l";
 /// Puts the terminal's key modes back to plain before the next agent sets its own.
@@ -278,6 +292,8 @@ struct Client {
     removing: Option<u64>,
     /// The request to move a project in flight, whose answer may say it is at the edge already.
     moving: Option<u64>,
+    /// The daemon handed its agents to a new one: this client starts again to reach it.
+    again: bool,
     prefix: desl_proto::config::Prefix,
     /// The prefix as the interface writes it: `ctrl+space`.
     prefix_label: String,
@@ -1732,6 +1748,10 @@ impl Client {
             Change::Bye => {
                 return Some("The desl daemon was stopped. Run desl to start it again; the thread resumes where it was.".to_string());
             }
+            Change::Restarting => {
+                self.again = true;
+                return Some(String::new());
+            }
             Change::Agents { agents } => self.agents = agents,
             Change::Appended { .. } => return None,
         }
@@ -1754,7 +1774,7 @@ impl Client {
 
 /// Shows the workspace's thread for `cwd` until the user detaches. Returns the line to print
 /// once the terminal is back to normal.
-pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -> Result<Option<String>> {
+pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -> Result<End> {
     let ws = match conn.call(Command::Subscribe { cwd: Some(cwd.to_string_lossy().into_owned()) })? {
         Reply::Workspace(ws) => ws,
         other => bail!("The desl daemon answered with {other:?}. Run `desl daemon restart`"),
@@ -1851,6 +1871,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         clicked: None,
         removing: None,
         moving: None,
+        again: false,
         prefix: settings.prefix,
         prefix_label: settings.prefix.label(),
     };
@@ -1898,11 +1919,18 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
             c.paint();
         }
     };
+    if c.again {
+        // Only the terminal's line settings go back, so the next desl records the right ones
+        // to restore; what is on screen stays until it paints.
+        std::mem::forget(raw);
+        let _ = terminal::disable_raw_mode();
+        return Ok(End::Again);
+    }
     drop(raw);
     out(b"\r\n");
     // Give the last keys a moment to reach the daemon before the socket closes.
     std::thread::sleep(Duration::from_millis(30));
-    Ok(farewell)
+    Ok(End::Line(farewell))
 }
 
 #[cfg(test)]

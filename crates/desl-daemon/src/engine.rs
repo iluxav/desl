@@ -7,6 +7,7 @@
 //! Agents run in their own processes and report through a channel. The approval broker and the
 //! event bus live here too: every store write is published to the subscribed clients.
 
+use crate::handover::{Given, Giving, Kept};
 use crate::pty::Pty;
 use crate::store::Store;
 use crate::{git, projector};
@@ -214,7 +215,21 @@ pub struct Engine {
     file_manager: String,
     ticks: u64,
     pub stopping: bool,
+    /// A handover asked for and not yet made.
+    handover: Option<Handover>,
 }
+
+/// A client asked the daemon to start again from another binary and keep every agent running.
+struct Handover {
+    client: ClientId,
+    id: u64,
+    exe: PathBuf,
+    asked: Instant,
+}
+
+/// How long a handover waits for what is half done to finish: a prompt on its way into an
+/// agent, a switch whose agent is starting, an agent starting again.
+const HANDOVER_WAIT: Duration = Duration::from_secs(20);
 
 /// A path with the home directory written `~`, for sentences.
 fn tilde(path: &str) -> String {
@@ -273,6 +288,31 @@ type Outcome = Result<Reply, String>;
 
 impl Engine {
     pub fn new(store: Store, adapters: Vec<Arc<dyn Adapter>>, tx: Sender<Msg>) -> anyhow::Result<Engine> {
+        let mut engine = Engine::build(store, adapters, tx)?;
+        engine.settle();
+        Ok(engine)
+    }
+
+    /// The engine of a daemon that takes over from the one before it: every program that one
+    /// handed over is running in its thread already. Nothing is read from their terminals
+    /// until [`Engine::read_terminals`].
+    pub fn taking_over(
+        store: Store,
+        adapters: Vec<Arc<dyn Adapter>>,
+        tx: Sender<Msg>,
+        answers: term::Answers,
+        given: Vec<Given>,
+    ) -> anyhow::Result<Engine> {
+        let mut engine = Engine::build(store, adapters, tx)?;
+        engine.answers = answers;
+        for g in given {
+            engine.adopt(g);
+        }
+        engine.settle();
+        Ok(engine)
+    }
+
+    fn build(store: Store, adapters: Vec<Arc<dyn Adapter>>, tx: Sender<Msg>) -> anyhow::Result<Engine> {
         let mut projects = store.projects()?;
         // The order the user gave the projects; one registered since comes after them, oldest first.
         let order: Vec<String> =
@@ -320,22 +360,8 @@ impl Engine {
             file_manager: desl_ir::FILE_MANAGER.to_string(),
             ticks: 0,
             stopping: false,
+            handover: None,
         };
-        // Tell the truth about turns an earlier daemon left unfinished: their agents are gone.
-        let interrupted: Vec<String> = engine.threads.iter().filter(|t| t.status.busy()).map(|t| t.id.clone()).collect();
-        for id in interrupted {
-            engine.append(
-                &id,
-                EventKind::Error {
-                    message: "The desl daemon restarted while this agent was working. Send your prompt again to resume.".into(),
-                    recoverable: true,
-                },
-            );
-            if let Ok(i) = engine.idx(&id) {
-                engine.threads[i].status = Status::Idle;
-            }
-            engine.persist(&id);
-        }
         for t in engine.threads.iter_mut() {
             t.git = git::state(Path::new(&t.cwd));
         }
@@ -343,6 +369,26 @@ impl Engine {
             p.git = git::state(Path::new(&p.path));
         }
         Ok(engine)
+    }
+
+    /// Tells the truth about turns an earlier daemon left unfinished: an agent that is not
+    /// running here is gone, and its turn with it.
+    fn settle(&mut self) {
+        let interrupted: Vec<String> =
+            self.threads.iter().filter(|t| t.status.busy() && !self.ptys.contains_key(&t.id)).map(|t| t.id.clone()).collect();
+        for id in interrupted {
+            self.append(
+                &id,
+                EventKind::Error {
+                    message: "The desl daemon restarted while this agent was working. Send your prompt again to resume.".into(),
+                    recoverable: true,
+                },
+            );
+            if let Ok(i) = self.idx(&id) {
+                self.threads[i].status = Status::Idle;
+            }
+            self.persist(&id);
+        }
     }
 
     // ---- small helpers -----------------------------------------------------------------------
@@ -1002,27 +1048,12 @@ impl Engine {
                 let _ = out_tx.send(Msg::PtyOutput { thread_id: out_id.clone(), generation, data });
             },
             move || {
-                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id, generation });
+                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id.clone(), generation });
             },
         )?;
         tracing::info!(thread = %thread_id, agent = %agent, args = ?launch.args, "started the agent's interface");
         self.ptys.insert(thread_id.clone(), (generation, pty));
-        if let Some(reader) = adapter.as_ref().and_then(|a| a.session_reader(Path::new(&t.cwd))) {
-            let read_before = binding.is_some_and(|b| b.file_offset > 0);
-            self.tails.insert(
-                thread_id.clone(),
-                Tail {
-                    agent: agent.clone(),
-                    reader,
-                    path: None,
-                    since: SystemTime::now(),
-                    skip_existing: !read_before && t.head > 0,
-                    partial: Vec::new(),
-                    last_poll: Instant::now(),
-                    title_asked: None,
-                },
-            );
-        }
+        self.follow(i, SystemTime::now(), Vec::new());
         if let Some(session_id) = launch.session_id {
             let ts = now();
             let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding {
@@ -1040,6 +1071,165 @@ impl Engine {
             self.persist(&thread_id);
         }
         Ok(())
+    }
+
+    /// Follows the session file of the agent running in thread `i`, which started at `since`.
+    /// `partial` is the start of a line already read from the file and not finished.
+    fn follow(&mut self, i: usize, since: SystemTime, partial: Vec<u8>) {
+        let t = &self.threads[i];
+        let agent = t.active_agent.clone();
+        let Some(reader) = self.adapter(&agent).and_then(|a| a.session_reader(Path::new(&t.cwd))) else { return };
+        let read_before = t.bindings.get(&agent).is_some_and(|b| b.file_offset > 0);
+        self.tails.insert(
+            t.id.clone(),
+            Tail {
+                agent,
+                reader,
+                path: None,
+                since,
+                skip_existing: !read_before && t.head > 0,
+                partial,
+                last_poll: Instant::now(),
+                title_asked: None,
+            },
+        );
+    }
+
+    // ---- handing every terminal to the next daemon (SPEC.md "Upgrades") ------------------------
+
+    /// The binary to start again from, once nothing is half done.
+    pub fn handover_due(&self) -> Option<PathBuf> {
+        let h = self.handover.as_ref()?;
+        let settled = self.typing.is_empty() && self.pending.is_empty() && self.restarting.is_empty();
+        (settled || h.asked.elapsed() >= HANDOVER_WAIT).then(|| h.exe.clone())
+    }
+
+    /// Stops reading every terminal. What the readers had read is on its way here as messages;
+    /// what the programs draw from now on waits in their terminals.
+    pub fn hold_terminals(&mut self) {
+        for (_, pty) in self.ptys.values_mut() {
+            pty.hold();
+        }
+        for (_, pty) in self.ptys.values_mut() {
+            pty.held();
+        }
+    }
+
+    /// True while some terminal is being read: one started since the readers were stopped.
+    pub fn reading_terminals(&self) -> bool {
+        self.ptys.values().any(|(_, pty)| pty.reading())
+    }
+
+    /// Reads every terminal: again after a handover that did not happen, or for the first time
+    /// in the daemon that took them over.
+    pub fn read_terminals(&mut self) {
+        for (_, pty) in self.ptys.values_mut() {
+            pty.read();
+        }
+    }
+
+    /// Every running program as the next daemon is to receive it.
+    pub fn giving(&mut self) -> (term::Answers, Vec<Giving<'_>>) {
+        let ids: Vec<String> = self.ptys.keys().cloned().collect();
+        for id in &ids {
+            // What the agent wrote to its session file up to now is in the store.
+            self.poll_tail(id);
+        }
+        let mut all: Vec<Giving<'_>> = Vec::new();
+        for (id, (_, pty)) in &self.ptys {
+            let since_ms = pty.since().duration_since(UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+            all.push(Giving {
+                kept: Kept::new(id, &pty.agent, pty.pid(), pty.size(), since_ms),
+                master: pty.master(),
+                log: pty.log(),
+                partial: self.tails.get(id).map_or(&[][..], |t| &t.partial),
+            });
+        }
+        (self.answers.clone(), all)
+    }
+
+    /// Keys the user pressed while the terminals changed hands still reach their agents: this
+    /// daemon can write to a terminal until it is gone.
+    pub fn last_keys(&mut self, msg: Msg) {
+        if let Msg::Request { client, request: Request { id, command: command @ Command::Input { .. } } } = msg {
+            self.command(client, id, command);
+        }
+    }
+
+    /// The next daemon serves, as process `pid`: this one lets go of every program and says so.
+    pub fn handed_over(&mut self, pid: u32) {
+        let kept = self.ptys.len();
+        for (_, (_, pty)) in self.ptys.drain() {
+            pty.hand_over();
+        }
+        self.tails.clear();
+        // A switch that was still starting ends here; its thread stays on the agent it was on.
+        self.pending.clear();
+        if let Some(h) = self.handover.take() {
+            self.reply(h.client, h.id, Ok(Reply::HandedOver { pid, kept }));
+        }
+        self.broadcast(Change::Restarting);
+    }
+
+    /// The handover did not happen: this daemon goes on as it was, and says why.
+    pub fn handover_failed(&mut self, why: &str) {
+        self.read_terminals();
+        if let Some(h) = self.handover.take() {
+            self.reply(h.client, h.id, Err(why.to_string()));
+        }
+    }
+
+    /// A daemon that could not start serving lets go of what it was given: the daemon that
+    /// leaves still has every terminal, and stays.
+    pub fn let_go(&mut self) {
+        for (_, (_, pty)) in self.ptys.drain() {
+            pty.hand_over();
+        }
+        self.tails.clear();
+    }
+
+    pub fn terminals(&self) -> usize {
+        self.ptys.len()
+    }
+
+    /// Takes one program the daemon before this one handed over.
+    fn adopt(&mut self, g: Given) {
+        let Given { kept, master, log, partial } = g;
+        let Ok(i) = self.idx(&kept.thread_id) else {
+            tracing::warn!(thread = %kept.thread_id, "a terminal came for a thread that is not in the store; its program ends with the daemon that leaves");
+            return;
+        };
+        self.generation += 1;
+        let generation = self.generation;
+        let (out_tx, exit_tx) = (self.tx.clone(), self.tx.clone());
+        let (out_id, exit_id) = (kept.thread_id.clone(), kept.thread_id.clone());
+        let since = UNIX_EPOCH + Duration::from_millis(kept.since_ms);
+        let pty = Pty::adopt(
+            &kept.agent,
+            master,
+            kept.pid,
+            kept.rows,
+            kept.cols,
+            since,
+            log,
+            move |data| {
+                let _ = out_tx.send(Msg::PtyOutput { thread_id: out_id.clone(), generation, data });
+            },
+            move || {
+                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id.clone(), generation });
+            },
+        );
+        match pty {
+            Ok(pty) => {
+                self.ptys.insert(kept.thread_id.clone(), (generation, pty));
+                // Only the agent the thread is on now has a session file worth following.
+                if self.threads[i].active_agent == kept.agent {
+                    self.follow(i, since, partial);
+                }
+                tracing::info!(thread = %kept.thread_id, agent = %kept.agent, pid = ?kept.pid, "took over the agent's interface");
+            }
+            Err(e) => tracing::error!(thread = %kept.thread_id, "{e}"),
+        }
     }
 
     fn attach(&mut self, client: ClientId, thread_id: &str, rows: u16, cols: u16, answers: term::Answers) -> Outcome {
@@ -1381,7 +1571,7 @@ impl Engine {
                 let _ = out_tx.send(Msg::PtyOutput { thread_id: out_id.clone(), generation, data });
             },
             move || {
-                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id, generation });
+                let _ = exit_tx.send(Msg::PtyExit { thread_id: exit_id.clone(), generation });
             },
         )?;
         tracing::info!(thread = %thread_id, from = %from, to, args = ?launch.args, "switching");
@@ -1855,6 +2045,21 @@ impl Engine {
             Command::Shutdown => {
                 self.stopping = true;
                 Ok(Reply::Done)
+            }
+            Command::Handover { exe } => {
+                if self.handover.is_some() {
+                    return Some(Err("The desl daemon is already starting again. Wait a moment, then run desl.".to_string()));
+                }
+                let exe = PathBuf::from(exe);
+                if !exe.is_file() {
+                    return Some(Err(format!(
+                        "There is no desl binary at {}. Install desl again, then run `desl daemon restart`.",
+                        exe.display()
+                    )));
+                }
+                // Answered by the server once the next daemon serves, or with why it does not.
+                self.handover = Some(Handover { client, id, exe, asked: Instant::now() });
+                return None;
             }
         })
     }

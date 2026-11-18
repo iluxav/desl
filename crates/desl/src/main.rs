@@ -164,6 +164,7 @@ enum DaemonCmd {
     Start,
     /// Stop the daemon and every agent; threads are kept
     Stop,
+    /// Start the daemon again from this binary; every agent and shell keeps running
     Restart,
     /// The last lines of the daemon's log
     Logs {
@@ -172,7 +173,11 @@ enum DaemonCmd {
     },
     /// Run the daemon in the foreground (what `start` runs in the background)
     #[command(hide = true)]
-    Run,
+    Run {
+        /// Take the place of the daemon that started this one, which sends its agents on stdin
+        #[arg(long)]
+        takeover: bool,
+    },
 }
 
 /// A desl drawn inside one of its own threads would draw itself without end. Like tmux with
@@ -197,8 +202,17 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
     };
     let settings = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref());
     // Leaving the client is never a failure: detaching, or the last agent quitting.
-    if let Some(line) = native::run(conn, cwd, settings)? {
-        println!("{line}");
+    match native::run(conn, cwd, settings)? {
+        native::End::Line(Some(line)) => println!("{line}"),
+        native::End::Line(None) => {}
+        native::End::Again => {
+            // The daemon started again from the binary installed now, and so does this client.
+            use std::os::unix::process::CommandExt;
+            let exe = cli::own_binary()?;
+            let failed = std::process::Command::new(&exe).args(std::env::args_os().skip(1)).exec();
+            native::leave();
+            anyhow::bail!("Could not start desl again from {} ({failed}). Run desl to reconnect; every thread is as it was", exe.display());
+        }
     }
     Ok(())
 }
@@ -237,7 +251,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             DaemonCmd::Stop => cli::daemon_stop(paths, &out),
             DaemonCmd::Restart => cli::daemon_restart(paths, &out),
             DaemonCmd::Logs { lines } => cli::daemon_logs(paths, lines),
-            DaemonCmd::Run => desl_daemon::server::serve(paths),
+            DaemonCmd::Run { takeover } => desl_daemon::server::serve(paths, takeover),
         },
     }
 }
@@ -257,6 +271,8 @@ fn quiet_on_closed_pipe() {
 }
 
 fn main() {
+    // Where this binary is, before an install can put another in its place.
+    cli::remember_own_binary();
     quiet_on_closed_pipe();
     let cli = Cli::parse();
     let json = cli.json;

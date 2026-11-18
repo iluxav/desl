@@ -30,6 +30,8 @@ ratatui = "0.30"
 unicode-width = "0.2"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 portable-pty = "0.9"
+filedescriptor = "0.8"
+rustix = { version = "1", features = ["net", "process", "termios"] }
 vt100 = "0.18"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

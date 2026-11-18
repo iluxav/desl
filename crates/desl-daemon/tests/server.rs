@@ -51,7 +51,7 @@ fn a_client_says_hello_and_a_stop_removes_the_socket_before_the_daemon_ends() {
     let (p, dir) = paths("stop");
     let serving = {
         let p = p.clone();
-        std::thread::spawn(move || desl_daemon::server::serve(&p))
+        std::thread::spawn(move || desl_daemon::server::serve(&p, false))
     };
     let mut s = connect(&p);
     let (ok, _) = call(&mut s, 1, Command::Hello { protocol: PROTOCOL, client: "test".into() });
@@ -80,10 +80,10 @@ fn a_second_daemon_on_the_same_socket_is_refused_with_a_sentence() {
     let (p, dir) = paths("second");
     let serving = {
         let p = p.clone();
-        std::thread::spawn(move || desl_daemon::server::serve(&p))
+        std::thread::spawn(move || desl_daemon::server::serve(&p, false))
     };
     let mut s = connect(&p);
-    let err = desl_daemon::server::serve(&p).unwrap_err().to_string();
+    let err = desl_daemon::server::serve(&p, false).unwrap_err().to_string();
     assert!(err.starts_with("A desl daemon is already running on"), "{err}");
     write_frame(&mut s, &Request { id: 1, command: Command::Shutdown }).unwrap();
     serving.join().unwrap().unwrap();
@@ -94,7 +94,7 @@ fn a_second_daemon_on_the_same_socket_is_refused_with_a_sentence() {
 fn a_socket_path_too_long_for_the_system_is_refused_with_a_sentence() {
     let (mut p, dir) = paths("long");
     p.socket = dir.join("x".repeat(120)).join("s.sock");
-    let err = desl_daemon::server::serve(&p).unwrap_err().to_string();
+    let err = desl_daemon::server::serve(&p, false).unwrap_err().to_string();
     assert!(err.contains("is too long for a Unix socket") && err.contains("DESL_SOCKET"), "{err}");
     let _ = std::fs::remove_dir_all(dir);
 }

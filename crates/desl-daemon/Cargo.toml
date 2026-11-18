@@ -20,6 +20,8 @@ sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 portable-pty = { workspace = true }
+filedescriptor = { workspace = true }
+rustix = { workspace = true }
 vt100 = { workspace = true }
 
 [lints]

@@ -1,6 +1,6 @@
 # desl: build, check and install.
 #
-#   make install     release build, copy desl to ~/.local/bin (stops a running daemon first)
+#   make install     release build, copy desl to ~/.local/bin; a running daemon starts again on it and keeps its agents
 #   make uninstall   stop the daemon and remove desl; threads are kept
 #   make check       clippy with warnings denied, formatting, every test
 #   make test        cargo test
@@ -27,15 +27,16 @@ check:
 	cargo fmt --all --check
 	cargo test --workspace
 
-# A daemon from an older build would keep serving the old code, so installing stops it. Its
-# agents end; every thread is kept and the native sessions resume on the next prompt.
+# The running daemon would keep serving the old code, so it starts again from the binary just
+# installed. It hands that one every agent and shell, so nothing that runs in a thread ends and
+# an open desl reconnects by itself. A daemon from a build before the handover cannot do that:
+# it is restarted the old way when no agent is working, and left running when one is.
 install: build
 	@mkdir -p "$(BINDIR)"
-	@if "$(TARGET)/desl" status --json 2>/dev/null | grep -q '"running":true'; then \
-		echo "stopping the running desl daemon (threads are kept; sessions resume on the next prompt)"; \
-		"$(TARGET)/desl" daemon stop >/dev/null || true; \
+	@install -m 755 "$(TARGET)/desl" "$(BINDIR)/desl.new" && mv -f "$(BINDIR)/desl.new" "$(BINDIR)/desl" && echo "installed $(BINDIR)/desl"
+	@if "$(BINDIR)/desl" status --json 2>/dev/null | grep -q '"running":true'; then \
+		"$(BINDIR)/desl" daemon restart || true; \
 	fi
-	@install -m 755 "$(TARGET)/desl" "$(BINDIR)/desl" && echo "installed $(BINDIR)/desl"
 	@case ":$$PATH:" in *":$(BINDIR):"*) ;; *) echo "note: $(BINDIR) is not on your PATH";; esac
 	@echo
 	@echo "Run inside a repository:"

@@ -76,6 +76,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `leave` | `thread_id` | none | This client no longer shows the thread: its pane closed or moved to another thread. A client may show several threads at once, one per pane. Never replied to. |
 | `doctor` | | `doctor {checks}` | Store, agents and daemon checks. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
+| `handover` | `exe` | `handed_over {pid, kept}` | The daemon starts again from the desl binary at `exe` and hands it the terminal of every running agent and shell, so nothing ends. The reply comes from the daemon that leaves, once the new one serves on the same socket: `pid` is the new daemon's, `kept` how many terminals it took. An error means the daemon that was running stays as it was. A daemon from a build without this command closes the connection instead of answering. |
 
 ## Events
 
@@ -94,6 +95,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `appended` | `event` | An IR event was appended to a thread's log. |
 | `agents` | `agents` | Detection ran again. |
 | `bye` | | The daemon is stopping. |
+| `restarting` | | The daemon handed its agents to a new daemon and is leaving. The client connects to the same socket again and finds every thread as it was. |
 
 A subscribed client hears the events of every thread, so a thread it has loaded stays current
 without asking again.

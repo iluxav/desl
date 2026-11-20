@@ -73,6 +73,9 @@ pub fn leave() {
 const SCREEN_ON: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l";
 /// Puts the terminal's key modes back to plain before the next agent sets its own.
 const KEYS_PLAIN: &[u8] = b"\x1b[<10u\x1b[>4;0m\x1b[?2004l\x1b[?1004l";
+/// How long the end of a read that stops in the middle of a key waits for the rest of it. The
+/// rest of a report follows at once; an escape key pressed with other keys has nothing after it.
+const CUT_WAIT: Duration = Duration::from_millis(50);
 /// At most one paint per this long; output in between is drawn together.
 const FRAME: Duration = Duration::from_millis(12);
 
@@ -284,6 +287,10 @@ struct Client {
     closing: Option<String>,
     /// A conversation shown in the pane: a subagent's, or the thread's own from its start.
     sub: Option<Sub>,
+    /// The end of the last read from the terminal, when it stopped in the middle of a key or
+    /// a mouse report, and when that was.
+    cut: Vec<u8>,
+    cut_at: Instant,
     /// Which key opened the menu, and so what a row in it does.
     menu_for: MenuFor,
     /// `prefix ,`: the name being typed.
@@ -596,6 +603,31 @@ impl Client {
 
     /// What the terminal sent. Returns the farewell when the user detached.
     fn stdin(&mut self, b: &[u8]) -> Option<String> {
+        // What the read before this one ended in the middle of comes first.
+        let mut all = std::mem::take(&mut self.cut);
+        all.extend_from_slice(b);
+        self.keys(&all, false)
+    }
+
+    /// How long the main loop may wait before [`Client::cut_over`] has something to do.
+    fn cut_wait(&self) -> Option<Duration> {
+        (!self.cut.is_empty()).then(|| CUT_WAIT.saturating_sub(self.cut_at.elapsed()))
+    }
+
+    /// Nothing came after what a read was cut short in: it is what it is, an escape key or
+    /// bytes for the agent.
+    fn cut_over(&mut self) -> Option<String> {
+        if self.cut.is_empty() || self.cut_at.elapsed() < CUT_WAIT {
+            return None;
+        }
+        let cut = std::mem::take(&mut self.cut);
+        self.keys(&cut, true)
+    }
+
+    /// The keys and mouse reports in `b`. Unless `whole`, bytes at its end that stop in the
+    /// middle of one are kept for the next read to finish; a report passed on in two halves is
+    /// one desl never saw, typed into the agent as text.
+    fn keys(&mut self, b: &[u8], whole: bool) -> Option<String> {
         if self.notice.take().is_some() {
             self.dirty = true;
         }
@@ -603,6 +635,12 @@ impl Client {
         let mut at = 0;
         while at < b.len() {
             let rest = &b[at..];
+            // An escape that is all a read brought is the key, pressed: it does not wait.
+            if !whole && b != [0x1b] && rawkeys::unfinished(rest) {
+                self.cut = rest.to_vec();
+                self.cut_at = Instant::now();
+                break;
+            }
             if let Some((m, n)) = rawkeys::mouse(rest) {
                 at += n;
                 self.send_keys(std::mem::take(&mut to_agent));
@@ -1952,6 +1990,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
         finder: None,
         closing: None,
         sub: None,
+        cut: Vec::new(),
+        cut_at: Instant::now(),
         menu_for: MenuFor::New,
         renaming: None,
         info: None,
@@ -1985,6 +2025,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
     c.paint();
     let farewell = loop {
         let wait = if c.dirty { FRAME.saturating_sub(c.painted.elapsed()) } else { Duration::from_millis(50) };
+        let wait = c.cut_wait().map_or(wait, |cut| cut.min(wait));
         let msg = match rx.recv_timeout(wait) {
             Ok(m) => Some(m),
             Err(mpsc::RecvTimeoutError::Timeout) => None,
@@ -1998,6 +2039,7 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
             }
             None => None,
         };
+        let bye = bye.or_else(|| c.cut_over());
         if bye.is_some() {
             break bye;
         }

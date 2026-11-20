@@ -88,6 +88,13 @@ All notable changes to desl are recorded here. The format follows
   turn: Claude Code writes such a prompt as a list of blocks, which desl did not read as a
   prompt. It now does, and the lines Claude Code adds in the user's place (`isMeta`: a skill's
   text, where an image came from) are no longer taken for prompts.
+- A key or a mouse report that reaches desl in two reads is read as one. A read from the
+  terminal can end anywhere, with a fast wheel or over a slow link; desl passed the first half
+  on to the agent, never saw the report, and the second half followed as text: a wheel step
+  in a shell left `64;80;15M` at its prompt and scrolled nothing. The prefix as a kitty report
+  was missed the same way, and a letter of several bytes typed into a rename was lost. The
+  unfinished end of a read now waits for the next one. An escape pressed by itself is still
+  passed on at once; one read together with other keys waits up to 50 ms.
 - `ctrl+n`, `ctrl+p` and `ctrl+u` work in the key list and in the directory finder. A list
   got the letter instead, so `ctrl+n` typed an "n" into the filter.
 - A thread that has run for hours comes back whole when desl is opened again. The daemon kept

@@ -81,6 +81,28 @@ pub fn next(b: &[u8]) -> Option<(Key, usize)> {
     }
 }
 
+/// Whether `b`, the last bytes a read from the terminal brought, begin a key or a report and do
+/// not end it: an escape with nothing after it, a control sequence without its last byte, or
+/// a character without all of its bytes. A read can end anywhere in what the terminal sends,
+/// and the rest comes with the next one.
+pub fn unfinished(b: &[u8]) -> bool {
+    match b {
+        // An escape alone, or the start of an arrow in application mode.
+        [0x1b] | [0x1b, b'O'] => true,
+        // No key and no mouse report has more parameters than this.
+        [0x1b, b'[', params @ ..] => params.len() <= 32 && params.iter().all(|c| (0x20..=0x3f).contains(c)),
+        [first @ 0xc0..=0xff, rest @ ..] => {
+            let whole = match first {
+                0xc0..=0xdf => 2,
+                0xe0..=0xef => 3,
+                _ => 4,
+            };
+            b.len() < whole && rest.iter().all(|c| (0x80..0xc0).contains(c))
+        }
+        _ => false,
+    }
+}
+
 /// The prefix in any encoding: ctrl+letter as a control byte or a report, ctrl+space as NUL
 /// (what a plain terminal sends for it) or a report.
 pub fn is_prefix(k: &Key, prefix: desl_proto::config::Prefix) -> bool {
@@ -191,6 +213,31 @@ mod tests {
         let k = keys("sé".as_bytes());
         assert_eq!(k.len(), 2);
         assert_eq!(k[0].code, Some(115));
+    }
+
+    #[test]
+    fn what_a_read_cut_short_is_told_from_what_is_whole() {
+        // A wheel report, a kitty key and an arrow, each cut at every place.
+        for whole in [&b"\x1b[<64;80;15M"[..], b"\x1b[32;5u", b"\x1b[1;2A", b"\x1bOA"] {
+            for cut in 1..whole.len() {
+                assert!(unfinished(&whole[..cut]), "{:?}", String::from_utf8_lossy(&whole[..cut]));
+            }
+            assert!(!unfinished(whole), "{:?}", String::from_utf8_lossy(whole));
+        }
+        // A character of two, three and four bytes.
+        for whole in ["é", "日", "🙂"] {
+            let b = whole.as_bytes();
+            for cut in 1..b.len() {
+                assert!(unfinished(&b[..cut]), "{whole} cut at {cut}");
+            }
+            assert!(!unfinished(b));
+        }
+        // What is whole, with or without more after it, is not held back.
+        for whole in [&b"a"[..], b"\x1bj", b"\x1b[A\x1b[", b"\x1b[<0;1;1mx", b"", b"\r", b"\xc3(", b"\x80"] {
+            assert!(!unfinished(whole), "{:?}", String::from_utf8_lossy(whole));
+        }
+        // Too long to be a key: something else, passed on as it is.
+        assert!(!unfinished(format!("\x1b[{}", "1;".repeat(20)).as_bytes()));
     }
 
     #[test]

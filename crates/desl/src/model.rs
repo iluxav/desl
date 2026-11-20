@@ -1,5 +1,6 @@
 //! A conversation as the transcript renderer draws it: IR events projected into items. The
-//! native client uses it for a subagent's conversation; it holds nothing that matters.
+//! native client uses it for the conversations it draws itself, a thread's history and a
+//! subagent's; it holds nothing that matters.
 
 use desl_ir::{Decision, Event, EventKind, diff, tool_target, tool_verb};
 
@@ -67,6 +68,7 @@ impl Thread {
     }
 
     /// Replaces everything this view knows with the daemon's events.
+    #[cfg(test)]
     pub fn load(&mut self, events: &[Event]) {
         self.items.clear();
         self.messages.clear();

@@ -7,6 +7,16 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- History: `prefix [` shows a thread's whole conversation in its pane, from the first prompt.
+  After the daemon ended (a stop, a restart of the machine) an agent is started again on its
+  session and draws what it chooses to: Claude Code shows nothing from before the last time it
+  compacted its context, so a long conversation came back without most of itself. desl has logged
+  every prompt, reply and tool call all along; this view reads that log, across compactions,
+  restarts, switches and forks. `j`/`k`, the wheel and the page keys scroll, `{` and `}` step
+  from prompt to prompt, `/` and `?` find with `n`/`N` to go on, `t` hides the tool calls, a
+  rule marks each new day and the header says when the prompt on screen was sent. A drag, a
+  double click or a triple click copies, as in a shell's pane. `esc` returns to the agent,
+  which went on behind the view. A subagent's conversation takes the same keys now.
 - A task list per project. `prefix c` offers `tasks`, which opens the project's tasks thread
   (or focuses it) and makes `.tasks.md` at the project's root when there is none: a flat list
   of tasks, each with a title, a type, a status (todo, in progress, issue, done, ignored), a
@@ -62,6 +72,8 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- `ctrl+n`, `ctrl+p` and `ctrl+u` work in the key list and in the directory finder. A list
+  got the letter instead, so `ctrl+n` typed an "n" into the filter.
 - A thread that has run for hours comes back whole when desl is opened again. The daemon kept
   the last 8 MB an agent drew and cut the rest off, so past that point what a client got on
   attach started in the middle of the drawing. An agent sets its full screen, the mouse and

@@ -75,18 +75,26 @@ fn diff_lines(unified: &str, body: usize, cap: usize, lines: &mut Vec<Line<'stat
     }
 }
 
+/// A conversation laid out: its lines, and the line each item starts on.
+pub struct Laid {
+    pub lines: Vec<Line<'static>>,
+    pub starts: Vec<usize>,
+}
+
 /// A conversation's items as lines at most `width` columns wide.
-pub fn layout(items: &[Item], width: usize) -> Vec<Line<'static>> {
+pub fn layout(items: &[Item], width: usize) -> Laid {
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut starts = Vec::with_capacity(items.len());
     let width = width.min(MAX_TEXT_WIDTH);
     let width = width.saturating_sub(RIGHT_MARGIN);
     let body = width.saturating_sub(1 + INDENT.len()).max(8);
     if items.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(format!(" {INDENT}Nothing yet."), theme::muted())]));
-        return lines;
+        return Laid { lines, starts };
     }
     for item in items {
+        starts.push(lines.len());
         match item {
             Item::User { text } => user_lines(text, body, &mut lines),
             Item::Assistant { text, streaming } => {
@@ -195,7 +203,7 @@ pub fn layout(items: &[Item], width: usize) -> Vec<Line<'static>> {
             }
         }
     }
-    lines
+    Laid { lines, starts }
 }
 
 /// A prompt: `›` in the accent colour, the text wrapped under it.

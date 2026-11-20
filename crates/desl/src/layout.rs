@@ -24,6 +24,7 @@ pub enum Action {
     /// `alt+h` / `alt+l`: the keys move to the other pane.
     OtherPane,
     Fork,
+    History,
     New,
     Open,
     Rename,
@@ -57,6 +58,7 @@ const fn bind(group: &'static str, key: &'static str, what: &'static str, action
 pub const KEYS: &[Bind] = &[
     bind("Agent", "s", "Switch this thread to another agent", Some(Action::Switch)),
     bind("Agent", "f", "Fork: this conversation in a new thread, on either agent", Some(Action::Fork)),
+    bind("Agent", "[", "History: the whole conversation, from its first prompt", Some(Action::History)),
     bind("Agent", "i", "Info: agent, session ids, model, directory", Some(Action::Info)),
     bind("Agent", "r", "Restart this agent, keeping the conversation", Some(Action::Restart)),
     bind("Threads", "w", "Move to the thread list (j/k, enter, esc)", Some(Action::Threads)),
@@ -222,13 +224,27 @@ pub fn row_at(projects: &[Project], threads: &[Thread], area: Rect, skip: usize,
     rows(projects, threads).get(i).cloned()
 }
 
-/// A subagent's conversation shown in the pane instead of the agent.
+/// A conversation shown in the pane instead of the agent's screen.
 pub struct SubView<'a> {
     pub title: String,
-    pub running: bool,
+    pub kind: SubKind,
     pub lines: &'a [Line<'static>],
-    /// Lines up from the bottom; 0 follows the end.
-    pub scroll: usize,
+    /// The line at the top of the pane.
+    pub top: usize,
+    /// The line the last search stopped on, drawn reversed.
+    pub hit: Option<usize>,
+    /// A search being typed: its text, and whether it goes down the page.
+    pub typing: Option<(&'a str, bool)>,
+    /// Tool calls are shown.
+    pub tools: bool,
+}
+
+/// Whose conversation a [`SubView`] shows.
+pub enum SubKind {
+    /// One of the thread's subagents.
+    Subagent { running: bool },
+    /// The thread's own, from its first prompt (`prefix [`). `place` is where the reader is.
+    History { place: String },
 }
 
 /// One choice in a menu: what it starts, and why it cannot when it cannot.
@@ -603,11 +619,15 @@ fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
 fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) {
     let mut block = panel(focused && v.cursor.is_none() && v.help.is_none());
     if focused && let Some(s) = &v.sub {
-        let state = if s.running { Span::styled(" ● running ", theme::accent()) } else { Span::styled(" ✓ done ", theme::dim()) };
+        let (what, state) = match &s.kind {
+            SubKind::Subagent { running: true } => ("Subagent", Span::styled(" ● running ", theme::accent())),
+            SubKind::Subagent { running: false } => ("Subagent", Span::styled(" ✓ done ", theme::dim())),
+            SubKind::History { place } => ("History", Span::styled(format!(" {place} "), theme::dim())),
+        };
         block = block
             .title(Line::from(vec![
                 Span::raw(" "),
-                Span::styled("Subagent", theme::accent().add_modifier(Modifier::BOLD)),
+                Span::styled(what, theme::accent().add_modifier(Modifier::BOLD)),
                 Span::styled(" · ", theme::muted()),
                 Span::styled(s.title.clone(), theme::normal()),
                 Span::raw(" "),
@@ -665,6 +685,22 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
     f.render_widget(block, area);
 }
 
+/// `keys` after `spans`, each a key and what it does: as many whole ones as `width` columns
+/// hold, so a narrow terminal shows fewer keys and none of them cut in two.
+fn with_keys(mut spans: Vec<Span<'static>>, keys: &[(&'static str, &'static str)], width: u16) -> Line<'static> {
+    let mut used: usize = spans.iter().map(|s| s.content.width()).sum();
+    for (k, what) in keys {
+        used += k.width() + 1 + what.width();
+        if used > usize::from(width) {
+            break;
+        }
+        used += 3;
+        spans.push(Span::styled(*k, theme::bold()));
+        spans.push(Span::styled(format!(" {what}   "), theme::dim()));
+    }
+    Line::from(spans)
+}
+
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
         Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
@@ -675,13 +711,25 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             Span::styled("▏", theme::accent()),
             Span::styled("   enter save   esc cancel", theme::dim()),
         ])
-    } else if v.sub.is_some() {
-        let mut spans = vec![Span::raw("  ")];
-        for (k, what) in [("esc", "back to the agent"), ("j/k", "scroll"), ("g/G", "top/bottom"), ("wheel", "scroll")] {
-            spans.push(Span::styled(k, theme::bold()));
-            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
-        }
-        Line::from(spans)
+    } else if let Some((text, down)) = v.sub.as_ref().and_then(|s| s.typing) {
+        Line::from(vec![
+            Span::styled(if down { "  Find below " } else { "  Find above " }, theme::bold()),
+            Span::styled(text.to_string(), theme::normal()),
+            Span::styled("▏", theme::accent()),
+            Span::styled("   enter find   esc cancel", theme::dim()),
+        ])
+    } else if let Some(s) = &v.sub {
+        let tools = if s.tools { "hide tool calls" } else { "show tool calls" };
+        let keys = [
+            ("esc", "back to the agent"),
+            ("j/k", "scroll"),
+            ("{ }", "prompts"),
+            ("/ ?", "find below, above"),
+            ("n N", "next"),
+            ("t", tools),
+            ("g/G", "top/end"),
+        ];
+        with_keys(vec![Span::raw("  ")], &keys, area.width)
     } else if v.help.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("type", "filter"), ("↑↓", "move"), ("enter", "run"), ("esc", "close")] {
@@ -716,7 +764,7 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
         }
         Line::from(spans)
     } else {
-        let mut spans = vec![
+        let spans = vec![
             Span::raw("  "),
             Span::styled("alt+j k", theme::bold()),
             Span::styled(" threads   ", theme::dim()),
@@ -726,13 +774,18 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ),
             Span::raw("  "),
         ];
-        for (k, what) in
-            [("s", "switch agent"), ("c", "new"), ("%", "split"), ("w", "sidebar"), ("x", "close"), ("?", "help"), ("d", "detach")]
-        {
-            spans.push(Span::styled(k, theme::bold()));
-            spans.push(Span::styled(format!(" {what}   "), theme::dim()));
-        }
-        Line::from(spans)
+        // The newest key is last: a terminal too narrow for all of them loses that one first.
+        let keys = [
+            ("s", "switch agent"),
+            ("c", "new"),
+            ("%", "split"),
+            ("w", "sidebar"),
+            ("x", "close"),
+            ("?", "help"),
+            ("d", "detach"),
+            ("[", "history"),
+        ];
+        with_keys(spans, &keys, area.width)
     };
     f.render_widget(Paragraph::new(line), area);
 }
@@ -953,10 +1006,23 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
         match &v.sub {
             Some(s) if focused => {
                 let h = area.height as usize;
-                let top = s.lines.len().saturating_sub(h + s.scroll);
-                let shown: Vec<Line<'static>> = s.lines.iter().skip(top).take(h).cloned().collect();
+                let mut shown: Vec<Line<'static>> = s.lines.iter().skip(s.top).take(h).cloned().collect();
+                // What a search found, reversed for the eye to land on.
+                if let Some(line) = s.hit.and_then(|hit| hit.checked_sub(s.top)).and_then(|i| shown.get_mut(i)) {
+                    for span in &mut line.spans {
+                        span.style = span.style.add_modifier(Modifier::REVERSED);
+                    }
+                }
                 f.render_widget(Clear, *area);
                 f.render_widget(Paragraph::new(shown), *area);
+                if let Some(marked) = p.selection {
+                    let buf = f.buffer_mut();
+                    for (row, col) in (0..area.height).flat_map(|r| (0..area.width).map(move |c| (r, c))) {
+                        if marked.holds(row, col) {
+                            buf[(area.x + col, area.y + row)].modifier.insert(Modifier::REVERSED);
+                        }
+                    }
+                }
             }
             _ => {
                 if let Some(screen) = screens.get(i) {
@@ -1344,6 +1410,81 @@ mod tests {
         assert_eq!(a.footer, Rect::new(0, 39, 150, 1));
         assert_eq!(areas(79, 24, true, None).sidebar, None);
         assert_eq!(areas(100, 30, false, None).panes[0].width, 96);
+    }
+
+    #[test]
+    fn a_conversation_takes_the_pane_and_the_header_says_where_the_reader_is() {
+        let projects = [project("desl")];
+        let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login")];
+        let a = areas(120, 30, true, None);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let lines: Vec<Line<'static>> = ["zero", "  › why is it blank", "  The column was wrong.", "three"].map(Line::from).to_vec();
+        let history = |hit, typing| SubView {
+            title: "fix the login".into(),
+            kind: SubKind::History { place: "Fri 20 Nov 10:41 · [12/340]".into() },
+            lines: &lines,
+            top: 1,
+            hit,
+            typing,
+            tools: true,
+        };
+        let mut v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView {
+                thread_id: "t-1a",
+                agent: "claude",
+                scrolled: 0,
+                selection: Some(Selection { from: (0, 4), to: (0, 6) }),
+            }],
+            focus: 0,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: Some(history(Some(2), None)),
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        let rows: Vec<&str> = s.lines().collect();
+        assert!(rows[0].contains("╭ History · fix the login ") && rows[0].ends_with(" Fri 20 Nov 10:41 · [12/340] ╮"), "{s}");
+        assert!(
+            rows[1].contains("││   › why is it blank") && rows[2].contains("││   The column was wrong."),
+            "the line at the top is line 1: {s}"
+        );
+        assert!(
+            rows[29].contains("esc back to the agent") && rows[29].contains("{ } prompts") && rows[29].contains("t hide tool calls"),
+            "{s}"
+        );
+        let (x, y) = (a.panes[0].x, a.panes[0].y);
+        let b = t.backend().buffer();
+        let reversed = |col: u16, row: u16| b[(x + col, y + row)].modifier.contains(Modifier::REVERSED);
+        assert!(reversed(4, 1) && !reversed(4, 2), "what the search found is reversed");
+        assert!(reversed(4, 0) && reversed(6, 0) && !reversed(7, 0) && !reversed(3, 0), "and so is what is marked");
+        // A search being typed takes the key line.
+        v.sub = Some(history(None, Some(("col", false))));
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        assert!(screen(&t).lines().last().unwrap().starts_with("  Find above col▏   enter find"), "{}", screen(&t));
+    }
+
+    #[test]
+    fn a_narrow_key_line_drops_whole_keys_from_its_end() {
+        let keys = [("s", "switch agent"), ("c", "new"), ("d", "detach")];
+        let text = |width| with_keys(vec![Span::raw("  ")], &keys, width).spans.iter().map(|s| s.content.as_ref()).collect::<String>();
+        assert_eq!(text(80), "  s switch agent   c new   d detach   ");
+        assert_eq!(text(35), "  s switch agent   c new   d detach   ", "the blanks after the last key need no room");
+        assert_eq!(text(34), "  s switch agent   c new   ");
+        assert_eq!(text(10), "  ");
     }
 
     #[test]

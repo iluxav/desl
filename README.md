@@ -88,6 +88,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `s` | Switch this thread to another agent, on the whole conversation. With more than two installed, a list asks which |
 | `f` | Fork this conversation into a new thread, on any agent |
 | `r` | Restart this agent on the same conversation, with the binary and settings installed now |
+| `[` | History: the thread's whole conversation from its first prompt, also what the agent no longer shows after a restart. `/` finds, `{` `}` step by prompt, a drag copies |
 | `i` | Info: agent, session ids, model, directory |
 | `c` | New thread: Claude, Codex or Copilot, whichever are installed, a shell, [yazi](https://yazi-rs.github.io) when it is installed, or the project's task list. `w` in the menu gives an agent a git worktree of its own |
 | `o` | Open a directory: type to find it among your projects, recent directories and repositories; a shell opens there |
@@ -98,9 +99,9 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `b` `d` `?` | Hide the sidebar, detach, the key list |
 
 Without the prefix: `alt+j` / `alt+k` move between threads, `alt+h` / `alt+l` between panes
-while two are open, and a click opens a thread or focuses a pane. In a shell pane a drag
-selects text inside the pane and copies it when you let go; a double click takes a word and a
-triple click a line. The agents select and copy by themselves, as they do outside desl.
+while two are open, and a click opens a thread or focuses a pane. In a shell pane and in the
+history view a drag selects text inside the pane and copies it when you let go; a double click
+takes a word and a triple click a line. The agents select and copy by themselves, as they do outside desl.
 
 The prefix is a setting; `ctrl+a` or any `ctrl+<letter>` works. Press it twice to send it to
 the agent.

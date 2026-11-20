@@ -4,10 +4,11 @@
 
 use crate::conn::{Conn, Link};
 use crate::finder::Finder;
-use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, Selection, SubView, View};
+use crate::history::{After, Reading};
+use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, Selection, SubKind, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
-use desl_ir::{Event, FILES, Project, SHELL, Status, TASKS, Thread, is_agent, program_word};
+use desl_ir::{FILES, Project, SHELL, Status, TASKS, Thread, is_agent, program_word};
 use desl_proto::replay::{self, SCROLLBACK};
 use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, reflow, term};
 use ratatui::Terminal;
@@ -135,12 +136,14 @@ struct Palette {
 
 /// A key the sidebar understands, from whichever encoding the terminal used.
 #[derive(Debug, PartialEq, Eq)]
-enum SKey {
+pub(crate) enum SKey {
     Up,
     Down,
     /// An arrow with shift held: moves what the cursor is on, where something can move.
     MoveUp,
     MoveDown,
+    PageUp,
+    PageDown,
     Enter,
     Close,
     Back,
@@ -275,7 +278,7 @@ struct Client {
     finder: Option<Finder>,
     /// The thread `prefix x` asks to close, until the user answers y or n.
     closing: Option<String>,
-    /// A subagent's conversation shown in the pane.
+    /// A conversation shown in the pane: a subagent's, or the thread's own from its start.
     sub: Option<Sub>,
     /// Which key opened the menu, and so what a row in it does.
     menu_for: MenuFor,
@@ -298,11 +301,12 @@ struct Client {
     prefix_label: String,
 }
 
+/// A conversation drawn in the pane in place of the agent's screen.
 struct Sub {
     thread_id: String,
-    id: String,
-    events: Vec<Event>,
-    scroll: usize,
+    /// The subagent whose conversation it is; `None` for the thread's own (`prefix [`).
+    id: Option<String>,
+    reading: Reading,
     /// The request for its events in flight.
     asked: Option<u64>,
     last: Instant,
@@ -351,7 +355,7 @@ fn agent_choices(agents: &[AgentInfo], menu_for: MenuFor, current: &str) -> Vec<
 }
 
 /// An up or down arrow as the terminal reports it, plain (`CSI A`) or with shift held
-/// (`CSI 1;2 A`, and `CSI 1;2:1 A` when a program asked for event types).
+/// (`CSI 1;2 A`, and `CSI 1;2:1 A` when a program asked for event types), or a page key.
 fn arrow(raw: &[u8]) -> Option<SKey> {
     let (params, last) = raw.strip_prefix(b"\x1b[")?.split_last().map(|(l, p)| (p, *l))?;
     let mods = std::str::from_utf8(params).ok()?.split(';').nth(1).and_then(|m| m.split(':').next()?.parse::<u32>().ok()).unwrap_or(1);
@@ -361,6 +365,9 @@ fn arrow(raw: &[u8]) -> Option<SKey> {
         (b'A', true) => Some(SKey::MoveUp),
         (b'B', false) => Some(SKey::Down),
         (b'B', true) => Some(SKey::MoveDown),
+        // Page up and page down: `CSI 5 ~` and `CSI 6 ~`.
+        (b'~', _) if params.starts_with(b"5") => Some(SKey::PageUp),
+        (b'~', _) if params.starts_with(b"6") => Some(SKey::PageDown),
         _ => None,
     }
 }
@@ -408,6 +415,8 @@ impl Client {
     /// The keys move to pane `i`; the terminal takes its agent's key modes.
     fn focus(&mut self, i: usize) {
         if i < self.panes.len() && i != self.focus {
+            // A conversation being read stays with the pane it was opened in: it closes.
+            self.close_sub();
             self.focus = i;
             self.apply_modes();
             self.title();
@@ -475,7 +484,7 @@ impl Client {
             // A word or a line is marked at once and copied, like a drag, when the button is let go.
             let whole = |s: Selection| Select { anchor: s.from, head: s.to, dragging: true, moved: true };
             self.panes[i].select = match clicks {
-                2 => Selection::word(self.panes[i].vt.screen(), cell.0, cell.1).map(whole),
+                2 => self.word_at(i, cell).map(whole),
                 3 => Some(whole(Selection { from: (cell.0, 0), to: (cell.0, r.width.saturating_sub(1)) })),
                 _ => Some(Select { anchor: cell, head: cell, dragging: true, moved: false }),
             };
@@ -497,10 +506,37 @@ impl Client {
         }
     }
 
+    /// Back to the agent's screen, with nothing left marked on it.
+    fn close_sub(&mut self) {
+        if self.sub.take().is_some() {
+            self.pane_mut().select = None;
+            self.dirty = true;
+        }
+    }
+
+    /// The conversation drawn in pane `i` in place of its agent's screen, when one is.
+    fn read_in(&self, i: usize) -> Option<&Reading> {
+        self.sub.as_ref().filter(|_| i == self.focus).map(|sub| &sub.reading)
+    }
+
+    /// The word around a cell of pane `i`, on whichever is drawn there.
+    fn word_at(&self, i: usize, cell: (u16, u16)) -> Option<Selection> {
+        match self.read_in(i) {
+            Some(reading) => {
+                let (from, to) = reading.word(cell.0, cell.1, usize::from(self.rect(i).height))?;
+                Some(Selection { from: (cell.0, from), to: (cell.0, to) })
+            }
+            None => Selection::word(self.panes[i].vt.screen(), cell.0, cell.1),
+        }
+    }
+
     /// Copies what is marked in pane `i` and says how much; a mark over blank cells is dropped.
     fn copy_marked(&mut self, i: usize) {
         let Some(sel) = self.panes[i].selection() else { return };
-        let text = sel.text(self.panes[i].vt.screen());
+        let text = match self.read_in(i) {
+            Some(reading) => reading.text_between(sel.from, sel.to, usize::from(self.rect(i).height)),
+            None => sel.text(self.panes[i].vt.screen()),
+        };
         if text.trim().is_empty() {
             self.panes[i].select = None;
             return;
@@ -660,6 +696,8 @@ impl Client {
                     Some(13) => SKey::Enter,
                     Some(27) => SKey::Close,
                     Some(127 | 8) => SKey::Back,
+                    // ctrl and a letter is that letter's control character, as a plain terminal sends it.
+                    Some(c @ 97..=122) if k.ctrl => SKey::Char(char::from(u8::try_from(c - 96).unwrap_or(0))),
                     Some(c) => match char::from_u32(c) {
                         Some(ch) => SKey::Char(ch),
                         None => continue,
@@ -699,12 +737,18 @@ impl Client {
             if i != self.focus && m.press && !m.motion() && m.wheel().is_none() {
                 self.focus(i);
             }
-            if i == self.focus
-                && let Some(sub) = &mut self.sub
-            {
+            if i == self.focus && self.sub.is_some() {
+                let r = a.panes.get(i).copied().unwrap_or_default();
                 if let Some(up) = m.wheel() {
-                    sub.scroll = if up { sub.scroll + 3 } else { sub.scroll.saturating_sub(3) };
+                    if let Some(sub) = &mut self.sub {
+                        sub.reading.wheel(up, usize::from(r.height));
+                    }
+                    // The mark is on cells of the pane, and other lines are under them now.
+                    self.panes[i].select = None;
                     self.dirty = true;
+                } else if m.button & 3 == 0 {
+                    // desl draws this itself, so it marks the text itself.
+                    self.select(i, m, r);
                 }
                 return;
             }
@@ -774,7 +818,7 @@ impl Client {
             match layout::row_at(&self.projects, &self.threads, s, skip, m.y) {
                 Some(Row::Thread(id)) => {
                     self.side = None;
-                    self.sub = None;
+                    self.close_sub();
                     self.dirty = true;
                     if id != self.thread_id() && self.busy.is_none() {
                         self.go(id);
@@ -789,7 +833,7 @@ impl Client {
                     let rows = layout::rows(&self.projects, &self.threads);
                     self.side = rows.iter().position(|r| *r == row);
                     self.side_from = Some(self.thread_id().to_string());
-                    self.sub = None;
+                    self.close_sub();
                     self.dirty = true;
                 }
                 _ => {}
@@ -850,7 +894,7 @@ impl Client {
         if a != Action::Open {
             self.finder = None;
         }
-        self.sub = None;
+        self.close_sub();
         self.closing = None;
         match a {
             Action::Close => {
@@ -923,6 +967,10 @@ impl Client {
                 let id = self.link.request(Command::Restart { thread_id: self.thread_id().to_string() });
                 self.busy = Some(Busy::Restart(id));
             }
+            Action::History if !is_agent(self.agent()) => {
+                self.notice(&format!("A {} has no conversation to read.", program_word(self.agent())));
+            }
+            Action::History => self.open_history(),
             Action::Fork if !is_agent(self.agent()) => {
                 self.notice(&format!("A {} has no conversation to fork.", program_word(self.agent())))
             }
@@ -1155,7 +1203,7 @@ impl Client {
             SKey::Char(c @ '1'..='9') => self.start(c as usize - '1' as usize),
             // A switch keeps the thread where it is; only a new thread can get a worktree.
             SKey::Char('w') if self.menu_for != MenuFor::Switch => self.menu_worktree = !self.menu_worktree,
-            SKey::Char(_) | SKey::Back | SKey::MoveUp | SKey::MoveDown => {}
+            SKey::Char(_) | SKey::Back | SKey::MoveUp | SKey::MoveDown | SKey::PageUp | SKey::PageDown => {}
         }
     }
 
@@ -1188,7 +1236,7 @@ impl Client {
                 // `?` is this list; picking it just closes it.
                 self.run = bind.action.filter(|a| *a != Action::Help);
             }
-            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown => {}
+            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown | SKey::PageUp | SKey::PageDown => {}
         }
     }
 
@@ -1235,7 +1283,7 @@ impl Client {
                 self.busy = Some(Busy::Create(id));
                 self.notice(&format!("A shell in {shown}. Press {} c to start an agent here.", self.prefix_label));
             }
-            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown => {}
+            SKey::Char(_) | SKey::MoveUp | SKey::MoveDown | SKey::PageUp | SKey::PageDown => {}
         }
     }
 
@@ -1244,9 +1292,8 @@ impl Client {
         let Some(s) = self.threads.iter().find(|t| t.id == thread_id).and_then(|t| t.subagents.get(k)) else { return };
         self.sub = Some(Sub {
             thread_id: thread_id.to_string(),
-            id: s.id.clone(),
-            events: Vec::new(),
-            scroll: 0,
+            id: Some(s.id.clone()),
+            reading: Reading::new(),
             asked: None,
             last: Instant::now(),
         });
@@ -1254,9 +1301,24 @@ impl Client {
         self.dirty = true;
     }
 
+    /// `prefix [`: the whole conversation of the thread in the focused pane, as the daemon's
+    /// log has it. It is read once, when it opens: like tmux's copy mode it shows what there
+    /// was then, and the agent goes on behind it.
+    fn open_history(&mut self) {
+        self.side = None;
+        self.sub =
+            Some(Sub { thread_id: self.thread_id().to_string(), id: None, reading: Reading::new(), asked: None, last: Instant::now() });
+        self.ask_sub();
+        self.dirty = true;
+    }
+
     fn ask_sub(&mut self) {
         let Some(sub) = &mut self.sub else { return };
-        let id = self.link.request(Command::Subagent { thread_id: sub.thread_id.clone(), subagent_id: sub.id.clone() });
+        let thread_id = sub.thread_id.clone();
+        let id = self.link.request(match &sub.id {
+            Some(subagent_id) => Command::Subagent { thread_id, subagent_id: subagent_id.clone() },
+            None => Command::Events { thread_id },
+        });
         sub.asked = Some(id);
         sub.last = Instant::now();
     }
@@ -1264,8 +1326,9 @@ impl Client {
     /// The subagent shown, as its thread knows it now.
     fn sub_meta(&self) -> Option<(&Thread, &desl_ir::Subagent)> {
         let sub = self.sub.as_ref()?;
+        let id = sub.id.as_ref()?;
         let t = self.threads.iter().find(|t| t.id == sub.thread_id)?;
-        Some((t, t.subagents.iter().find(|s| s.id == sub.id)?))
+        Some((t, t.subagents.iter().find(|s| s.id == *id)?))
     }
 
     /// A running subagent's view is read again every second; a working thread's logo pulses.
@@ -1310,14 +1373,15 @@ impl Client {
         if self.finder.is_some() {
             return self.finder_key(key);
         }
-        if let Some(sub) = &mut self.sub {
-            match key {
-                SKey::Close | SKey::Char('q') => self.sub = None,
-                SKey::Up | SKey::Char('k') => sub.scroll += 1,
-                SKey::Down | SKey::Char('j') => sub.scroll = sub.scroll.saturating_sub(1),
-                SKey::Char('g') => sub.scroll = usize::MAX / 2,
-                SKey::Char('G') => sub.scroll = 0,
-                _ => {}
+        if self.sub.is_some() {
+            // A mark was on what the pane showed before this key.
+            self.pane_mut().select = None;
+            let height = usize::from(self.rect(self.focus).height);
+            let after = self.sub.as_mut().map_or(After::Stay, |sub| sub.reading.key(key, height));
+            match after {
+                After::Stay => {}
+                After::Close => self.close_sub(),
+                After::Say(sentence) => self.notice(&sentence),
             }
             return;
         }
@@ -1398,7 +1462,7 @@ impl Client {
             SKey::Char(c @ '1'..='9') => {
                 self.act(Action::Jump(c as usize - '0' as usize));
             }
-            SKey::Char(_) | SKey::Back => {}
+            SKey::Char(_) | SKey::Back | SKey::PageUp | SKey::PageDown => {}
         }
     }
 
@@ -1436,6 +1500,10 @@ impl Client {
             p.scrolled = p.vt.screen().scrollback();
         }
         let focused = self.rect(self.focus);
+        // A conversation in place of the agent's screen is laid out for the pane's width.
+        if let Some(sub) = &mut self.sub {
+            sub.reading.page(usize::from(focused.width));
+        }
         let skip = self.side_skip();
         let view = View {
             projects: &self.projects,
@@ -1455,7 +1523,7 @@ impl Client {
             finder: None,
             sub: None,
             now: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
-            shown_sub: self.sub.as_ref().map(|s| (s.thread_id.as_str(), s.id.as_str())),
+            shown_sub: self.sub.as_ref().and_then(|s| Some((s.thread_id.as_str(), s.id.as_deref()?))),
             renaming: self.renaming.as_deref(),
             info: self.info.as_deref(),
             pulse: pulse(),
@@ -1471,26 +1539,29 @@ impl Client {
         if self.menu_worktree {
             title.push_str(" · ⎇ own worktree");
         }
-        // A subagent's conversation, laid out by the transcript renderer.
-        let width = focused.width as usize;
-        let sub_lines: Vec<ratatui::text::Line<'static>> = match (&self.sub, self.sub_meta()) {
-            (Some(sub), Some(_)) => {
-                let mut m = crate::model::Thread::new();
-                m.load(&sub.events);
-                crate::ui::transcript::layout(&m.items, width)
-            }
-            _ => Vec::new(),
-        };
+        // A conversation in place of the agent's screen, laid out by the transcript renderer.
+        let height = usize::from(focused.height);
+        let subagent = self.sub_meta().map(|(t, s)| {
+            let title = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
+            (title, !s.finished && t.status.busy())
+        });
+        let read = self.sub.as_ref().and_then(|sub| self.threads.iter().find(|t| t.id == sub.thread_id));
+        let read = read.map(|t| if t.name.is_empty() { t.id.clone() } else { t.name.clone() });
         let sub_view = self.sub.as_ref().map(|sub| {
-            let (title, running) = match self.sub_meta() {
-                Some((t, s)) => {
-                    let title = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
-                    (title, !s.finished && t.status.busy())
-                }
-                None => ("gone".to_string(), false),
+            let (title, kind) = match (&sub.id, subagent) {
+                (None, _) => (read.unwrap_or_default(), SubKind::History { place: sub.reading.place(height) }),
+                (Some(_), Some((title, running))) => (title, SubKind::Subagent { running }),
+                (Some(_), None) => ("gone".to_string(), SubKind::Subagent { running: false }),
             };
-            let max = sub_lines.len().saturating_sub(focused.height as usize);
-            SubView { title, running, lines: &sub_lines, scroll: sub.scroll.min(max) }
+            SubView {
+                title,
+                kind,
+                lines: sub.reading.lines(),
+                top: sub.reading.top(height),
+                hit: sub.reading.hit(),
+                typing: sub.reading.typing(),
+                tools: sub.reading.tools(),
+            }
         });
         let finder_rows: Vec<(String, &'static str)> =
             self.finder.as_ref().map(|f| f.matches().iter().map(|(p, k)| (f.tilde(p), k.note())).collect()).unwrap_or_default();
@@ -1634,8 +1705,12 @@ impl Client {
         {
             sub.asked = None;
             match (ok, error) {
-                (Some(Reply::Events { events }), _) => sub.events = events,
-                (_, Some(sentence)) => self.notice = Some(sentence),
+                (Some(Reply::Events { events }), _) => sub.reading.load(events),
+                (_, Some(sentence)) => {
+                    // Nothing came to read: back to the agent, with the reason.
+                    self.close_sub();
+                    self.notice = Some(sentence);
+                }
                 _ => {}
             }
             self.dirty = true;

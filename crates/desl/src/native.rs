@@ -349,7 +349,10 @@ fn agent_choices(agents: &[AgentInfo], menu_for: MenuFor, current: &str) -> Vec<
             if let Some(f) = label.get_mut(0..1) {
                 f.make_ascii_uppercase();
             }
-            Choice { start: a.id.clone(), item: MenuItem { label, note: note.to_string(), enabled: a.usable() && !own } }
+            Choice {
+                start: a.id.clone(),
+                item: MenuItem { label, note: note.to_string(), enabled: a.usable() && !own, kind: a.id.clone() },
+            }
         })
         .collect()
 }
@@ -1129,11 +1132,20 @@ impl Client {
     fn choices(&self) -> Vec<Choice> {
         let mut out = agent_choices(&self.agents, self.menu_for, self.agent());
         if self.menu_for == MenuFor::New {
-            out.push(Choice { start: SHELL.into(), item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true } });
+            out.push(Choice {
+                start: SHELL.into(),
+                item: MenuItem { label: shell_name(), note: "shell".into(), enabled: true, kind: SHELL.into() },
+            });
             if let Some(name) = &self.file_manager {
-                out.push(Choice { start: FILES.into(), item: MenuItem { label: name.clone(), note: "files".into(), enabled: true } });
+                out.push(Choice {
+                    start: FILES.into(),
+                    item: MenuItem { label: name.clone(), note: "files".into(), enabled: true, kind: FILES.into() },
+                });
             }
-            out.push(Choice { start: TASKS.into(), item: MenuItem { label: TASKS.into(), note: "task list".into(), enabled: true } });
+            out.push(Choice {
+                start: TASKS.into(),
+                item: MenuItem { label: TASKS.into(), note: "task list".into(), enabled: true, kind: TASKS.into() },
+            });
         }
         out
     }
@@ -1537,7 +1549,7 @@ impl Client {
             MenuFor::New => format!("New in {}", self.project().map_or("this project".to_string(), |p| p.id.clone())),
         };
         if self.menu_worktree {
-            title.push_str(" · ⎇ own worktree");
+            title.push_str(&format!(" · {} own worktree", crate::icons::branch()));
         }
         // A conversation in place of the agent's screen, laid out by the transcript renderer.
         let height = usize::from(focused.height);

@@ -7,6 +7,12 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- With a Nerd Font, desl draws its Material Design icons across the screen, one family: a
+  repository before each project, a branch and a plus-minus for git, the status in each panel's
+  title, subagents' marks, a chip before the model, the agents' marks in the menus, an icon per
+  kind of directory in `prefix o`, and an icon per line of `prefix i`. Without one, nothing
+  changes.
+
 - History: `prefix [` shows a thread's whole conversation in its pane, from the first prompt.
   After the daemon ended (a stop, a restart of the machine) an agent is started again on its
   session and draws what it chooses to: Claude Code shows nothing from before the last time it

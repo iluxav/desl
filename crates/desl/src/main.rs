@@ -7,6 +7,7 @@ mod cli;
 mod conn;
 mod finder;
 mod history;
+mod icons;
 mod layout;
 mod model;
 mod native;

@@ -2,8 +2,8 @@
 //! the shown thread's agent on the right under a one-line header, and the common keys along the
 //! bottom. The agent draws into desl's own terminal emulator, which is copied into the pane.
 
-use crate::theme;
 use crate::ui::text::truncate_end;
+use crate::{icons, theme};
 use desl_ir::{FILES, GitState, Project, SHELL, Status, TASKS, Thread, is_agent};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
@@ -253,6 +253,8 @@ pub struct MenuItem {
     pub label: String,
     pub note: String,
     pub enabled: bool,
+    /// What the row starts (an agent's id, a shell, files, tasks), for its mark; empty for none.
+    pub kind: String,
 }
 
 pub struct Menu<'a> {
@@ -482,7 +484,11 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
     let waiting = v.threads.iter().filter(|t| t.status == Status::Waiting).count();
     let mut block = panel(v.cursor.is_some()).title(Line::from(Span::styled(" Projects ", theme::bold())));
     if waiting > 0 {
-        block = block.title(Line::from(Span::styled(format!(" {waiting} waiting "), theme::warning())).right_aligned());
+        let text = match icons::waiting() {
+            Some(bell) => format!(" {bell} {waiting} waiting "),
+            None => format!(" {waiting} waiting "),
+        };
+        block = block.title(Line::from(Span::styled(text, theme::warning())).right_aligned());
     }
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -529,7 +535,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 let (icon, icon_style) = status_icon(t, v.pulse);
                 let mut right = if is_agent(&t.active_agent) { age(v.now, t.updated_at) } else { String::new() };
                 if t.worktree.is_some() {
-                    right = format!("⎇ {right}").trim_end().to_string();
+                    right = format!("{} {right}", icons::branch()).trim_end().to_string();
                 }
                 let title = if t.name.is_empty() { "New thread" } else { t.name.as_str() };
                 let title = truncate_end(title, w.saturating_sub(5 + right.width()));
@@ -549,9 +555,9 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 let Some(s) = t.subagents.get(*k) else { continue };
                 // Running only while its thread's turn is: one left unfinished by a stopped turn is not.
                 let (glyph, style) = match (s.finished, t.status.busy()) {
-                    (true, _) => ("✓", theme::muted()),
-                    (false, true) => ("●", theme::accent()),
-                    (false, false) => ("○", theme::muted()),
+                    (true, _) => (icons::sub_done(), theme::muted()),
+                    (false, true) => (icons::sub_running(), theme::accent()),
+                    (false, false) => (icons::sub_unfinished(), theme::muted()),
                 };
                 let last = !matches!(rows.get(i + 1), Some(Row::Sub(next, _)) if next == id);
                 let what = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
@@ -590,17 +596,25 @@ fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
     let p = std::path::Path::new(path);
     let name = p.file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned());
     let parent = p.parent().map(|d| tilde(&d.to_string_lossy())).unwrap_or_default();
-    let name = truncate_end(&name, w);
-    let mut used = name.width();
-    let mut spans = vec![Span::styled(name, theme::bold())];
-    let dirty = git.filter(|g| g.dirty > 0).map(|g| format!(" ±{}", g.dirty)).unwrap_or_default();
+    // With a Nerd Font, a repository's or a folder's icon before the name.
+    let mark = icons::project(git.is_some_and(|g| g.branch.is_some()));
+    let mut spans = Vec::new();
+    let mut used = 0;
+    if let Some(m) = mark.filter(|_| w >= 12) {
+        spans.push(Span::styled(format!("{m} "), theme::dim()));
+        used += 2;
+    }
+    let name = truncate_end(&name, w.saturating_sub(used));
+    used += name.width();
+    spans.push(Span::styled(name, theme::bold()));
+    let dirty = git.filter(|g| g.dirty > 0).map(|g| format!(" {}", icons::changed(g.dirty as usize))).unwrap_or_default();
     if let Some(b) = git.and_then(|g| g.branch.as_deref()) {
         // ` ⎇ ` and at least two characters of the branch, or none of it.
         let room = w.saturating_sub(used + dirty.width() + 3);
         if room >= 2 {
             let b = truncate_end(b, room);
             used += 3 + b.width();
-            spans.push(Span::styled(format!(" ⎇ {b}"), theme::branch()));
+            spans.push(Span::styled(format!(" {} {b}", icons::branch()), theme::branch()));
         }
     }
     if !dirty.is_empty() && used + dirty.width() <= w {
@@ -620,8 +634,10 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
     let mut block = panel(focused && v.cursor.is_none() && v.help.is_none());
     if focused && let Some(s) = &v.sub {
         let (what, state) = match &s.kind {
-            SubKind::Subagent { running: true } => ("Subagent", Span::styled(" ● running ", theme::accent())),
-            SubKind::Subagent { running: false } => ("Subagent", Span::styled(" ✓ done ", theme::dim())),
+            SubKind::Subagent { running: true } => {
+                ("Subagent", Span::styled(format!(" {} running ", icons::sub_running()), theme::accent()))
+            }
+            SubKind::Subagent { running: false } => ("Subagent", Span::styled(format!(" {} done ", icons::sub_done()), theme::dim())),
             SubKind::History { place } => ("History", Span::styled(format!(" {place} "), theme::dim())),
         };
         block = block
@@ -642,7 +658,10 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         let path = tilde(&if is_agent(p.agent) { project.unwrap_or_else(|| t.cwd.clone()) } else { t.cwd.clone() });
         // A thread in its own worktree says which branch it works on, and what is uncommitted there.
         let (branch, dirty) = match (&t.worktree, &t.git.branch) {
-            (Some(_), Some(b)) => (format!(" ⎇ {b}"), if t.git.dirty > 0 { format!(" ±{}", t.git.dirty) } else { String::new() }),
+            (Some(_), Some(b)) => (
+                format!(" {} {b}", icons::branch()),
+                if t.git.dirty > 0 { format!(" {}", icons::changed(t.git.dirty as usize)) } else { String::new() },
+            ),
             _ => (String::new(), String::new()),
         };
         let binding = t.bindings.get(p.agent);
@@ -655,13 +674,16 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         } else {
             Line::from(vec![
                 Span::raw(" "),
-                Span::styled(t.status.glyph().to_string(), glyph_style(t.status)),
+                Span::styled(icons::status(t.status).to_string(), glyph_style(t.status)),
                 Span::styled(format!(" {} ", t.status.word()), theme::dim()),
                 Span::styled(format!("{} ", t.id), theme::muted()),
             ])
         };
         let agent = if is_agent(p.agent) { agent_title(p.agent) } else { t.name.clone() };
         let (icon, icon_style) = agent_icon(p.agent);
+        if let Some(chip) = icons::model().filter(|_| !model.is_empty()) {
+            model = format!("{chip} {model}");
+        }
         let tail = if model.is_empty() { 0 } else { model.width() + 3 };
         let git = branch.width() + dirty.width();
         let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + git + 10).max(8);
@@ -703,7 +725,7 @@ fn with_keys(mut spans: Vec<Span<'static>>, keys: &[(&'static str, &'static str)
 
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
-        Line::from(vec![Span::styled("  ● ", theme::warning()), Span::styled(n.to_string(), theme::normal())])
+        Line::from(vec![Span::styled(format!("  {} ", icons::notice()), theme::warning()), Span::styled(n.to_string(), theme::normal())])
     } else if let Some(name) = v.renaming {
         Line::from(vec![
             Span::styled("  Rename ", theme::bold()),
@@ -849,7 +871,9 @@ fn help(f: &mut Frame, p: &PaletteView, prefix: &str, area: Rect) {
 
 /// `prefix i`: the thread's facts in a box over the pane, labels dim, values plain.
 fn info(f: &mut Frame, rows: &[(String, String)], area: Rect) {
-    let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0);
+    // With a Nerd Font, each label has its icon: two more columns.
+    let icon_w = if icons::fact("Thread").is_some() { 2 } else { 0 };
+    let label_w = rows.iter().map(|(l, _)| l.width()).max().unwrap_or(0) + icon_w;
     let value_w = rows.iter().map(|(_, v)| v.width()).max().unwrap_or(0);
     let w = ((label_w + value_w + 9) as u16).min(area.width);
     let h = (rows.len() as u16 + 4).min(area.height);
@@ -857,7 +881,13 @@ fn info(f: &mut Frame, rows: &[(String, String)], area: Rect) {
     let inner_w = (w as usize).saturating_sub(6 + label_w);
     let lines: Vec<Line<'static>> = rows
         .iter()
-        .map(|(l, v)| Line::from(vec![Span::styled(format!("{l:<label_w$}  "), theme::dim()), Span::raw(truncate_start(v, inner_w))]))
+        .map(|(l, v)| {
+            let label = match icons::fact(l) {
+                Some(i) => format!("{i} {l}"),
+                None => l.clone(),
+            };
+            Line::from(vec![Span::styled(format!("{label:<label_w$}  "), theme::dim()), Span::raw(truncate_start(v, inner_w))])
+        })
         .collect();
     let block = panel(true).title(Line::from(Span::styled(" Thread ", theme::bold())));
     let inner = block.inner(r);
@@ -901,10 +931,16 @@ fn finder(f: &mut Frame, v: &FinderView, area: Rect) {
     for (i, (path, note)) in v.rows.iter().enumerate().skip(skip).take(room) {
         let lit = i == v.cursor;
         let note_w = note.width();
-        let path = truncate_start(path, iw.saturating_sub(note_w + 4));
-        let gap = iw.saturating_sub(path.width() + note_w + 2);
+        // With a Nerd Font, what the row is shows as an icon too, before the path.
+        let icon = icons::finder(note).map(|i| format!(" {i}")).unwrap_or_default();
+        let path = truncate_start(path, iw.saturating_sub(note_w + 4 + icon.width()));
+        let gap = iw.saturating_sub(path.width() + note_w + 2 + icon.width());
         let (ps, ns) = if lit { (theme::pill(), theme::pill()) } else { (theme::normal(), theme::dim()) };
-        lines.push(Line::from(vec![Span::styled(format!(" {path}{}", " ".repeat(gap)), ps), Span::styled(format!("{note} "), ns)]));
+        lines.push(Line::from(vec![
+            Span::styled(icon, if lit { theme::pill() } else { theme::dim() }),
+            Span::styled(format!(" {path}{}", " ".repeat(gap)), ps),
+            Span::styled(format!("{note} "), ns),
+        ]));
     }
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -913,7 +949,9 @@ fn finder(f: &mut Frame, v: &FinderView, area: Rect) {
 fn menu(f: &mut Frame, m: &Menu, area: Rect) {
     let label_w = m.items.iter().map(|i| i.label.width()).max().unwrap_or(0);
     let note_w = m.items.iter().map(|i| i.note.width()).max().unwrap_or(0);
-    let w = ((label_w + note_w + 13) as u16).max(m.title.width() as u16 + 6).min(area.width);
+    // With a Nerd Font each row carries its agent's mark: two more columns.
+    let marks = theme::nerd() && m.items.iter().any(|i| !i.kind.is_empty());
+    let w = ((label_w + note_w + 13 + if marks { 2 } else { 0 }) as u16).max(m.title.width() as u16 + 6).min(area.width);
     let h = (m.items.len() as u16 + 4).min(area.height);
     let r = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 3, w, h);
     let inner_w = w.saturating_sub(4) as usize;
@@ -923,14 +961,33 @@ fn menu(f: &mut Frame, m: &Menu, area: Rect) {
         .enumerate()
         .map(|(i, item)| {
             let lit = i == m.cursor;
-            let text = format!(" {}  {:<label_w$}  {}", i + 1, item.label, item.note);
-            let text = format!("{text:<inner_w$}");
             let style = match (lit, item.enabled) {
                 (true, _) => theme::pill(),
                 (false, true) => theme::normal(),
                 (false, false) => theme::muted(),
             };
-            Line::from(Span::styled(truncate_end(&text, inner_w), style))
+            if !marks {
+                let text = format!(" {}  {:<label_w$}  {}", i + 1, item.label, item.note);
+                let text = format!("{text:<inner_w$}");
+                return Line::from(Span::styled(truncate_end(&text, inner_w), style));
+            }
+            let (icon, icon_style) = if item.kind.is_empty() { (" ", Style::default()) } else { agent_icon(&item.kind) };
+            let icon_style = if lit {
+                theme::pill()
+            } else if item.enabled {
+                icon_style
+            } else {
+                theme::muted()
+            };
+            let head = format!(" {}  ", i + 1);
+            let text = format!(" {:<label_w$}  {}", item.label, item.note);
+            let text = truncate_end(&text, inner_w.saturating_sub(head.width() + 1));
+            let pad = inner_w.saturating_sub(head.width() + 1 + text.width());
+            Line::from(vec![
+                Span::styled(head, style),
+                Span::styled(icon, icon_style),
+                Span::styled(format!("{text}{}", " ".repeat(pad)), style),
+            ])
         })
         .collect();
     let block = panel(true).title(Line::from(Span::styled(format!(" {} ", m.title), theme::bold())));
@@ -1265,8 +1322,8 @@ mod tests {
         let a = areas(120, 30, true, None);
         let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
         let items = [
-            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true },
-            MenuItem { label: "Codex".into(), note: "agent".into(), enabled: true },
+            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true, kind: "claude".into() },
+            MenuItem { label: "Codex".into(), note: "agent".into(), enabled: true, kind: "codex".into() },
         ];
         let v = View {
             projects: &projects,
@@ -1572,8 +1629,8 @@ mod tests {
         let full = String::from_utf8(paint(None, &before)).unwrap();
         assert!(full.contains("\x1b[2J") && full.contains("hello"), "{full:?}");
         let items = [
-            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true },
-            MenuItem { label: "bash".into(), note: "shell".into(), enabled: true },
+            MenuItem { label: "Claude".into(), note: "agent".into(), enabled: true, kind: "claude".into() },
+            MenuItem { label: "bash".into(), note: "shell".into(), enabled: true, kind: SHELL.into() },
         ];
         v.menu = Some(Menu { title: "New in desl", items: &items, cursor: 1, verb: "start", worktree: true });
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();

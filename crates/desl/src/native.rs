@@ -80,6 +80,8 @@ const FRAME: Duration = Duration::from_millis(12);
 /// answers nothing is fine.
 fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
     let mut answers = term::Answers::default();
+    // The palette's blue first, for desl's own tint; agents are never told it.
+    out(b"\x1b]4;4;?\x1b\\");
     out(term::PROBE);
     let deadline = Instant::now() + Duration::from_millis(500);
     let mut got: Vec<u8> = Vec::new();
@@ -91,6 +93,8 @@ fn probe(rx: &mpsc::Receiver<Msg>) -> term::Answers {
             }
         }
     }
+    let text = String::from_utf8_lossy(&got);
+    crate::theme::set_accent_from(text.split("\x1b]4;4;").nth(1));
     answers
 }
 

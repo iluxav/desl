@@ -379,13 +379,6 @@ pub struct View<'a> {
     pub prefix: &'a str,
 }
 
-impl View<'_> {
-    /// The thread in the pane that has the keys.
-    pub fn current(&self) -> &str {
-        self.panes.get(self.focus).map_or("", |p| p.thread_id)
-    }
-}
-
 fn glyph_style(s: Status) -> Style {
     match s {
         Status::Working => theme::accent(),
@@ -393,11 +386,6 @@ fn glyph_style(s: Status) -> Style {
         Status::Idle | Status::Detached => theme::dim(),
         Status::Failed => theme::critical(),
     }
-}
-
-fn agent_title(agent: &str) -> String {
-    let mut c = agent.chars();
-    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 /// A rounded panel, its border lit when it has the keys.
@@ -480,7 +468,7 @@ pub fn age(now: i64, then: i64) -> String {
     }
 }
 
-fn sidebar(f: &mut Frame, v: &View, area: Rect) {
+fn sidebar(f: &mut Frame, v: &View, area: Rect, stacked: Option<bool>) {
     let waiting = v.threads.iter().filter(|t| t.status == Status::Waiting).count();
     let mut block = panel(v.cursor.is_some()).title(Line::from(Span::styled(" Projects ", theme::bold())));
     if waiting > 0 {
@@ -520,13 +508,17 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
                 // A thread whose subagent is on screen hands its tint to the subagent's row.
                 let shows_sub = v.shown_sub.is_some_and(|(id, _)| id == t.id);
-                let focused = t.id == v.current() && !shows_sub;
-                let current = !shows_sub && v.panes.iter().any(|p| p.thread_id == t.id);
-                // One row: `<logo> title ……… ⎇ 21m`. The logo is the status; the thread on
-                // screen is tinted; the cursor lights the row.
+                // The pane it is in, if it is on screen: the one with the keys is lit in the
+                // accent, as its pane's border is, the other tinted grey; each says which pane.
+                let pane = v.panes.iter().position(|p| p.thread_id == t.id).filter(|_| !shows_sub);
+                let focused = pane == Some(v.focus);
+                // One row: `▌<logo> title ……… ◨ ⎇ 21m`. The logo is the status; the cursor
+                // lights the row.
                 let base = if lit {
                     theme::pill()
-                } else if current {
+                } else if focused {
+                    theme::focus_surface()
+                } else if pane.is_some() {
                     theme::surface()
                 } else {
                     Style::default()
@@ -537,16 +529,26 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect) {
                 if t.worktree.is_some() {
                     right = format!("{} {right}", icons::branch()).trim_end().to_string();
                 }
+                let mark = match (pane, stacked) {
+                    (Some(i), Some(stacked)) => format!("{} ", icons::pane(i > 0, stacked)),
+                    _ => String::new(),
+                };
                 let title = if t.name.is_empty() { "New thread" } else { t.name.as_str() };
-                let title = truncate_end(title, w.saturating_sub(5 + right.width()));
-                let pad = w.saturating_sub(4 + title.width() + right.width());
+                let title = truncate_end(title, w.saturating_sub(5 + mark.width() + right.width()));
+                let pad = w.saturating_sub(4 + title.width() + mark.width() + right.width());
+                let (edge, edge_style) = match pane {
+                    Some(_) if focused => ("▌", theme::accent()),
+                    Some(_) => ("▌", theme::muted()),
+                    None => (" ", Style::default()),
+                };
                 lines.push(Line::from(vec![
-                    Span::styled(" ", base),
+                    Span::styled(edge, on(edge_style)),
                     Span::styled(icon, on(icon_style)),
                     Span::styled(" ", base),
                     Span::styled(title, on(if focused { theme::bold() } else { theme::normal() })),
                     Span::styled(" ".repeat(pad), base),
-                    Span::styled(right, on(theme::muted())),
+                    Span::styled(mark, on(if focused { theme::accent() } else { theme::dim() })),
+                    Span::styled(right, on(if focused { theme::dim() } else { theme::muted() })),
                     Span::styled(" ", base),
                 ]));
             }
@@ -596,12 +598,13 @@ fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
     let p = std::path::Path::new(path);
     let name = p.file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned());
     let parent = p.parent().map(|d| tilde(&d.to_string_lossy())).unwrap_or_default();
-    // With a Nerd Font, a repository's or a folder's icon before the name.
+    // The project's own colour, on its icon (a repository's or a folder's; a dot without a
+    // Nerd Font): the same icon in a pane's title says which project the pane is in.
     let mark = icons::project(git.is_some_and(|g| g.branch.is_some()));
     let mut spans = Vec::new();
     let mut used = 0;
-    if let Some(m) = mark.filter(|_| w >= 12) {
-        spans.push(Span::styled(format!("{m} "), theme::dim()));
+    if w >= 12 {
+        spans.push(Span::styled(format!("{mark} "), theme::project_hue(path)));
         used += 2;
     }
     let name = truncate_end(&name, w.saturating_sub(used));
@@ -653,9 +656,20 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         return;
     }
     if let Some(t) = v.threads.iter().find(|t| t.id == p.thread_id) {
-        // A shell's or a file manager's header names where it started; an agent's, its project.
-        let project = v.projects.iter().find(|p| p.id == t.project_id).map(|p| p.path.clone());
-        let path = tilde(&if is_agent(p.agent) { project.unwrap_or_else(|| t.cwd.clone()) } else { t.cwd.clone() });
+        // The thread's own title first: what tells two agents of one project apart. Then its
+        // project, by the icon in the project's colour the sidebar shows, then the model.
+        let project = v.projects.iter().find(|x| x.id == t.project_id);
+        let root = project.map_or(t.cwd.clone(), |x| x.path.clone());
+        let name = std::path::Path::new(&root).file_name().map_or(root.clone(), |n| n.to_string_lossy().into_owned());
+        // An agent works in its project; a shell or a file manager is wherever it is now.
+        let place = if is_agent(p.agent) {
+            name.clone()
+        } else {
+            match t.cwd.strip_prefix(root.as_str()) {
+                Some(rest) if rest.is_empty() || rest.starts_with('/') => format!("{name}{rest}"),
+                _ => tilde(&t.cwd),
+            }
+        };
         // A thread in its own worktree says which branch it works on, and what is uncommitted there.
         let (branch, dirty) = match (&t.worktree, &t.git.branch) {
             (Some(_), Some(b)) => (
@@ -669,37 +683,82 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
             model = if model.is_empty() { format!("{e} effort") } else { format!("{model} · {e}") };
         }
-        let right = if p.scrolled > 0 {
-            Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", p.scrolled), theme::warning()))
-        } else {
-            Line::from(vec![
-                Span::raw(" "),
-                Span::styled(icons::status(t.status).to_string(), glyph_style(t.status)),
-                Span::styled(format!(" {} ", t.status.word()), theme::dim()),
-                Span::styled(format!("{} ", t.id), theme::muted()),
-            ])
-        };
-        let agent = if is_agent(p.agent) { agent_title(p.agent) } else { t.name.clone() };
-        let (icon, icon_style) = agent_icon(p.agent);
         if let Some(chip) = icons::model().filter(|_| !model.is_empty()) {
             model = format!("{chip} {model}");
         }
-        let tail = if model.is_empty() { 0 } else { model.width() + 3 };
-        let git = branch.width() + dirty.width();
-        let room = (area.width as usize).saturating_sub(right.width() + agent.width() + tail + git + 10).max(8);
+        let title = if t.name.is_empty() { "New thread".to_string() } else { t.name.clone() };
+        let (icon, icon_style) = agent_icon(p.agent);
+        let chip = icons::project(project.is_some_and(|x| x.git.branch.is_some()));
+        let git = format!("{branch}{dirty}");
+        // What gives way when the pane is narrow, in order: the model, the branch, the status
+        // word, the length of the place, the thread id, the place (its coloured mark stays), and
+        // only then the thread's title, which is what tells the panes apart.
+        let room = (area.width as usize).saturating_sub(3);
+        let fit = |level: usize, place_w: usize| -> usize {
+            let right = match (p.scrolled > 0, level) {
+                (true, _) => format!(" ↑ {} lines · wheel down to follow ", p.scrolled).width(),
+                (false, 0..=2) => 4 + t.status.word().width() + 1 + t.id.width() + 1,
+                (false, 3..=4) => 3 + t.id.width() + 1,
+                _ => 3,
+            };
+            let mut w = 3 + title.width() + 3 + 2 + place_w + 1 + right;
+            if level < 2 {
+                w += git.width();
+            }
+            if level < 1 && !model.is_empty() {
+                w += 3 + model.width();
+            }
+            w
+        };
+        let mut level = 0;
+        let mut place_w = place.width();
+        while level < 6 && fit(level, place_w) > room {
+            level += 1;
+            if level == 4 {
+                place_w = place_w.min(room.saturating_sub(fit(4, 0)).max(6));
+            }
+            if level == 6 {
+                place_w = 0;
+            }
+        }
+        let place = if place_w == 0 { String::new() } else { truncate_start(&place, place_w) };
+        let title_room = room.saturating_sub(fit(level, place.width()) - title.width()).max(6);
+        let title = truncate_end(&title, title_room);
+        let right = if p.scrolled > 0 {
+            Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", p.scrolled), theme::warning()))
+        } else {
+            let mut r = vec![Span::raw(" "), Span::styled(icons::status(t.status).to_string(), glyph_style(t.status))];
+            if level <= 2 {
+                r.push(Span::styled(format!(" {}", t.status.word()), theme::dim()));
+            }
+            if level <= 4 {
+                r.push(Span::styled(format!(" {}", t.id), theme::muted()));
+            }
+            r.push(Span::raw(" "));
+            Line::from(r)
+        };
+        // The pane with the keys has its title in the accent; the other one is quieter.
+        let (title_style, quiet) = if focused {
+            (theme::accent().add_modifier(Modifier::BOLD), theme::normal())
+        } else {
+            (theme::dim().add_modifier(Modifier::BOLD), theme::muted())
+        };
         let mut left = vec![
             Span::raw(" "),
             Span::styled(icon, icon_style),
             Span::raw(" "),
-            Span::styled(agent, theme::accent().add_modifier(Modifier::BOLD)),
+            Span::styled(title, title_style),
             Span::styled(" · ", theme::muted()),
-            Span::styled(truncate_start(&path, room), theme::normal()),
-            Span::styled(branch, theme::branch()),
-            Span::styled(dirty, theme::changes()),
+            Span::styled(format!("{chip} "), theme::project_hue(&root)),
+            Span::styled(place, quiet),
         ];
-        if !model.is_empty() {
+        if level < 2 {
+            left.push(Span::styled(branch, theme::branch()));
+            left.push(Span::styled(dirty, theme::changes()));
+        }
+        if level < 1 && !model.is_empty() {
             left.push(Span::styled(" · ", theme::muted()));
-            left.push(Span::styled(model, theme::dim()));
+            left.push(Span::styled(model, if focused { theme::dim() } else { theme::muted() }));
         }
         left.push(Span::raw(" "));
         block = block.title(Line::from(left)).title(right.right_aligned());
@@ -1054,7 +1113,9 @@ pub fn pane(buf: &mut Buffer, area: Rect, screen: &vt100::Screen, selection: Opt
 /// `screens` are the panes' agents' screens, in the panes' order.
 pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
     if let Some(s) = a.sidebar {
-        sidebar(f, v, s);
+        // Two panes side by side or stacked, for the mark that ties a row to its pane.
+        let stacked = (a.mains.len() > 1).then(|| a.mains[0].x == a.mains[1].x);
+        sidebar(f, v, s, stacked);
     }
     for (i, (main, area)) in a.mains.iter().zip(&a.panes).enumerate() {
         let Some(p) = v.panes.get(i) else { continue };
@@ -1220,14 +1281,15 @@ mod tests {
         let text =
             |git: &GitState, w: usize| project_row("/src/desl", Some(git), w).spans.iter().map(|s| s.content.as_ref()).collect::<String>();
         let g = GitState { branch: Some("main".into()), dirty: 4, ..GitState::default() };
-        assert_eq!(text(&g, 48), "desl ⎇ main ±4  /src");
-        assert_eq!(text(&g, 15), "desl ⎇ main ±4", "no room for where it lives");
-        assert_eq!(text(&g, 13), "desl ⎇ ma… ±4", "the branch is cut before the count");
-        assert_eq!(text(&GitState { dirty: 0, ..g.clone() }, 48), "desl ⎇ main  /src", "a clean tree shows no count");
-        assert_eq!(text(&GitState::default(), 48), "desl  /src", "outside a repository, as before");
+        assert_eq!(text(&g, 48), "● desl ⎇ main ±4  /src");
+        assert_eq!(text(&g, 17), "● desl ⎇ main ±4", "no room for where it lives");
+        assert_eq!(text(&g, 15), "● desl ⎇ ma… ±4", "the branch is cut before the count");
+        assert_eq!(text(&GitState { dirty: 0, ..g.clone() }, 48), "● desl ⎇ main  /src", "a clean tree shows no count");
+        assert_eq!(text(&GitState::default(), 48), "● desl  /src", "outside a repository, as before");
         let row = project_row("/src/desl", Some(&g), 48);
-        assert_eq!(row.spans[1].style.fg, Some(Color::Magenta), "the branch is rose");
-        assert_eq!(row.spans[2].style.fg, Some(Color::Green), "the count is green");
+        assert_eq!(row.spans[0].style, theme::project_hue("/src/desl"), "the project's own colour, on its mark");
+        assert_eq!(row.spans[2].style.fg, Some(Color::Magenta), "the branch is rose");
+        assert_eq!(row.spans[3].style.fg, Some(Color::Green), "the count is green");
     }
 
     fn screen(t: &Terminal<TestBackend>) -> String {
@@ -1309,8 +1371,8 @@ mod tests {
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("╭ / yazi · /src/desl/docs ") && lines[0].contains("○ idle t-2b ╮"), "{s}");
-        assert!(lines[4].contains("│  / yazi ") && !lines[4].contains("now"), "no age, as a shell: {s}");
+        assert!(lines[0].contains("╭ / yazi · ● desl/docs ") && lines[0].contains("○ idle t-2b ╮"), "{s}");
+        assert!(lines[4].contains("│ ▌/ yazi ") && !lines[4].contains("now"), "no age, as a shell: {s}");
     }
 
     #[test]
@@ -1349,8 +1411,8 @@ mod tests {
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         let lines: Vec<&str> = s.lines().collect();
-        assert!(lines[0].contains("╭ ∞ Copilot · /src/desl "), "{s}");
-        assert!(lines[3].contains("│  ∞ fix the login "), "{s}");
+        assert!(lines[0].contains("╭ ∞ fix the login · ● desl "), "the thread's title, then its project: {s}");
+        assert!(lines[3].contains("│ ▌∞ fix the login "), "on screen, with the edge of its pane: {s}");
         assert!(s.contains("╭ Switch to ") && s.contains(" 1  Claude  agent") && s.contains(" 2  Codex   agent"), "{s}");
         let keys = s.lines().last().unwrap();
         assert!(keys.contains("enter switch") && !keys.contains("own worktree"), "a switch keeps the thread where it is: {keys}");
@@ -1388,7 +1450,7 @@ mod tests {
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
         let y = SIDE_TOP + at as u16;
-        assert!(s.lines().nth(y as usize).unwrap().contains("│ api  /src "), "{s}");
+        assert!(s.lines().nth(y as usize).unwrap().contains("│ ● api  /src "), "{s}");
         let b = t.backend().buffer();
         // Lit from the first column of the row to the last, past where its text ends.
         assert_eq!((b[(2, y)].bg, b[(30, y)].bg), (Color::Blue, Color::Blue), "{s}");
@@ -1545,6 +1607,51 @@ mod tests {
     }
 
     #[test]
+    fn two_panes_each_have_their_row_marked_and_the_one_with_the_keys_is_lit() {
+        let projects = [project("desl")];
+        // Two agents of one project, side by side: only their titles and their marks tell them apart.
+        let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), thread("t-2b", "desl", 2, Status::Idle, "write the docs")];
+        let a = areas(150, 30, true, Some(false));
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![
+                PaneView { thread_id: "t-1a", agent: "claude", scrolled: 0, selection: None },
+                PaneView { thread_id: "t-2b", agent: "claude", scrolled: 0, selection: None },
+            ],
+            focus: 1,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: None,
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(150, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen(), vt.screen()])).unwrap();
+        let s = screen(&t);
+        let lines: Vec<&str> = s.lines().collect();
+        assert!(lines[3].contains("▌✻ fix the login") && lines[3].contains("◧ now"), "the left pane's thread: {s}");
+        assert!(lines[4].contains("▌✻ write the docs") && lines[4].contains("◨ now"), "the right pane's: {s}");
+        assert!(lines[0].contains("✻ fix the login · ● desl") && lines[0].contains("✻ write the docs · ● desl"), "{s}");
+        let b = t.backend().buffer();
+        let x = a.sidebar.unwrap().x + 2;
+        assert_eq!(b[(x, 4)].fg, Color::Blue, "the edge of the pane with the keys is the accent");
+        assert_eq!(b[(x, 3)].fg, Color::DarkGray, "the other one is grey");
+        assert!(b[(x + 4, 4)].modifier.contains(Modifier::BOLD) && !b[(x + 4, 3)].modifier.contains(Modifier::BOLD), "{s}");
+        assert_ne!(b[(x + 20, 4)].bg, b[(x + 20, 3)].bg, "and its row's tint is not the other one's");
+    }
+
+    #[test]
     fn the_screen_reads_at_100_by_30_and_paints_only_what_changed() {
         let projects = [project("desl")];
         let threads = [thread("t-1a", "desl", 1, Status::Idle, "fix the login"), thread("t-2b", "desl", 2, Status::Waiting, "")];
@@ -1577,10 +1684,10 @@ mod tests {
         assert_eq!(truncate_start("/tmp/a/b/demo", 8), "…/b/demo");
         let lines: Vec<&str> = s.lines().collect();
         assert!(lines[0].starts_with("╭ Projects ") && lines[0].contains("1 waiting"), "{s}");
-        assert!(lines[0].contains("╭ ✻ Claude · /src/desl · opus · high ") && lines[0].contains("○ idle t-1a ╮"), "{s}");
+        assert!(lines[0].contains("╭ ✻ fix the login · ● desl · opus · high ") && lines[0].contains("○ idle t-1a ╮"), "{s}");
         assert!(lines[1].contains("││ hello from the agent"), "{s}");
-        assert!(lines[2].contains("│ desl  /src "), "{s}");
-        assert!(lines[3].contains("│  ✻ fix the login ") && lines[3].contains("now  ││"), "{s}");
+        assert!(lines[2].contains("│ ● desl  /src "), "{s}");
+        assert!(lines[3].contains("│ ▌✻ fix the login ") && lines[3].contains("now  ││"), "{s}");
         assert!(lines[4].contains("│  ✻ New thread "), "{s}");
         assert!(!s.contains("claude ·"), "the logo says the agent: {s}");
         // The thread on screen is tinted across its row; the others are not.

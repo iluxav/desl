@@ -20,10 +20,29 @@ pub fn changes() -> &'static str {
     pick("\u{f14c9}", "±")
 }
 
-/// Before a project's name: a repository, or a folder that is not one. Nothing without a Nerd
-/// Font: the name in bold says it.
-pub fn project(repo: bool) -> Option<&'static str> {
-    theme::nerd().then_some(if repo { "\u{f0ccf}" } else { "\u{f024b}" })
+/// Before a project's name, in the project's own colour: a repository, or a folder that is not
+/// one; without a Nerd Font, a dot.
+pub fn project(repo: bool) -> &'static str {
+    match (theme::nerd(), repo) {
+        (true, true) => "\u{f0ccf}",
+        (true, false) => "\u{f024b}",
+        (false, _) => "●",
+    }
+}
+
+/// Which pane of two a thread is in, on its row in the sidebar: the left or right half of the
+/// screen, or with the panes stacked, the top or bottom.
+pub fn pane(second: bool, stacked: bool) -> &'static str {
+    match (theme::nerd(), stacked, second) {
+        (true, false, false) => "\u{f10aa}",
+        (true, false, true) => "\u{f10ab}",
+        (true, true, false) => "\u{f1513}",
+        (true, true, true) => "\u{f10a9}",
+        (false, false, false) => "◧",
+        (false, false, true) => "◨",
+        (false, true, false) => "⬒",
+        (false, true, true) => "⬓",
+    }
 }
 
 /// A thread's status, where it is written out: the panel's title and the info box.
@@ -115,6 +134,7 @@ mod tests {
         assert_eq!((branch(), changed(4), waiting(), notice()), ("⎇", "±4".to_string(), None, "●"));
         assert_eq!((sub_running(), sub_done(), sub_unfinished()), ("●", "✓", "○"));
         assert_eq!(status(Status::Waiting), "◐");
-        assert_eq!((project(true), model(), finder("git"), fact("Thread")), (None, None, None, None));
+        assert_eq!((project(true), pane(true, false), pane(false, true)), ("●", "◨", "⬒"));
+        assert_eq!((model(), finder("git"), fact("Thread")), (None, None, None));
     }
 }

@@ -7,6 +7,12 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- Two panes are easy to tell apart. In the sidebar, a thread on screen has a `▌` at its row's
+  edge and a mark of its pane's half of the screen (left or right, top or bottom); the one with
+  the keys is tinted with the accent, as its pane's border is. A pane's title now leads with the
+  thread's own title, then its project, so two agents of one project read differently. Each
+  project has a colour of its own, on its mark in the sidebar and in a pane's title.
+
 - With a Nerd Font, desl draws its Material Design icons across the screen, one family: a
   repository before each project, a branch and a plus-minus for git, the status in each panel's
   title, subagents' marks, a chip before the model, the agents' marks in the menus, an icon per

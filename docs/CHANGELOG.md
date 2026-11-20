@@ -78,6 +78,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- A Claude thread whose prompt held a pasted image stayed idle in the sidebar for the whole
+  turn: Claude Code writes such a prompt as a list of blocks, which desl did not read as a
+  prompt. It now does, and the lines Claude Code adds in the user's place (`isMeta`: a skill's
+  text, where an image came from) are no longer taken for prompts.
 - `ctrl+n`, `ctrl+p` and `ctrl+u` work in the key list and in the directory finder. A list
   got the letter instead, so `ctrl+n` typed an "n" into the filter.
 - A thread that has run for hours comes back whole when desl is opened again. The daemon kept

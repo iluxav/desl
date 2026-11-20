@@ -79,23 +79,47 @@ impl SessionReader for Reader {
                     return Vec::new();
                 }
                 let content = &v["message"]["content"];
+                // What Claude Code adds in the user's place (a skill's text, where a pasted
+                // image came from) is marked as its own; the user typed none of it.
+                let meta = v.get("isMeta").and_then(Value::as_bool) == Some(true);
                 if let Some(text) = content.as_str() {
                     if tagged(text) {
                         return effort_set(text)
                             .map(|effort| vec![Reading::Settings { model: None, effort: Some(effort) }])
                             .unwrap_or_default();
                     }
+                    if meta {
+                        return Vec::new();
+                    }
                     return vec![
                         Reading::Working,
                         Reading::Event(EventKind::UserMessage { text: text.to_string(), attachments: Vec::new() }),
                     ];
                 }
-                let interrupted = content.as_array().into_iter().flatten().any(|b| {
-                    b.get("type").and_then(Value::as_str) == Some("text")
-                        && b.get("text").and_then(Value::as_str).is_some_and(|t| t.starts_with("[Request interrupted"))
+                let blocks: Vec<&Value> = content.as_array().into_iter().flatten().collect();
+                let kind = |b: &Value| b.get("type").and_then(Value::as_str).unwrap_or("").to_string();
+                let interrupted = blocks.iter().any(|b| {
+                    kind(b) == "text" && b.get("text").and_then(Value::as_str).is_some_and(|t| t.starts_with("[Request interrupted"))
                 });
                 if interrupted {
                     return vec![Reading::Event(EventKind::Interrupt), Reading::Idle];
+                }
+                // A prompt with an image in it, or pasted as blocks, is written as a list of
+                // blocks rather than a string; it opens a turn all the same.
+                if !meta && !blocks.is_empty() && blocks.iter().all(|b| matches!(kind(b).as_str(), "text" | "image" | "document")) {
+                    let text = blocks.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n");
+                    if tagged(&text) {
+                        return Vec::new();
+                    }
+                    let attachments = blocks
+                        .iter()
+                        .filter(|b| kind(b) != "text")
+                        .map(|b| b["source"]["media_type"].as_str().map_or_else(|| kind(b), str::to_string))
+                        .collect();
+                    return vec![Reading::Working, Reading::Event(EventKind::UserMessage { text, attachments })];
+                }
+                if meta {
+                    return Vec::new();
                 }
             }
             Some("system") => {
@@ -319,6 +343,25 @@ mod tests {
         assert_eq!(names, ["working", "user_message", "tool_call", "tool_result", "assistant_message", "idle"]);
         assert!(matches!(&got[2], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "read" && args["path"] == "notes.txt"));
         assert!(matches!(&got[3], Reading::Event(EventKind::ToolResult { output, .. }) if output.contains("deadline: Friday")));
+    }
+
+    #[test]
+    fn a_prompt_with_an_image_opens_a_turn_and_what_claude_adds_to_it_does_not() {
+        let got = read(&[
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"Look at this screen"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBO"}}]}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"[Image: source: /tmp/1.png]"}]}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"[Image: original 2242x1987, displayed at 2000x1773.]"}}"#,
+            r#"{"type":"user","isMeta":true,"message":{"role":"user","content":[{"type":"text","text":"Base directory for this skill: /home/me/.claude/skills/x"}]}}"#,
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Two panes."}]}}"#,
+            r#"{"type":"system","subtype":"turn_duration","durationMs":4000}"#,
+        ]);
+        assert!(matches!(got[0], Reading::Working), "{got:?}");
+        assert!(
+            matches!(&got[1], Reading::Event(EventKind::UserMessage { text, attachments }) if text == "Look at this screen" && attachments == &["image/png"]),
+            "{got:?}"
+        );
+        assert!(matches!(&got[2], Reading::Event(EventKind::AssistantMessage { .. })), "what Claude Code adds is not the user's: {got:?}");
+        assert!(matches!(got[3], Reading::Idle) && got.len() == 4, "{got:?}");
     }
 
     #[test]

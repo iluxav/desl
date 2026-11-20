@@ -75,10 +75,12 @@ struct Rewrapped {
     cursor: Option<(usize, u16)>,
 }
 
-fn rewrapped(screen: &mut Screen, cols: u16) -> Rewrapped {
+/// `history` is how many rows above the screen go into the stream at most: the newest ones.
+fn rewrapped(screen: &mut Screen, cols: u16, history: usize) -> Rewrapped {
     screen.set_scrollback(0);
     let (height, width) = screen.size();
     let (height, width) = (height.get(), width.get());
+    let keep = history;
     let history = screen.scrollback_len();
     let (cursor_row, cursor_col) = screen.cursor_position();
     let cursor_at = history + usize::from(cursor_row);
@@ -91,7 +93,7 @@ fn rewrapped(screen: &mut Screen, cols: u16) -> Rewrapped {
     // Where the next cell goes at the new width.
     let (mut row, mut col) = (0usize, 0u16);
     let mut cursor = None;
-    let mut at = 0;
+    let mut at = history.saturating_sub(keep);
     while at < end {
         // The screen shows `height` rows of the history at a time, oldest first.
         let offset = history.saturating_sub(at);
@@ -161,20 +163,11 @@ fn alternate(screen: &Screen, rows: u16, cols: u16) -> String {
     out
 }
 
-/// Gives `vt` the size `rows` by `cols`. When the width changes, every line of the main screen
-/// and its history is wrapped at the new width and the cursor stays on the character it was on.
-pub fn resize(vt: &mut Parser, rows: u16, cols: u16) {
-    let (rows, cols) = (nz(rows), nz(cols));
-    if vt.screen().size().1 == cols {
-        // No line wraps differently: rows go to the history or come back from it.
-        vt.screen_mut().set_size(rows, cols);
-        return;
-    }
-    // `vt` may be in the middle of an escape sequence, so it keeps its parser and only its
-    // screen is taken out and replaced.
-    let mut old = Parser::new(NonZeroU16::MIN, NonZeroU16::MIN, 0);
-    std::mem::swap(vt.screen_mut(), old.screen_mut());
-
+/// Everything `old` shows and has set, as one stream that draws it on an empty screen of `rows`
+/// by `cols`: its lines wrapped at that width, history first, then the alternate screen when
+/// it is on one, the cursor and the modes. At most `history` rows above the screen are in it.
+/// `old` is left on its main screen.
+fn redrawn(old: &mut Parser, rows: u16, cols: u16, history: usize) -> String {
     let screen = old.screen();
     let mut state = screen.attributes_formatted();
     state.push_str(&screen.input_mode_formatted());
@@ -193,25 +186,53 @@ pub fn resize(vt: &mut Parser, rows: u16, cols: u16) {
     if shape != 0 {
         let _ = write!(state, "\x1b[{shape} q");
     }
-    let over = screen.alternate_screen().then(|| alternate(screen, rows.get(), cols.get()));
+    let over = screen.alternate_screen().then(|| alternate(screen, rows, cols));
     if over.is_some() {
         // The main screen behind it is the one with lines to wrap.
         old.process(b"\x1b[?47l");
     }
 
-    let lines = rewrapped(old.screen_mut(), cols.get());
-    let mut new = Parser::new(rows, cols, old.screen().scrollback_capacity());
-    new.process(lines.text.as_bytes());
-    let mut rest = String::from("\x1b[m");
+    let lines = rewrapped(old.screen_mut(), cols, history);
+    let mut out = lines.text;
+    out.push_str("\x1b[m");
     if let Some((row, col)) = lines.cursor {
         // Rows that do not fit went to the history, from the top.
-        let top = lines.rows.saturating_sub(usize::from(rows.get()));
-        let _ = write!(rest, "\x1b[{};{}H", row.saturating_sub(top) + 1, col + 1);
+        let top = lines.rows.saturating_sub(usize::from(rows));
+        let _ = write!(out, "\x1b[{};{}H", row.saturating_sub(top) + 1, col + 1);
     }
-    rest.push_str(over.as_deref().unwrap_or(""));
-    rest.push_str(&state);
-    new.process(rest.as_bytes());
+    out.push_str(over.as_deref().unwrap_or(""));
+    out.push_str(&state);
+    out
+}
+
+/// Gives `vt` the size `rows` by `cols`. When the width changes, every line of the main screen
+/// and its history is wrapped at the new width and the cursor stays on the character it was on.
+pub fn resize(vt: &mut Parser, rows: u16, cols: u16) {
+    let (rows, cols) = (nz(rows), nz(cols));
+    if vt.screen().size().1 == cols {
+        // No line wraps differently: rows go to the history or come back from it.
+        vt.screen_mut().set_size(rows, cols);
+        return;
+    }
+    // `vt` may be in the middle of an escape sequence, so it keeps its parser and only its
+    // screen is taken out and replaced.
+    let mut old = Parser::new(NonZeroU16::MIN, NonZeroU16::MIN, 0);
+    std::mem::swap(vt.screen_mut(), old.screen_mut());
+    let history = old.screen().scrollback_capacity();
+    let stream = redrawn(&mut old, rows.get(), cols.get(), usize::MAX);
+    let mut new = Parser::new(rows, cols, history);
+    new.process(stream.as_bytes());
     std::mem::swap(vt.screen_mut(), new.screen_mut());
+}
+
+/// What `vt` shows and has set, as a stream that draws it again on an empty screen of the same
+/// size: the screen, the newest `history` rows above it at most, the alternate screen when it
+/// is on one, the cursor and the modes.
+pub fn snapshot(vt: &Parser, history: usize) -> Vec<u8> {
+    let (rows, cols) = vt.screen().size();
+    let mut old = Parser::new(NonZeroU16::MIN, NonZeroU16::MIN, 0);
+    *old.screen_mut() = vt.screen().clone();
+    redrawn(&mut old, rows.get(), cols.get(), history).into_bytes()
 }
 
 #[cfg(test)]

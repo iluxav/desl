@@ -1,8 +1,12 @@
 //! The PTY host (SPEC.md "Architecture"): every agent's own interface runs in a pseudoterminal the
 //! daemon owns. The host keeps what each one drew, so a client that attaches gets the screen and
 //! its scrollback back, and keeps a screen model of it for the agent's cursor and, later, status.
+//! As a program draws on, what it drew before is folded into what that left on the screen
+//! (`desl_proto::replay`): what is kept stays small and draws the same screen however long the
+//! program has run.
 
 use desl_ir::adapter::{Launch, is_secret};
+use desl_proto::{reflow, replay};
 use filedescriptor::{FileDescriptor, POLLIN, Pipe, pollfd};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use rustix::process::{Pid, Signal};
@@ -15,8 +19,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-/// How much of an agent's output is kept for a client that attaches (SPEC.md "Process hygiene").
-pub const KEEP: usize = 8 * 1024 * 1024;
+/// How much a program draws before what it drew is folded into what it left behind (SPEC.md
+/// "Process hygiene"). A megabyte is drawn again in a few milliseconds when a client attaches,
+/// and at the pace of an agent at work it is half an hour of drawing.
+pub const KEEP: usize = 1024 * 1024;
+
+/// The most a fold may take. A full history of ordinary rows is well under a megabyte; one that
+/// would take more than this keeps fewer rows.
+const FOLD_MAX: usize = 4 * 1024 * 1024;
 
 /// How many rows above the screen the daemon's own model of it keeps. They are what comes back
 /// onto the screen when it grows wider, so the model stays what a client shows.
@@ -48,8 +58,13 @@ pub struct Pty {
     on_exit: OnExit,
     reading: Option<Reading>,
     screen: vt100::Parser,
-    /// Everything the agent drew, oldest first, at most [`KEEP`] bytes.
+    /// What the agent drew, with a mark at each size its terminal was given: the last [`KEEP`]
+    /// bytes at most as they were drawn, and in front of them a fold of all that was drawn
+    /// before. Played on an empty screen it draws the screen the agent has now, however long
+    /// the agent has run.
     log: Vec<u8>,
+    /// How long the log was when it was last folded.
+    folded: usize,
     pub agent: String,
     started: Instant,
     /// When the program started, on the wall clock, for the daemon it is handed to.
@@ -182,8 +197,13 @@ impl Pty {
     ) -> Result<Pty, String> {
         let mut pty = Pty::over(agent, master, None, pid, rows, cols, Arc::new(on_output), Arc::new(on_exit))
             .map_err(|e| format!("Could not take over {agent}'s terminal ({e})."))?;
-        pty.screen.process(&log);
+        // Its output says at which sizes it was drawn; the screen is rows by cols until it does.
+        replay::play(&mut pty.screen, &log);
         pty.log = log;
+        if pty.size() != (rows.max(1), cols.max(1)) {
+            reflow::resize(&mut pty.screen, rows, cols);
+            pty.mark(rows.max(1), cols.max(1));
+        }
         pty.since = since;
         // It started long ago: ready for keys.
         pty.started = Instant::now().checked_sub(Duration::from_secs(15)).unwrap_or(pty.started);
@@ -211,7 +231,8 @@ impl Pty {
             on_exit,
             reading: None,
             screen: vt100::Parser::new(nz(rows), nz(cols), HISTORY),
-            log: Vec::new(),
+            log: replay::size(rows.max(1), cols.max(1)),
+            folded: 0,
             agent: agent.to_string(),
             started: Instant::now(),
             since: SystemTime::now(),
@@ -285,11 +306,31 @@ impl Pty {
         self.last_output = Some(Instant::now());
         self.screen.process(bytes);
         self.log.extend_from_slice(bytes);
-        if self.log.len() > KEEP {
-            // Drop the oldest quarter at once, so trimming is rare.
-            let cut = self.log.len() - KEEP * 3 / 4;
-            self.log.drain(..cut);
+        if self.log.len() > self.folded + KEEP {
+            self.fold();
         }
+    }
+
+    /// What was drawn so far gives way to what it left behind: the screen as it is, the history
+    /// above it and the modes set. Cutting the oldest part off instead would leave a log that
+    /// starts in the middle of the drawing, with the alternate screen, the mouse and the key
+    /// modes of a program that set them once, at its start, all forgotten.
+    fn fold(&mut self) {
+        // The last bytes may be half a sequence: they stay as they are, behind the fold.
+        let at = replay::settled(&self.log);
+        let (rows, cols) = self.size();
+        let folded = replay::fold(&self.log[..at], rows, cols, replay::SCROLLBACK, FOLD_MAX);
+        self.log.splice(..at, folded);
+        self.folded = self.log.len();
+    }
+
+    /// Notes in the log that the terminal is `rows` by `cols` from here on. A size at which
+    /// nothing was drawn, as while a window is dragged, leaves no mark.
+    fn mark(&mut self, rows: u16, cols: u16) {
+        if let Some(start) = replay::last_mark(&self.log) {
+            self.log.truncate(start);
+        }
+        self.log.extend_from_slice(&replay::size(rows, cols));
     }
 
     /// Started, drawn and quiet: ready for keys. Never longer than 15 seconds.
@@ -367,7 +408,8 @@ impl Pty {
         }
         let size = rustix::termios::Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
         let _ = rustix::termios::tcsetwinsize(&self.master, size);
-        desl_proto::reflow::resize(&mut self.screen, rows, cols);
+        reflow::resize(&mut self.screen, rows, cols);
+        self.mark(rows, cols);
     }
 
     /// The directory the program is in now: where a shell has `cd`-ed to.
@@ -577,6 +619,91 @@ mod tests {
         other.hand_over();
         pty.write(b"four\r");
         hear(&mut pty, &mut seen, "four\r\nfour");
+    }
+
+    /// What a client that attaches now would show: the log played on an empty screen.
+    fn replayed(pty: &Pty) -> vt100::Parser {
+        let mut vt = vt100::Parser::new(nz(24), nz(80), replay::SCROLLBACK);
+        replay::play(&mut vt, pty.log());
+        vt
+    }
+
+    #[test]
+    fn a_program_that_drew_more_than_is_kept_still_comes_back_as_it_is() {
+        // A full-screen program as Claude Code is one: it sets its screen, mouse and key modes
+        // once, then draws for hours. Here the hours are four megabytes of one row drawn again.
+        let script = r#"printf '$ claude\r\n\033[?2004h\033[>5u\033[?1049h\033[2J\033[?1000h\033[?1006h\033[1;1Hthe conversation'
+awk 'BEGIN { row = sprintf("%064d", 0); gsub(/0/, "x", row); for (i = 0; i < 60000; i++) printf "\033[3;1H%s\n", row }'
+printf '\033[5;1Hdone drawing'; sleep 5"#;
+        let launch = Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            env_remove: Vec::new(),
+            keep: Vec::new(),
+            session_id: None,
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let mut pty = Pty::spawn("claude", "t-test", &launch, Path::new("/"), 6, 70, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        let mut drawn = 0;
+        let mut folds = 0;
+        while let Ok(b) = rx.recv_timeout(Duration::from_secs(20)) {
+            drawn += b.len();
+            let before = pty.log().len();
+            pty.took(&b);
+            folds += usize::from(pty.log().len() < before);
+            assert!(pty.log().len() <= KEEP + b.len() + 4096, "{} bytes are kept", pty.log().len());
+            if pty.tail_text(6).contains("done drawing") {
+                break;
+            }
+        }
+        assert!(drawn > 4 * KEEP && folds >= 3, "it drew {drawn} bytes, folded {folds} times");
+        let vt = replayed(&pty);
+        let (kept, shown) = (pty.screen.screen(), vt.screen());
+        assert_eq!(shown.size(), kept.size());
+        assert!(shown.alternate_screen(), "it is still on its own screen");
+        assert_eq!(shown.mouse_protocol_mode(), vt100::MouseProtocolMode::PressRelease, "and still takes the mouse");
+        assert_eq!(shown.contents(), kept.contents());
+        assert!(shown.contents().starts_with("the conversation\n\nxxxx"), "{:?}", shown.contents());
+        assert_eq!(shown.cursor_position(), kept.cursor_position());
+        let mut keys = desl_proto::term::KeyModes::default();
+        keys.track(pty.log());
+        assert_eq!(keys.bytes(), b"\x1b[>5u\x1b[?2004h", "its keys still arrive as it asked");
+    }
+
+    #[test]
+    fn the_log_says_at_which_size_each_part_was_drawn() {
+        let launch = Launch {
+            program: "sh".into(),
+            args: vec!["-c".into(), "printf 'aaaaaaaaaabbbbbbbbbb\\n'; read go; printf '\\033[3;15Hx\\n'; sleep 5".into()],
+            env_remove: Vec::new(),
+            keep: Vec::new(),
+            session_id: None,
+        };
+        let (tx, rx) = channel::<Vec<u8>>();
+        let mut pty = Pty::spawn("shell", "t-test", &launch, Path::new("/"), 24, 10, move |b| drop(tx.send(b)), || {}).expect("sh starts");
+        let hear = |pty: &mut Pty, what: &str| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !pty.tail_text(24).contains(what) {
+                assert!(Instant::now() < deadline, "never drew {what:?}: {:?}", pty.tail_text(24));
+                if let Ok(b) = rx.recv_timeout(Duration::from_millis(50)) {
+                    pty.took(&b);
+                }
+            }
+        };
+        hear(&mut pty, "bbbbbbbbbb");
+        // A window dragged through sizes at which nothing is drawn leaves one mark, not three.
+        let before = pty.log().len();
+        pty.resize(24, 30);
+        pty.resize(24, 35);
+        pty.resize(24, 40);
+        assert_eq!(pty.log().len(), before + replay::size(24, 40).len());
+        pty.write(b"\r");
+        hear(&mut pty, "x");
+        let vt = replayed(&pty);
+        assert_eq!(vt.screen().size(), pty.screen.screen().size());
+        assert_eq!(vt.screen().contents(), pty.screen.screen().contents(), "a client that attaches shows what the daemon holds");
+        // The line drawn at ten columns is one line at forty, and the x is where forty put it.
+        assert_eq!(vt.screen().contents().trim_end(), "aaaaaaaaaabbbbbbbbbb\n\n              x");
     }
 
     #[test]

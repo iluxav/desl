@@ -8,6 +8,7 @@ use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, R
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
 use desl_ir::{Event, FILES, Project, SHELL, Status, TASKS, Thread, is_agent, program_word};
+use desl_proto::replay::{self, SCROLLBACK};
 use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, reflow, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -71,8 +72,6 @@ pub fn leave() {
 const SCREEN_ON: &[u8] = b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l";
 /// Puts the terminal's key modes back to plain before the next agent sets its own.
 const KEYS_PLAIN: &[u8] = b"\x1b[<10u\x1b[>4;0m\x1b[?2004l\x1b[?1004l";
-/// Lines of the agent's output kept for scrolling back.
-const SCROLLBACK: usize = 10_000;
 /// At most one paint per this long; output in between is drawn together.
 const FRAME: Duration = Duration::from_millis(12);
 
@@ -156,7 +155,7 @@ struct Pane {
     scrolled: usize,
     /// The key modes its agent set (kitty keys, bracketed paste), for the terminal while this
     /// pane has the keys.
-    modes: Vec<u8>,
+    modes: term::KeyModes,
     /// Text being marked with the mouse, or just marked.
     select: Option<Select>,
 }
@@ -179,7 +178,7 @@ impl Pane {
             agent,
             vt: vt100::Parser::new(nz(area.height), nz(area.width), SCROLLBACK),
             scrolled: 0,
-            modes: Vec::new(),
+            modes: term::KeyModes::default(),
             select: None,
         }
     }
@@ -420,7 +419,7 @@ impl Client {
     /// The terminal takes the focused pane's agent's key modes (kitty keys, bracketed paste).
     fn apply_modes(&self) {
         let mut modes = KEYS_PLAIN.to_vec();
-        modes.extend_from_slice(&self.pane().modes);
+        modes.extend_from_slice(&self.pane().modes.bytes());
         out(&modes);
     }
 
@@ -447,8 +446,11 @@ impl Client {
         let r = self.rect(i);
         let p = &mut self.panes[i];
         p.vt = vt100::Parser::new(nz(r.height), nz(r.width), SCROLLBACK);
-        p.vt.process(replay);
-        p.modes = term::key_modes(replay);
+        // What was drawn says at which sizes; the last of them is this pane's, as a rule.
+        replay::play(&mut p.vt, replay);
+        reflow::resize(&mut p.vt, r.height, r.width);
+        p.modes = term::KeyModes::default();
+        p.modes.track(replay);
         p.scrolled = 0;
         p.select = None;
         if i == self.focus {
@@ -1549,16 +1551,9 @@ impl Client {
                 }
                 // Nothing else is there to answer what the agent asks its terminal.
                 let replies = term::replies(&bytes, &self.answers, p.vt.screen().cursor_position());
-                let modes = term::key_modes(&bytes);
-                if !modes.is_empty() {
-                    p.modes.extend_from_slice(&modes);
-                    if p.modes.len() > 4096 {
-                        let cut = p.modes.len() - 1024;
-                        p.modes.drain(..cut);
-                    }
-                    if i == self.focus {
-                        out(&modes);
-                    }
+                let modes = p.modes.track(&bytes);
+                if !modes.is_empty() && i == self.focus {
+                    out(&modes);
                 }
                 self.input_to(&thread_id, &replies);
                 self.dirty = true;

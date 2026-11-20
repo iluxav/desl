@@ -60,6 +60,21 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- A thread that has run for hours comes back whole when desl is opened again. The daemon kept
+  the last 8 MB an agent drew and cut the rest off, so past that point what a client got on
+  attach started in the middle of the drawing. An agent sets its full screen, the mouse and
+  the form its keys arrive in once, when it starts, and all of that was in the part cut off:
+  desl then took the pane for a plain one, the wheel scrolled desl's own scrollback in place
+  of the agent's conversation, and the keys came in the plain form, not the one the agent had
+  asked for. A Claude Code at work draws about 600 bytes a second, so this began after a few
+  hours of work. Now everything older than the last megabyte is folded into what it left
+  behind (the screen, 10,000 rows of history, the modes), so attaching shows what a client
+  that never left shows. Changing to such a thread is faster too: a megabyte is drawn again,
+  not eight.
+- A pane opened on a thread whose terminal had other sizes before shows its scrollback as it
+  was drawn. What was drawn at each size is now drawn again at that size and wrapped at the
+  next; before, all of it was drawn at the pane's size, which put text an agent had placed by
+  column in the wrong place.
 - Installing a new build no longer ends the agents. `make install` stopped the daemon, which
   killed every agent and shell at once: a turn in the middle of its work was cut, and a server
   started in a shell went down. `desl daemon restart`, which `make install` now runs, starts

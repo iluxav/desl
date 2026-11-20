@@ -10,6 +10,7 @@ pub mod b64;
 pub mod config;
 pub mod paths;
 pub mod reflow;
+pub mod replay;
 pub mod term;
 
 use desl_ir::adapter::{Capabilities, Detection};

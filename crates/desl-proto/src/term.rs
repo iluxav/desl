@@ -262,38 +262,140 @@ impl Modes {
     }
 }
 
-/// The sequences in `b` that set how the terminal sends keys and pastes: the kitty keyboard
-/// protocol's push, pop and set (`CSI > u`, `CSI < u`, `CSI = u`), modifyOtherKeys
-/// (`CSI > 4 ; n m`), bracketed paste and focus reports. desl draws the agent through its own
-/// screen, so these are passed to the real terminal for the agent's keys to arrive as it asked.
-pub fn key_modes(b: &[u8]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i + 2 < b.len() {
-        if b[i] != 0x1b || b[i + 1] != b'[' {
-            i += 1;
-            continue;
-        }
-        let mut j = i + 2;
-        while j < b.len() && (0x20..=0x3f).contains(&b[j]) {
-            j += 1;
-        }
-        if j >= b.len() {
-            break;
-        }
-        let params = &b[i + 2..j];
-        let keep = match b[j] {
-            b'u' => matches!(params.first(), Some(b'>' | b'<' | b'=')),
-            b'm' => params.starts_with(b">4"),
-            b'h' | b'l' => params == b"?2004" || params == b"?1004",
-            _ => false,
+/// How a program asked for its keys and pastes: the kitty keyboard protocol's flags
+/// (`CSI > u`, `CSI < u`, `CSI = u`), modifyOtherKeys (`CSI > 4 ; n m`), bracketed paste and
+/// focus reports. desl draws the program through its own screen, so these go to the real
+/// terminal for the keys to arrive as the program asked. What is kept is where the sequences
+/// left the terminal, not the sequences: a program that sets its modes again with every screen
+/// it draws takes no more room than one that set them once.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KeyModes {
+    /// The kitty flags of the terminal's own entry, once a program set them (`CSI = flags u`).
+    base: Option<u32>,
+    /// The kitty flags pushed and not popped, oldest first.
+    pushed: Vec<u32>,
+    /// modifyOtherKeys as last set, the whole sequence.
+    modify: Vec<u8>,
+    paste: bool,
+    focus: bool,
+    /// The start of a sequence that the bytes seen so far end in the middle of.
+    partial: Vec<u8>,
+}
+
+/// As many kitty entries as a terminal keeps, and as `CSI < 10 u` takes off again.
+const KITTY_DEPTH: usize = 10;
+
+impl KeyModes {
+    /// Follows the key-mode sequences in `b`, and returns them in order for the real terminal.
+    /// A sequence cut in two by the end of `b` is finished by the bytes that come next.
+    pub fn track(&mut self, b: &[u8]) -> Vec<u8> {
+        let joined;
+        let b = if self.partial.is_empty() {
+            b
+        } else {
+            joined = [std::mem::take(&mut self.partial).as_slice(), b].concat();
+            &joined
         };
-        if keep {
-            out.extend_from_slice(&b[i..=j]);
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] != 0x1b {
+                i += 1;
+                continue;
+            }
+            if i + 1 >= b.len() {
+                self.partial = b[i..].to_vec();
+                break;
+            }
+            if b[i + 1] != b'[' {
+                i += 1;
+                continue;
+            }
+            let mut j = i + 2;
+            while j < b.len() && (0x20..=0x3f).contains(&b[j]) {
+                j += 1;
+            }
+            if j >= b.len() {
+                // No key mode is this long: the rest is something else, cut short.
+                if b.len() - i <= 32 {
+                    self.partial = b[i..].to_vec();
+                }
+                break;
+            }
+            self.set(&b[i + 2..j], b[j], &b[i..=j], &mut out);
+            i = j + 1;
         }
-        i = j + 1;
+        out
     }
-    out
+
+    /// One control sequence: its parameters, its final byte, and all of it.
+    fn set(&mut self, params: &[u8], fin: u8, whole: &[u8], out: &mut Vec<u8>) {
+        let number = |p: &[u8]| std::str::from_utf8(p).ok().and_then(|s| s.parse::<u32>().ok());
+        match (fin, params.first()) {
+            (b'u', Some(b'>')) => {
+                self.pushed.push(number(&params[1..]).unwrap_or(0));
+                if self.pushed.len() > KITTY_DEPTH {
+                    self.pushed.remove(0);
+                }
+            }
+            (b'u', Some(b'<')) => {
+                let n = number(&params[1..]).unwrap_or(1).max(1) as usize;
+                self.pushed.truncate(self.pushed.len().saturating_sub(n));
+            }
+            (b'u', Some(b'=')) => {
+                let mut parts = params[1..].split(|c| *c == b';');
+                let flags = parts.next().and_then(number).unwrap_or(0);
+                let top = match self.pushed.last_mut() {
+                    Some(top) => top,
+                    None => self.base.get_or_insert(0),
+                };
+                match parts.next().and_then(number).unwrap_or(1) {
+                    2 => *top |= flags,
+                    3 => *top &= !flags,
+                    _ => *top = flags,
+                }
+            }
+            (b'm', Some(b'>')) if params.starts_with(b">4") && matches!(params.get(2), None | Some(b';')) => {
+                self.modify = whole.to_vec();
+            }
+            (b'h' | b'l', Some(b'?')) => {
+                let on = fin == b'h';
+                for mode in params[1..].split(|c| *c == b';') {
+                    match mode {
+                        b"2004" => self.paste = on,
+                        b"1004" => self.focus = on,
+                        _ => continue,
+                    }
+                    // Its own sequence: the modes set along with it are not the terminal's to take.
+                    out.extend_from_slice(b"\x1b[?");
+                    out.extend_from_slice(mode);
+                    out.push(fin);
+                }
+                return;
+            }
+            _ => return,
+        }
+        out.extend_from_slice(whole);
+    }
+
+    /// The sequences that give these modes to a terminal that has none of them set.
+    pub fn bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        if let Some(flags) = self.base {
+            out.extend_from_slice(format!("\x1b[={flags};1u").as_bytes());
+        }
+        for flags in &self.pushed {
+            out.extend_from_slice(format!("\x1b[>{flags}u").as_bytes());
+        }
+        out.extend_from_slice(&self.modify);
+        if self.paste {
+            out.extend_from_slice(b"\x1b[?2004h");
+        }
+        if self.focus {
+            out.extend_from_slice(b"\x1b[?1004h");
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -334,6 +436,31 @@ mod tests {
     #[test]
     fn key_modes_are_picked_out_of_drawing() {
         let b = b"\x1b[31mhi\x1b[>1u\x1b[?u\x1b[?2004h\x1b[>4;2m\x1b[2J\x1b[<u";
-        assert_eq!(key_modes(b), b"\x1b[>1u\x1b[?2004h\x1b[>4;2m\x1b[<u");
+        let mut m = KeyModes::default();
+        assert_eq!(m.track(b), b"\x1b[>1u\x1b[?2004h\x1b[>4;2m\x1b[<u");
+        assert_eq!(m.bytes(), b"\x1b[>4;2m\x1b[?2004h", "the flags pushed were popped again");
+    }
+
+    #[test]
+    fn key_modes_set_over_and_over_stay_as_short_as_set_once() {
+        let mut m = KeyModes::default();
+        for _ in 0..500 {
+            // As Claude Code sends them with every screen it draws afresh.
+            m.track(b"\x1b[?2004h\x1b[?1004h\x1b[<u\x1b[>5u\x1b[>4;2m");
+        }
+        assert_eq!(m.bytes(), b"\x1b[>5u\x1b[>4;2m\x1b[?2004h\x1b[?1004h");
+        m.track(b"\x1b[?2004l\x1b[=1;2u\x1b[>4;0m");
+        assert_eq!(m.bytes(), b"\x1b[>5u\x1b[>4;0m\x1b[?1004h", "flag 1 was already set on the entry pushed");
+        m.track(b"\x1b[<u\x1b[=3u");
+        assert_eq!(m.bytes(), b"\x1b[=3;1u\x1b[>4;0m\x1b[?1004h", "with nothing pushed, the terminal's own entry is set");
+    }
+
+    #[test]
+    fn a_key_mode_cut_in_two_is_still_seen() {
+        let mut m = KeyModes::default();
+        assert_eq!(m.track(b"drawn\x1b[>"), b"");
+        assert_eq!(m.track(b"5u more\x1b"), b"\x1b[>5u");
+        assert_eq!(m.track(b"[?1049;2004h"), b"\x1b[?2004h", "the alternate screen set with it is not passed on");
+        assert_eq!(m.bytes(), b"\x1b[>5u\x1b[?2004h");
     }
 }

@@ -23,6 +23,9 @@ pub const FILE_MANAGER: &str = "yazi";
 /// The `active_agent` of a thread that shows its project's task list (SPEC.md "Tasks").
 pub const TASKS: &str = "tasks";
 
+/// A project's task list, at its root.
+pub const TASK_LIST: &str = ".tasks.md";
+
 /// False for a thread that runs a program instead of an agent (the user's shell, their file
 /// manager, desl's task list): it has no conversation, and it closes when its program ends.
 pub fn is_agent(kind: &str) -> bool {

@@ -1095,6 +1095,44 @@ fn the_task_list_is_one_thread_per_project_opened_at_its_root() {
 }
 
 #[test]
+fn a_task_list_made_by_anyone_shows_in_the_sidebar_and_stays_while_its_file_does() {
+    let mut r = rig("tasklist");
+    let t = r.t.clone();
+    r.engine.tasks_program = vec!["cat".into()];
+    let project = r.thread(&t).cwd;
+    let lists = |r: &Rig| r.engine.threads.iter().filter(|t| t.active_agent == TASKS).map(|t| t.id.clone()).collect::<Vec<_>>();
+    r.cmd(Command::Workspace).unwrap();
+    assert!(lists(&r).is_empty(), "no file, no list");
+    // An agent starts the list with `desl task add`: the file appears behind the daemon's back.
+    std::fs::write(PathBuf::from(&project).join(desl_ir::TASK_LIST), "## first\n").unwrap();
+    let Ok(Reply::Workspace(ws)) = r.cmd(Command::Workspace) else { panic!("the workspace") };
+    let id = lists(&r).pop().expect("the project's list is a thread now");
+    assert!(
+        ws.threads.iter().any(|x| x.id == id && x.name == "tasks" && x.project_id == r.thread(&t).project_id),
+        "a client attaching sees it"
+    );
+    assert!(!r.engine.ptys.contains_key(&id), "nothing runs until it is shown");
+    r.cmd(Command::Workspace).unwrap();
+    assert_eq!(lists(&r), vec![id.clone()], "once");
+    // q in the list ends its program; the row stays while the file is there.
+    r.cmd(Command::Attach { thread_id: id.clone(), rows: 10, cols: 40, answers: term::Answers::default() }).unwrap();
+    until(&mut r, "the list runs", |e| e.ptys.contains_key(&id));
+    r.engine.handle(Msg::Request {
+        client: 1,
+        request: Request { id: 990, command: Command::Input { thread_id: id.clone(), data: b64::encode(b"\x04") } },
+    });
+    until(&mut r, "its program ends", |e| !e.ptys.contains_key(&id));
+    assert_eq!(lists(&r), vec![id.clone()], "the row stays");
+    let err = r.cmd(Command::RemoveThread { thread_id: id.clone() }).unwrap_err();
+    assert!(err.contains(".tasks.md") && err.contains("stays in the sidebar"), "{err}");
+    // Without the file, it closes as any thread does.
+    std::fs::remove_file(PathBuf::from(&project).join(desl_ir::TASK_LIST)).unwrap();
+    r.cmd(Command::RemoveThread { thread_id: id }).unwrap();
+    r.cmd(Command::Workspace).unwrap();
+    assert!(lists(&r).is_empty());
+}
+
+#[test]
 fn a_daemon_hands_its_running_programs_to_the_next_one() {
     use std::os::unix::net::UnixStream;
     let mut r = rig("handover");

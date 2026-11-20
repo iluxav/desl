@@ -156,8 +156,28 @@ pub struct Add {
     pub body: Option<String>,
 }
 
+/// A list this command just made shows in desl's sidebar at once, rather than at the daemon's
+/// next look, when the project is one in the sidebar. Nothing is started if desl is not running.
+fn show_in_desl(paths: &Paths, root: &Path) {
+    let Some(mut conn) = Conn::open(paths, false, "cli").ok().flatten() else { return };
+    let Ok(ws) = crate::cli::workspace(&mut conn) else { return };
+    let root = root.to_string_lossy().into_owned();
+    let listed = ws.projects.iter().any(|p| p.path == root && ws.threads.iter().any(|t| t.project_id == p.id));
+    if listed {
+        let _ = conn.call(desl_proto::Command::NewThread {
+            cwd: root,
+            agent: Some(desl_ir::TASKS.into()),
+            prompt: None,
+            beside: None,
+            worktree: false,
+        });
+    }
+}
+
 pub fn add(paths: &Paths, out: &Out, project: Option<&str>, a: Add) -> Result<()> {
-    let store = Store::of(&root(paths, project)?);
+    let root = root(paths, project)?;
+    let store = Store::of(&root);
+    let new_list = !store.exists();
     let title = super::list::one_line(&a.title);
     if title.is_empty() {
         bail!("A task needs a title: `desl task add \"Fix the flaky login test\"`");
@@ -170,6 +190,9 @@ pub fn add(paths: &Paths, out: &Out, project: Option<&str>, a: Add) -> Result<()
         body: a.body.map(text_arg).transpose()?.unwrap_or_default(),
     };
     let (list, id) = changed(&store, &change)?;
+    if new_list {
+        show_in_desl(paths, &root);
+    }
     let t = list.get(id).expect("just added");
     if out.json {
         out.value(&json!(t));

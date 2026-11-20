@@ -14,7 +14,7 @@ use crate::{git, projector};
 use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which};
 use desl_ir::{
     Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status,
-    TASKS, Thread, derive_name, is_agent, program_word,
+    TASK_LIST, TASKS, Thread, derive_name, is_agent, program_word,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
@@ -1738,7 +1738,8 @@ impl Engine {
             }
         }
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
-        let own_program = self.idx(thread_id).is_ok_and(|i| !is_agent(&self.threads[i].active_agent));
+        // A task list closed on screen stays in the sidebar while its file is there.
+        let own_program = self.idx(thread_id).is_ok_and(|i| !is_agent(&self.threads[i].active_agent) && !self.keeps_list(i));
         let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
@@ -1749,6 +1750,35 @@ impl Engine {
         // A shell or a file manager that exited is gone: there is nothing to come back to.
         if own_program {
             self.remove_thread(thread_id);
+        }
+    }
+
+    /// True for a tasks thread whose project has its list file: it stays in the sidebar.
+    fn keeps_list(&self, i: usize) -> bool {
+        let t = &self.threads[i];
+        t.active_agent == TASKS
+            && self.projects.iter().find(|p| p.id == t.project_id).is_some_and(|p| Path::new(&p.path).join(TASK_LIST).is_file())
+    }
+
+    /// A project in the sidebar whose root holds a task list shows it, as a thread of its own,
+    /// whoever made the file: an agent that starts one with `desl task add` needs no one to open
+    /// it. Its program starts only when the thread is shown.
+    fn task_lists(&mut self) {
+        let missing: Vec<String> = self
+            .projects
+            .iter()
+            .filter(|p| self.threads.iter().any(|t| t.project_id == p.id))
+            .filter(|p| !self.threads.iter().any(|t| t.active_agent == TASKS && t.project_id == p.id))
+            .filter(|p| Path::new(&p.path).join(TASK_LIST).is_file())
+            .map(|p| p.id.clone())
+            .collect();
+        for project_id in missing {
+            let Ok(id) = self.create_thread(&project_id, TASKS) else { continue };
+            if let Ok(i) = self.idx(&id) {
+                self.threads[i].name = TASKS.to_string();
+            }
+            self.persist(&id);
+            tracing::info!(thread = %id, project = %project_id, "the project has a task list");
         }
     }
 
@@ -1785,6 +1815,7 @@ impl Engine {
         if !self.ticks.is_multiple_of(5 * TICKS_PER_SECOND) {
             return;
         }
+        self.task_lists();
         self.refresh_git();
     }
 
@@ -1885,7 +1916,10 @@ impl Engine {
                     Ok(Reply::Hello { protocol: PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), pid: std::process::id() })
                 }
             }
-            Command::Workspace => Ok(Reply::Workspace(Box::new(self.workspace(None, None)))),
+            Command::Workspace => {
+                self.task_lists();
+                Ok(Reply::Workspace(Box::new(self.workspace(None, None))))
+            }
             Command::Subscribe { cwd } => self.subscribe(client, cwd.as_deref()),
             Command::OpenThread { thread_id } => self.idx(&thread_id).map(|i| {
                 if let Some(c) = self.clients.get_mut(&client) {
@@ -1926,6 +1960,13 @@ impl Engine {
                 Ok(Reply::Done)
             }),
             Command::MoveProject { project_id, up } => self.move_project(&project_id, up),
+            Command::RemoveThread { thread_id } if self.idx(&thread_id).is_ok_and(|i| self.keeps_list(i)) => {
+                let project = self.idx(&thread_id).ok().map(|i| self.threads[i].project_id.clone()).unwrap_or_default();
+                let root = self.projects.iter().find(|p| p.id == project).map(|p| tilde(&p.path)).unwrap_or_default();
+                Err(format!(
+                    "The task list stays in the sidebar while {root}/{TASK_LIST} exists: q closes it on screen. Delete the file to remove it for good."
+                ))
+            }
             Command::RemoveThread { thread_id } => self.idx(&thread_id).map(|i| {
                 let t = &self.threads[i];
                 let wt = t.worktree.clone().map(|name| (t.git.branch.clone().unwrap_or(name), t.cwd.clone()));

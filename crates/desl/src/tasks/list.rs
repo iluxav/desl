@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// The file, at the project's root.
-pub const FILE: &str = ".tasks.md";
+pub const FILE: &str = desl_ir::TASK_LIST;
 
 /// What a new file says before its first task.
 const PREAMBLE: &str = "# Tasks

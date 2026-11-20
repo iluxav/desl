@@ -7,6 +7,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- A project's task list shows in the sidebar by itself once `.tasks.md` exists, also when an
+  agent made it with `desl task add` (at once) or by other means (within five seconds). `q`
+  closes it on screen; its row stays while the file does.
+
 - Two panes are easy to tell apart. In the sidebar, a thread on screen has a `▌` at its row's
   edge and a mark of its pane's half of the screen (left or right, top or bottom); the one with
   the keys is tinted with the accent, as its pane's border is. A pane's title now leads with the

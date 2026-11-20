@@ -20,15 +20,22 @@ pub const FILES: &str = "files";
 /// The file manager a files thread runs.
 pub const FILE_MANAGER: &str = "yazi";
 
-/// False for a thread that runs a program of the user's own, their shell or their file manager:
-/// it has no conversation, and it closes when its program ends.
+/// The `active_agent` of a thread that shows its project's task list (SPEC.md "Tasks").
+pub const TASKS: &str = "tasks";
+
+/// False for a thread that runs a program instead of an agent (the user's shell, their file
+/// manager, desl's task list): it has no conversation, and it closes when its program ends.
 pub fn is_agent(kind: &str) -> bool {
-    kind != SHELL && kind != FILES
+    kind != SHELL && kind != FILES && kind != TASKS
 }
 
 /// What a thread that runs no agent is called in a sentence: `shell`, `file manager`.
 pub fn program_word(kind: &str) -> &'static str {
-    if kind == FILES { "file manager" } else { "shell" }
+    match kind {
+        FILES => "file manager",
+        TASKS => "task list",
+        _ => "shell",
+    }
 }
 
 /// The status words, used identically in the sidebar, the CLI and notifications.

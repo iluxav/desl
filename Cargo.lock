@@ -471,6 +471,7 @@ dependencies = [
  "desl-daemon",
  "desl-ir",
  "desl-proto",
+ "filedescriptor",
  "pulldown-cmark",
  "ratatui",
  "serde",

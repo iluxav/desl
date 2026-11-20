@@ -33,6 +33,10 @@ something else, or splits the screen to watch two threads at once.
 - **Your files, one key away.** With [yazi](https://yazi-rs.github.io) installed, `ctrl+space c`
   opens it in a thread of its own, in the directory you are working in: the file list beside a
   syntax-highlighted preview, next to your agents or split beside one.
+- **A task list beside your agents.** `ctrl+space c` → `tasks` opens the project's list:
+  `.tasks.md` at its root, plain Markdown, with each task's type, status and priority in
+  colour, filtered by status in tabs. `n` adds a task, `enter` opens one to read its description,
+  and watch your agents mark theirs in progress and done as they work.
 - **Your agents can drive it too.** `desl skill install` teaches Claude Code, Codex and Copilot to open
   threads, hand work to the other agent for a second opinion, and wait on threads working in
   parallel, each in its own git worktree.
@@ -85,7 +89,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `f` | Fork this conversation into a new thread, on any agent |
 | `r` | Restart this agent on the same conversation, with the binary and settings installed now |
 | `i` | Info: agent, session ids, model, directory |
-| `c` | New thread: Claude, Codex or Copilot, whichever are installed, a shell, or [yazi](https://yazi-rs.github.io) when it is installed. `w` in the menu gives an agent a git worktree of its own |
+| `c` | New thread: Claude, Codex or Copilot, whichever are installed, a shell, [yazi](https://yazi-rs.github.io) when it is installed, or the project's task list. `w` in the menu gives an agent a git worktree of its own |
 | `o` | Open a directory: type to find it among your projects, recent directories and repositories; a shell opens there |
 | `w` | Move into the sidebar: `j`/`k` show each thread as you move, `enter` or `esc` return. On a project's row, `shift+↑` and `shift+↓` reorder the projects |
 | `n` `p` `1`…`9` `l` | Next, previous, by number, the one shown before |
@@ -118,6 +122,9 @@ desl fork t-7f3a claude --at 12 --worktree # a copy from message 12, on its own 
 desl model t-7f3a haiku --effort low       # pick the model and effort for its next prompt
 desl interrupt t-7f3a                      # as esc in the agent's own screen
 desl restart t-7f3a                        # reload the agent after an update or a new MCP server
+desl task add "Fix the flaky login test" --type bug --priority high
+desl task set 12 --status done --note "Fixed in a1b2c3d"
+desl task list                             # the open tasks of this project
 desl doctor                                # agents, logins, the daemon, the store
 desl daemon restart                        # the daemon starts again from the build installed now; agents keep running
 desl daemon stop                           # ends the agents; every thread is kept
@@ -132,7 +139,9 @@ desl skill install
 installs the desl skill into every agent's skill folder. Inside desl, each agent's shell has
 `DESL_THREAD` set to its own thread, and the skill teaches it to look around with
 `desl status --json`, fork its conversation to another agent and ask it a question with
-`desl send`, or run independent work in parallel threads and `desl wait` on each. Only the
+`desl send`, run independent work in parallel threads and `desl wait` on each, and keep the
+project's task list with `desl task`: a task in progress when it starts, done with a note when
+it is finished, an issue when it is stuck, and new tasks for what it finds on the way. Only the
 thread's own agent is kept from switching, restarting or closing itself.
 
 ## Settings

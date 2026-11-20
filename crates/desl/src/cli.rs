@@ -14,7 +14,7 @@ pub struct Out {
 }
 
 impl Out {
-    fn value(&self, v: &Value) {
+    pub(crate) fn value(&self, v: &Value) {
         println!("{v}");
     }
 }
@@ -811,6 +811,26 @@ pub fn config_show(paths: &Paths, out: &Out) -> Result<()> {
 
 /// The skill that teaches agents to drive desl (SPEC.md "Agents drive desl"), as shipped.
 const SKILL: &str = include_str!("../../../skills/desl/SKILL.md");
+
+/// A daemon that starts brings every copy of the skill `desl skill install` wrote up to date, so
+/// what a new build teaches reaches the agents started after it. A link is its maker's, and a
+/// test workspace (`DESL_HOME`) leaves the user's agents alone.
+pub fn skill_refresh() {
+    if std::env::var_os("DESL_HOME").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    for adapter in desl_daemon::server::adapters() {
+        let Some(dir) = adapter.skills_dir() else { continue };
+        let folder = dir.join("desl");
+        if folder.symlink_metadata().map_or(true, |m| m.file_type().is_symlink()) {
+            continue;
+        }
+        let file = folder.join("SKILL.md");
+        if std::fs::read_to_string(&file).is_ok_and(|now| now != SKILL) {
+            let _ = std::fs::write(&file, SKILL);
+        }
+    }
+}
 
 /// `desl skill install`: writes the skill into the skill folder of every agent that has been
 /// set up here. Running it again brings the copy up to date.

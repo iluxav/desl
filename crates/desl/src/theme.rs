@@ -105,6 +105,16 @@ pub fn faded(c: (u8, u8, u8), strength: f32) -> Style {
     }
 }
 
+/// True once the terminal said what its background is, so [`surface`] is mixed from it.
+pub fn has_surface() -> bool {
+    SURFACE.get().is_some()
+}
+
+/// One of the terminal's own palette colours, as text; plain under NO_COLOR.
+pub fn hue(c: Color) -> Style {
+    if no_color() || c == Color::Reset { Style::default() } else { Style::default().fg(c) }
+}
+
 /// The row of the thread on screen: a quiet tint across the sidebar, no bar.
 pub fn surface() -> Style {
     if no_color() {

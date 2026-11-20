@@ -14,7 +14,7 @@ use crate::{git, projector};
 use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which};
 use desl_ir::{
     Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status,
-    Thread, derive_name, is_agent, program_word,
+    TASKS, Thread, derive_name, is_agent, program_word,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
@@ -213,6 +213,9 @@ pub struct Engine {
     config_file: Option<PathBuf>,
     /// The program a files thread runs: `yazi`. Tests name one every machine has.
     file_manager: String,
+    /// What a tasks thread runs, before `--project <root>`: this desl's own `task ui`. Tests
+    /// name a program every machine has.
+    tasks_program: Vec<String>,
     ticks: u64,
     pub stopping: bool,
     /// A handover asked for and not yet made.
@@ -254,6 +257,21 @@ fn shell_launch() -> Launch {
 /// their shell: it opens on the directory it starts in.
 fn files_launch(program: &str) -> Launch {
     Launch { program: program.to_string(), ..shell_launch() }
+}
+
+/// What a tasks thread runs: `desl task ui` from this daemon's own binary, by the path it was
+/// started from, so after an install the new one starts.
+fn task_list_program() -> Vec<String> {
+    let exe =
+        std::env::current_exe().map(|p| p.to_string_lossy().trim_end_matches(" (deleted)").to_string()).unwrap_or_else(|_| "desl".into());
+    vec![exe, "task".into(), "ui".into()]
+}
+
+/// desl's task list for the project at `root`, with the user's environment, as their shell.
+fn tasks_launch(program: &[String], root: &str) -> Launch {
+    let mut args: Vec<String> = program.iter().skip(1).cloned().collect();
+    args.extend(["--project".to_string(), root.to_string()]);
+    Launch { program: program.first().cloned().unwrap_or_else(|| "desl".into()), args, ..shell_launch() }
 }
 
 /// The shell's name for the sidebar: `bash`, `zsh`.
@@ -358,6 +376,7 @@ impl Engine {
             git_busy: false,
             config_file: None,
             file_manager: desl_ir::FILE_MANAGER.to_string(),
+            tasks_program: task_list_program(),
             ticks: 0,
             stopping: false,
             handover: None,
@@ -1002,6 +1021,7 @@ impl Engine {
         let binding = t.bindings.get(&agent);
         let launch = match &adapter {
             None if agent == FILES => files_launch(&self.file_manager().ok_or_else(|| self.no_file_manager())?),
+            None if agent == TASKS => tasks_launch(&self.tasks_program, &t.cwd),
             None => shell_launch(),
             Some(adapter) => {
                 let open = match binding.and_then(|b| b.session_id.clone()) {
@@ -2499,6 +2519,21 @@ impl Engine {
                 self.threads[i].cwd = cwd.to_string();
             }
             self.threads[i].name = shell_name();
+            self.persist(&id);
+            return Ok(Reply::Created { thread_id: id });
+        }
+        if agent == Some(TASKS) {
+            // One list per project: the thread that shows it, else a new one at the project's root.
+            let project_id = match beside {
+                Some(b) => self.threads[b].project_id.clone(),
+                None => self.project_for(Path::new(cwd))?,
+            };
+            if let Some(t) = self.threads.iter().find(|t| t.active_agent == TASKS && t.project_id == project_id) {
+                return Ok(Reply::Created { thread_id: t.id.clone() });
+            }
+            let id = self.create_thread(&project_id, TASKS)?;
+            let i = self.idx(&id)?;
+            self.threads[i].name = TASKS.to_string();
             self.persist(&id);
             return Ok(Reply::Created { thread_id: id });
         }

@@ -7,7 +7,7 @@ use crate::finder::Finder;
 use crate::layout::{self, Action, Areas, FinderView, Menu, MenuItem, PaneView, Row, Selection, SubView, View};
 use crate::rawkeys::{self, Mouse};
 use anyhow::{Context, Result, bail};
-use desl_ir::{Event, FILES, Project, SHELL, Status, Thread, is_agent, program_word};
+use desl_ir::{Event, FILES, Project, SHELL, Status, TASKS, Thread, is_agent, program_word};
 use desl_proto::{AgentInfo, Change, Command, Reply, ServerFrame, b64, read_frame, reflow, term};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
@@ -103,7 +103,7 @@ fn pulse() -> f32 {
 
 /// Whether to draw Nerd Font icons: `DESL_ICONS=nerd` or `text` says so; otherwise yes when a
 /// Nerd Font is installed here and the terminal is local (over SSH, the font is the other end's).
-fn nerd_font() -> bool {
+pub(crate) fn nerd_font() -> bool {
     match std::env::var("DESL_ICONS").as_deref() {
         Ok("nerd") => return true,
         Ok("text") => return false,
@@ -910,8 +910,9 @@ impl Client {
             Action::Restart if self.agent() == SHELL => {
                 self.notice("A shell has no conversation to restart; `exec $SHELL` typed in it starts it again.")
             }
-            Action::Restart if self.agent() == FILES => self.notice(&format!(
-                "A file manager has no conversation to restart; q closes it, and {} c opens it again.",
+            Action::Restart if self.agent() == FILES || self.agent() == TASKS => self.notice(&format!(
+                "A {} has no conversation to restart; q closes it, and {} c opens it again.",
+                program_word(self.agent()),
                 self.prefix_label
             )),
             Action::Restart => {
@@ -1072,8 +1073,8 @@ impl Client {
         out
     }
 
-    /// What `prefix c` offers: every agent installed here, then the user's shell and, when it
-    /// is installed, their file manager. `prefix f` and `prefix s` offer the agents only, the
+    /// What `prefix c` offers: every agent installed here, then the user's shell, their file
+    /// manager when it is installed, and the project's task list. `prefix f` and `prefix s` offer the agents only, the
     /// second with the thread's own marked. An agent that is not installed is not a row.
     fn choices(&self) -> Vec<Choice> {
         let mut out = agent_choices(&self.agents, self.menu_for, self.agent());
@@ -1082,6 +1083,7 @@ impl Client {
             if let Some(name) = &self.file_manager {
                 out.push(Choice { start: FILES.into(), item: MenuItem { label: name.clone(), note: "files".into(), enabled: true } });
             }
+            out.push(Choice { start: TASKS.into(), item: MenuItem { label: TASKS.into(), note: "task list".into(), enabled: true } });
         }
         out
     }

@@ -7,6 +7,15 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- A task list per project. `prefix c` offers `tasks`, which opens the project's tasks thread
+  (or focuses it) and makes `.tasks.md` at the project's root when there is none: a flat list
+  of tasks, each with a title, a type, a status (todo, in progress, issue, done, ignored), a
+  priority and a description in Markdown. Tabs filter it by status, `n` adds a task (its type
+  first, then its title and description), `enter` opens one, `s` `p` `t` change its fields from
+  a list, `x` marks it done, `u` undoes. What changes in the file shows at once and lights up.
+  Agents keep it with `desl task list|show|add|set|rm`, which the desl skill now teaches them
+  to use strictly; a daemon that starts brings an installed copy of the skill up to date.
+
 - Text can be selected with the mouse in a shell pane, and in any pane scrolled back: a drag
   marks it inside that pane only, a double click takes a word and a triple click a line, and
   letting go copies it to the clipboard, through the terminal (OSC 52) and the desktop's own

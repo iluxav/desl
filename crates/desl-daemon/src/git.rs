@@ -62,6 +62,16 @@ pub fn toplevel(cwd: &Path) -> PathBuf {
     git(cwd, &["rev-parse", "--show-toplevel"]).filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_else(|| cwd.to_path_buf())
 }
 
+/// The repository's own root, the same from any of its worktrees: where a project keeps what
+/// all its threads share, such as its task list. None outside a repository.
+pub fn main_root(cwd: &Path) -> Option<PathBuf> {
+    let common = git(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"]).map(PathBuf::from);
+    match common {
+        Some(c) if c.file_name().is_some_and(|n| n == ".git") => c.parent().map(Path::to_path_buf),
+        _ => git(cwd, &["rev-parse", "--show-toplevel"]).filter(|s| !s.is_empty()).map(PathBuf::from),
+    }
+}
+
 pub fn state(cwd: &Path) -> GitState {
     let mut state = GitState::default();
     // A repository with no commits yet has a branch name but nothing for rev-parse to resolve.

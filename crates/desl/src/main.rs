@@ -10,6 +10,7 @@ mod layout;
 mod model;
 mod native;
 mod rawkeys;
+mod tasks;
 mod theme;
 mod ui;
 
@@ -125,6 +126,14 @@ enum Cmd {
     },
     /// Check binaries, logins, the daemon and the store
     Doctor,
+    /// The project's task list: list, show, add or change its tasks, or open it here
+    Task {
+        /// A project id or a directory (default: the repository this directory is in)
+        #[arg(short, long, global = true)]
+        project: Option<String>,
+        #[command(subcommand)]
+        command: TaskCmd,
+    },
     /// The desl skill, which teaches Claude Code, Codex and Copilot to drive desl
     Skill {
         #[command(subcommand)]
@@ -151,6 +160,56 @@ enum ThreadCmd {
     Rm {
         thread: String,
     },
+}
+
+#[derive(Subcommand)]
+enum TaskCmd {
+    /// The tasks still open (todo, in-progress, issue), or those with the statuses named
+    List {
+        /// open, all, or statuses: todo, in-progress, issue, done, ignored (comma-separated)
+        #[arg(long, default_value = "open")]
+        status: String,
+    },
+    /// One task with its description
+    Show { id: String },
+    /// Add a task; it is todo unless --status says otherwise
+    Add {
+        title: String,
+        /// feature, bug, task, refactor, test, docs or idea
+        #[arg(long = "type", default_value = "task")]
+        kind: String,
+        /// high, medium or low
+        #[arg(long, default_value = "medium")]
+        priority: String,
+        #[arg(long, default_value = "todo")]
+        status: String,
+        /// The description, in Markdown; `-` reads it from standard input
+        #[arg(long)]
+        body: Option<String>,
+    },
+    /// Change a task: its status, priority, type, title or description
+    Set {
+        id: String,
+        /// todo, in-progress, issue, done or ignored
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        priority: Option<String>,
+        #[arg(long = "type")]
+        kind: Option<String>,
+        #[arg(long)]
+        title: Option<String>,
+        /// The whole description, in place of what it was; `-` reads it from standard input
+        #[arg(long)]
+        body: Option<String>,
+        /// A paragraph added under the description, such as what was done or what blocks it
+        #[arg(long)]
+        note: Option<String>,
+    },
+    /// Remove a task for good (`--status ignored` keeps it, out of the open list)
+    Rm { id: String },
+    /// Show the task list in this terminal, as a tasks thread does
+    Ui,
 }
 
 #[derive(Subcommand)]
@@ -245,13 +304,31 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Agents => cli::agents(paths, &out),
         Cmd::Config { command: None | Some(ConfigCmd::Show) } => cli::config_show(paths, &out),
         Cmd::Doctor => cli::doctor(paths, &out),
+        Cmd::Task { project, command } => {
+            let p = project.as_deref();
+            match command {
+                TaskCmd::List { status } => tasks::cli::list(paths, &out, p, &status),
+                TaskCmd::Show { id } => tasks::cli::show(paths, &out, p, &id),
+                TaskCmd::Add { title, kind, priority, status, body } => {
+                    tasks::cli::add(paths, &out, p, tasks::cli::Add { title, kind, status, priority, body })
+                }
+                TaskCmd::Set { id, status, priority, kind, title, body, note } => {
+                    tasks::cli::set(paths, &out, p, tasks::cli::Set { id, title, kind, status, priority, body, note })
+                }
+                TaskCmd::Rm { id } => tasks::cli::rm(paths, &out, p, &id),
+                TaskCmd::Ui => tasks::cli::ui(paths, p),
+            }
+        }
         Cmd::Skill { command: SkillCmd::Install } => cli::skill_install(&out),
         Cmd::Daemon { command } => match command {
             DaemonCmd::Start => cli::daemon_start(paths, &out),
             DaemonCmd::Stop => cli::daemon_stop(paths, &out),
             DaemonCmd::Restart => cli::daemon_restart(paths, &out),
             DaemonCmd::Logs { lines } => cli::daemon_logs(paths, lines),
-            DaemonCmd::Run { takeover } => desl_daemon::server::serve(paths, takeover),
+            DaemonCmd::Run { takeover } => {
+                cli::skill_refresh();
+                desl_daemon::server::serve(paths, takeover)
+            }
         },
     }
 }

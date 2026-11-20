@@ -54,7 +54,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `switch` | `thread_id`, `agent` | `done` | The brief goes out with the next prompt. |
 | `fork` | `thread_id`, `agent?`, `at?` | `created {thread_id}` | A new thread with the history up to event `at` (the newest when absent). |
 | `subagent` | `thread_id`, `subagent_id` | `events {events}` | One of the thread's subagents' conversation, read-only, numbered from 1 |
-| `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`, and `files` their file manager in the directory `beside` is in (an error when none is installed); from a shell or file manager `beside`, the agent opens where it is, as its own project, and it joins it |
+| `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`, `files` their file manager in the directory `beside` is in (an error when none is installed), and `tasks` the project's task list: the tasks thread of `beside`'s project when it has one (its id comes back), else a new one at the project's root; from a shell or file manager `beside`, the agent opens where it is, as its own project, and it joins it |
 | `rename` | `thread_id`, `name` | `done` | |
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
 | `move_project` | `project_id`, `up` | `done` | Moves the project one place up or down among the projects that have a thread, the ones a sidebar lists, and keeps the order across restarts. An error sentence when it is already first or last. |

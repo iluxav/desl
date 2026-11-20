@@ -1061,6 +1061,40 @@ fn drew(engine: &Engine, thread: &str, text: &str) -> bool {
 }
 
 #[test]
+fn the_task_list_is_one_thread_per_project_opened_at_its_root() {
+    let mut r = rig("tasks");
+    let t = r.t.clone();
+    // A program every machine has stands in for `desl task ui`, and says which root it was given.
+    r.engine.tasks_program = vec!["sh".into(), "-c".into(), "echo \"the list of $2\"; cat".into(), "sh".into()];
+    let project = r.thread(&t).cwd;
+    // The thread beside it works in a directory of its own, as one with a worktree does.
+    let sub = PathBuf::from(&project).join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.threads[i].cwd = sub.to_string_lossy().into_owned();
+    let open = |beside: &str| Command::NewThread {
+        cwd: sub.to_string_lossy().into_owned(),
+        agent: Some(TASKS.into()),
+        prompt: None,
+        beside: Some(beside.to_string()),
+        worktree: false,
+    };
+    let Ok(Reply::Created { thread_id: tasks }) = r.cmd(open(&t)) else { panic!("a tasks thread") };
+    let k = r.thread(&tasks);
+    assert_eq!((k.active_agent.as_str(), k.name.as_str()), (TASKS, "tasks"));
+    assert_eq!((k.cwd.as_str(), k.project_id.as_str()), (project.as_str(), r.thread(&t).project_id.as_str()), "at the project's root");
+    let Ok(Reply::Created { thread_id: again }) = r.cmd(open(&tasks)) else { panic!("the same list") };
+    assert_eq!(again, tasks, "asked again, from anywhere in the project, it is the same thread");
+    assert_eq!(r.engine.threads.iter().filter(|t| t.active_agent == TASKS).count(), 1);
+    r.cmd(Command::Attach { thread_id: tasks.clone(), rows: 10, cols: 60, answers: term::Answers::default() }).unwrap();
+    until(&mut r, "the list starts for the project's root", |e| drew(e, &tasks, &format!("the list of {project}")));
+    let err = r.cmd(Command::Prompt { thread_id: tasks.clone(), text: "hello".into() }).unwrap_err();
+    assert!(err.contains("A task list thread has no agent to prompt"), "{err}");
+    let err = r.cmd(Command::Fork { thread_id: tasks, agent: None, at: None, worktree: false }).unwrap_err();
+    assert!(err.contains("A task list has no conversation to fork"), "{err}");
+}
+
+#[test]
 fn a_daemon_hands_its_running_programs_to_the_next_one() {
     use std::os::unix::net::UnixStream;
     let mut r = rig("handover");

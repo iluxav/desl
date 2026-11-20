@@ -4,7 +4,7 @@
 
 use crate::theme;
 use crate::ui::text::truncate_end;
-use desl_ir::{FILES, GitState, Project, SHELL, Status, Thread, is_agent};
+use desl_ir::{FILES, GitState, Project, SHELL, Status, TASKS, Thread, is_agent};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -60,7 +60,7 @@ pub const KEYS: &[Bind] = &[
     bind("Agent", "i", "Info: agent, session ids, model, directory", Some(Action::Info)),
     bind("Agent", "r", "Restart this agent, keeping the conversation", Some(Action::Restart)),
     bind("Threads", "w", "Move to the thread list (j/k, enter, esc)", Some(Action::Threads)),
-    bind("Threads", "c", "New thread: pick an agent, a shell or a file manager", Some(Action::New)),
+    bind("Threads", "c", "New thread: an agent, a shell, a file manager or the task list", Some(Action::New)),
     bind("Threads", "o", "Open a directory: type to find it; a shell opens there", Some(Action::Open)),
     bind("Threads", "n", "Next thread", Some(Action::Next)),
     bind("Threads", "p", "Previous thread", Some(Action::Prev)),
@@ -388,7 +388,8 @@ fn panel(focused: bool) -> Block<'static> {
 }
 
 /// Each agent's mark: with a Nerd Font, the Claude, OpenAI and Copilot logos, a terminal for a
-/// shell and a folder for a file manager; without, a one-cell badge in the agent's colour.
+/// shell, a folder for a file manager and a checklist for the task list; without, a one-cell
+/// badge in the agent's colour.
 pub fn agent_icon(agent: &str) -> (&'static str, Style) {
     use ratatui::style::Color;
     let badge =
@@ -399,11 +400,13 @@ pub fn agent_icon(agent: &str) -> (&'static str, Style) {
         ("copilot", true) => ("\u{ec1e}", theme::copilot()),
         (SHELL, true) => ("\u{ebca}", theme::dim()),
         (FILES, true) => ("\u{ea83}", theme::dim()),
+        (TASKS, true) => ("\u{eab3}", theme::dim()),
         ("claude", false) => ("✻", badge(Color::Black, Color::Rgb(217, 119, 87))),
         ("codex", false) => ("›", badge(Color::Black, Color::Rgb(220, 220, 220))),
         ("copilot", false) => ("∞", badge(Color::Black, Color::Rgb(163, 113, 247))),
         (SHELL, false) => ("$", badge(Color::White, Color::Rgb(70, 70, 70))),
         (FILES, false) => ("/", badge(Color::Black, Color::Rgb(150, 150, 150))),
+        (TASKS, false) => ("✓", badge(Color::Black, Color::Rgb(150, 150, 150))),
         (_, true) => ("\u{ec20}", theme::dim()),
         (_, false) => ("◆", theme::dim()),
     }
@@ -415,7 +418,7 @@ pub fn agent_rgb(agent: &str) -> (u8, u8, u8) {
     match agent {
         "claude" => (217, 119, 87),
         "copilot" => (163, 113, 247),
-        SHELL | FILES => (150, 150, 150),
+        SHELL | FILES | TASKS => (150, 150, 150),
         _ => theme::fg_rgb(),
     }
 }
@@ -443,6 +446,7 @@ fn text_icon(agent: &str) -> &'static str {
         "copilot" => "∞",
         SHELL => "$",
         FILES => "/",
+        TASKS => "✓",
         _ => "◆",
     }
 }

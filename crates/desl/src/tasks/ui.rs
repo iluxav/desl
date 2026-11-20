@@ -26,13 +26,24 @@ const LOOK: Duration = Duration::from_millis(250);
 
 // ---- how things look ---------------------------------------------------------------------------
 
-pub fn status_glyph(s: Status) -> &'static str {
-    match s {
-        Status::Todo => "○",
-        Status::InProgress => "◐",
-        Status::Issue => "▲",
-        Status::Done => "✓",
-        Status::Ignored => "⊘",
+/// A status's mark. With a Nerd Font, its Material Design icons: an empty circle, a half-full
+/// one, an alert, a check and a cancel. Without, the same shapes in plain Unicode.
+fn status_glyph(s: Status) -> &'static str {
+    status_mark(s, theme::nerd())
+}
+
+fn status_mark(s: Status, nerd: bool) -> &'static str {
+    match (s, nerd) {
+        (Status::Todo, true) => "\u{f0130}",
+        (Status::InProgress, true) => "\u{f1396}",
+        (Status::Issue, true) => "\u{f0028}",
+        (Status::Done, true) => "\u{f05e0}",
+        (Status::Ignored, true) => "\u{f073a}",
+        (Status::Todo, false) => "○",
+        (Status::InProgress, false) => "◐",
+        (Status::Issue, false) => "▲",
+        (Status::Done, false) => "✓",
+        (Status::Ignored, false) => "⊘",
     }
 }
 
@@ -56,17 +67,24 @@ fn status_label(s: Status) -> &'static str {
     }
 }
 
-/// A type's mark: a Nerd Font icon when desl uses them, else none (the word carries it).
+/// A type's mark: a Nerd Font's Material Design icon when desl uses them (a sparkle, a bug, a
+/// checked box, recycling arrows, a test tube, an open book, a bulb), else none: the word
+/// carries it.
 fn kind_icon(k: Kind) -> &'static str {
     match k {
-        Kind::Feature => "\u{f0d0}",
-        Kind::Bug => "\u{f188}",
-        Kind::Task => "\u{f0ae}",
-        Kind::Refactor => "\u{f1b8}",
-        Kind::Test => "\u{f0c3}",
-        Kind::Docs => "\u{f02d}",
-        Kind::Idea => "\u{f0eb}",
+        Kind::Feature => "\u{f0ae2}",
+        Kind::Bug => "\u{f00e4}",
+        Kind::Task => "\u{f0135}",
+        Kind::Refactor => "\u{f044c}",
+        Kind::Test => "\u{f0668}",
+        Kind::Docs => "\u{f05da}",
+        Kind::Idea => "\u{f0335}",
     }
+}
+
+/// After a title that has a description: a page with lines, or `≡`.
+fn note_mark(nerd: bool) -> &'static str {
+    if nerd { "\u{f09ed}" } else { "≡" }
 }
 
 fn kind_style(k: Kind) -> Style {
@@ -90,12 +108,20 @@ fn kind_short(k: Kind) -> &'static str {
     }
 }
 
-/// `!!!`, `!!` and `!`, as Reminders marks them: high in the critical colour.
+/// With a Nerd Font, signal bars as Linear marks priority: three in the critical colour, two in
+/// the warning one, one in grey. Without, `!!!`, `!!` and `!`, as Reminders marks it.
 fn priority_mark(p: Priority) -> (&'static str, Style) {
-    match p {
-        Priority::High => ("!!!", theme::critical().add_modifier(Modifier::BOLD)),
-        Priority::Medium => ("!!", theme::dim()),
-        Priority::Low => ("!", theme::muted()),
+    priority_mark_in(p, theme::nerd())
+}
+
+fn priority_mark_in(p: Priority, nerd: bool) -> (&'static str, Style) {
+    match (p, nerd) {
+        (Priority::High, true) => ("\u{f08be}", theme::critical()),
+        (Priority::Medium, true) => ("\u{f08bd}", theme::warning()),
+        (Priority::Low, true) => ("\u{f08bc}", theme::muted()),
+        (Priority::High, false) => ("!!!", theme::critical().add_modifier(Modifier::BOLD)),
+        (Priority::Medium, false) => ("!!", theme::dim()),
+        (Priority::Low, false) => ("!", theme::muted()),
     }
 }
 
@@ -916,7 +942,9 @@ impl App {
             let word = if on { theme::pill().add_modifier(Modifier::BOLD) } else { theme::normal() };
             match (flt, short) {
                 (Filter::Is(s), true) => {
-                    vec![(" ".into(), quiet), (status_glyph(s).into(), if on { word } else { status_style(s) }), (format!("{n} "), quiet)]
+                    // A Nerd Font's icon spills into the cell after it: that cell stays blank.
+                    let n = if theme::nerd() { format!(" {n} ") } else { format!("{n} ") };
+                    vec![(" ".into(), quiet), (status_glyph(s).into(), if on { word } else { status_style(s) }), (n, quiet)]
                 }
                 (Filter::Is(s), false) => vec![
                     (" ".into(), quiet),
@@ -1022,13 +1050,7 @@ impl App {
             }
             let (mark, mark_style) = priority_mark(t.priority);
             let used: usize = spans.iter().map(|s| s.content.width()).sum();
-            let note = if t.body.trim().is_empty() {
-                ""
-            } else if nerd {
-                " \u{f0f6}"
-            } else {
-                " ≡"
-            };
+            let note = if t.body.trim().is_empty() { String::new() } else { format!(" {}", note_mark(nerd)) };
             let room = w.saturating_sub(used + 3 + 2 + note.width());
             let title = truncate_end(&t.title, room);
             let title_w = title.width();
@@ -1037,8 +1059,9 @@ impl App {
                 title_style = title_style.add_modifier(Modifier::BOLD);
             }
             spans.push(Span::styled(title, title_style));
+            let note_w = note.width();
             spans.push(Span::styled(note, base.patch(theme::muted())));
-            let pad = w.saturating_sub(used + title_w + note.width() + 4);
+            let pad = w.saturating_sub(used + title_w + note_w + 4);
             spans.push(Span::styled(" ".repeat(pad), base));
             spans.push(Span::styled(format!("{mark:>3}"), base.patch(mark_style)));
             spans.push(Span::styled(" ", base));
@@ -1573,6 +1596,21 @@ mod tests {
         assert_eq!(app.list.get(1).unwrap().priority, Priority::Low);
         assert!(matches!(app.mode, Mode::Detail { id: 1, .. }), "back on the task");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn with_a_nerd_font_every_mark_is_one_icon_of_its_own() {
+        let pua = |m: &str| m.chars().count() == 1 && ('\u{f0000}'..='\u{fffff}').contains(&m.chars().next().unwrap());
+        let status: Vec<&str> = Status::ALL.iter().map(|s| status_mark(*s, true)).collect();
+        let priority: Vec<&str> = Priority::ALL.iter().map(|p| priority_mark_in(*p, true).0).collect();
+        let kinds: Vec<&str> = Kind::ALL.iter().map(|k| kind_icon(*k)).collect();
+        for marks in [&status, &priority, &kinds] {
+            assert!(marks.iter().all(|m| pua(m)), "Material Design icons, one cell each: {marks:?}");
+            assert_eq!(marks.iter().collect::<std::collections::HashSet<_>>().len(), marks.len(), "no two alike: {marks:?}");
+        }
+        assert!(pua(note_mark(true)));
+        assert_eq!(Status::ALL.map(|s| status_mark(s, false)), ["○", "◐", "▲", "✓", "⊘"], "without, plain Unicode");
+        assert_eq!(Priority::ALL.map(|p| priority_mark_in(p, false).0), ["!!!", "!!", "!"]);
     }
 
     #[test]

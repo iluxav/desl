@@ -13,6 +13,8 @@ All notable changes to desl are recorded here. The format follows
   priority and a description in Markdown. Tabs filter it by status, `n` adds a task (its type
   first, then its title and description), `enter` opens one, `s` `p` `t` change its fields from
   a list, `x` marks it done, `u` undoes. What changes in the file shows at once and lights up.
+  With a Nerd Font, statuses, types and priorities are its Material Design icons, priority as
+  signal bars; without, plain Unicode marks and `!!!`.
   Agents keep it with `desl task list|show|add|set|rm`, which the desl skill now teaches them
   to use strictly; a daemon that starts brings an installed copy of the skill up to date.
 

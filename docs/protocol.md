@@ -75,6 +75,11 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `resize` | `thread_id`, `rows`, `cols` | none | The client's terminal changed size. Never replied to. |
 | `leave` | `thread_id` | none | This client no longer shows the thread: its pane closed or moved to another thread. A client may show several threads at once, one per pane. Never replied to. |
 | `doctor` | | `doctor {checks}` | Store, agents and daemon checks. |
+| `form_new` | `thread_id`, `form` | `form_shown {form_id}` | Puts a form in front of the user on desl web's page for the thread's agent (`docs/design/2026-11-21-web-forms.md`). The form is checked; a refusal names the first thing wrong, by the widget's place and id. At most 256 KB and 30 widgets. The thread is `waiting` while a form is open and its agent idle. |
+| `form_answer` | `form_id`, `answer` | `done` | The user's answer, checked against the form: it closes the form and goes to the agent as its next prompt, through the `prompt` path. A form closes once. |
+| `form_close` | `form_id`, `by` | `done` | Closes a form unanswered: `withdrawn` (the agent) or `dismissed` (the user). A dismissal is told to the agent in a line before its next prompt. |
+| `form_draft` | `form_id`, `draft` | `done` | The page's state of an open form, kept until it closes, so a reload or a restart finds it as it was. |
+| `form_get` | `form_id` | `form {form_id, thread_id, form, draft?, answer?, closed_by?}` | A form, with its draft while open and its answer once answered. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
 | `handover` | `exe` | `handed_over {pid, kept}` | The daemon starts again from the desl binary at `exe` and hands it the terminal of every running agent and shell, so nothing ends. The reply comes from the daemon that leaves, once the new one serves on the same socket: `pid` is the new daemon's, `kept` how many terminals it took. An error means the daemon that was running stays as it was. A daemon from a build without this command closes the connection instead of answering. |
 
@@ -89,7 +94,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `what` | Carries | When |
 | --- | --- | --- |
 | `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
-| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval or branch changed. |
+| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval, branch or open forms changed. `thread.open_forms` lists its forms not answered yet, `{id, title, at}`, oldest first. |
 | `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |
@@ -121,6 +126,8 @@ Every event has `index` (starting at 1, dense, never reused), `thread_id`, `time
 | `usage` | `input_tokens`, `output_tokens`, `cost_estimate?` |
 | `error` | `message`, `recoverable` |
 | `interrupt` | |
+| `form` | `form_id`, `title`, `blob` (the form's JSON, by the `blob` command) |
+| `form_answer` | `form_id`, `by` (`user`, `withdrawn`, `dismissed`), `blob?` (the answer's JSON, for `user`) |
 
 `tool_call.name` is `read`, `edit`, `bash`, `search`, `fetch`, `agent`, `todo`, or the agent's
 own name for anything else. `args` uses the neutral keys `path`, `command`, `pattern`, `query`,

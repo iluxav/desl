@@ -9,17 +9,18 @@
 
 use crate::handover::{Given, Giving, Kept};
 use crate::pty::Pty;
-use crate::store::Store;
+use crate::store::{Store, StoredForm};
 use crate::{git, projector};
 use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which};
 use desl_ir::{
-    Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, PendingApproval, PermissionMode, Project, SHELL, Status,
-    TASK_LIST, TASKS, Thread, derive_name, is_agent, program_word,
+    Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, OpenForm, PendingApproval, PermissionMode, Project, SHELL,
+    Status, TASK_LIST, TASKS, Thread, derive_name, is_agent, program_word,
 };
 use desl_proto::{
     AgentInfo, BriefPreview, Change, Check, Command, ModeNote, PROTOCOL, Reply, Request, ServerFrame, StreamDelta, Workspace, b64, config,
-    term,
+    form, term,
 };
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -207,6 +208,9 @@ pub struct Engine {
     awaiting_turn: HashMap<String, Instant>,
     /// Threads whose agent was ended to start again on the same conversation when its exit arrives.
     restarting: HashSet<String>,
+    /// Threads whose `waiting` began with a dialog on their agent's screen; one waiting on a form
+    /// is not here, and stays waiting while its screen asks nothing.
+    asked_on_screen: HashSet<String>,
     /// A git worker is reading; the next refresh waits for its answer.
     git_busy: bool,
     /// The user's settings file; none in tests, which run on the defaults.
@@ -331,6 +335,7 @@ impl Engine {
     }
 
     fn build(store: Store, adapters: Vec<Arc<dyn Adapter>>, tx: Sender<Msg>) -> anyhow::Result<Engine> {
+        let open_forms = store.open_forms()?;
         let mut projects = store.projects()?;
         // The order the user gave the projects; one registered since comes after them, oldest first.
         let order: Vec<String> =
@@ -350,6 +355,11 @@ impl Engine {
                 if let Err(e) = store.put_thread(t) {
                     tracing::error!(thread = %t.id, "could not retitle the thread: {e:#}");
                 }
+            }
+        }
+        for (thread_id, form) in open_forms {
+            if let Some(t) = threads.iter_mut().find(|t| t.id == thread_id) {
+                t.open_forms.push(form);
             }
         }
         let agents = detect(&adapters);
@@ -373,6 +383,7 @@ impl Engine {
             typing: HashMap::new(),
             awaiting_turn: HashMap::new(),
             restarting: HashSet::new(),
+            asked_on_screen: HashSet::new(),
             git_busy: false,
             config_file: None,
             file_manager: desl_ir::FILE_MANAGER.to_string(),
@@ -393,8 +404,14 @@ impl Engine {
     /// Tells the truth about turns an earlier daemon left unfinished: an agent that is not
     /// running here is gone, and its turn with it.
     fn settle(&mut self) {
-        let interrupted: Vec<String> =
-            self.threads.iter().filter(|t| t.status.busy() && !self.ptys.contains_key(&t.id)).map(|t| t.id.clone()).collect();
+        // A thread waiting on a form was not working: it waits on the user still.
+        let interrupted: Vec<String> = self
+            .threads
+            .iter()
+            .filter(|t| t.status.busy() && !self.ptys.contains_key(&t.id))
+            .filter(|t| !(t.status == Status::Waiting && !t.open_forms.is_empty()))
+            .map(|t| t.id.clone())
+            .collect();
         for id in interrupted {
             self.append(
                 &id,
@@ -551,6 +568,13 @@ impl Engine {
     fn persist(&mut self, thread_id: &str) {
         let Ok(i) = self.idx(thread_id) else { return };
         self.threads[i].updated_at = now();
+        // An idle agent with a form open is waiting on the user (web-forms design, "Lifecycle").
+        if self.threads[i].status == Status::Idle && !self.threads[i].open_forms.is_empty() {
+            self.threads[i].status = Status::Waiting;
+        }
+        if self.threads[i].status != Status::Waiting {
+            self.asked_on_screen.remove(thread_id);
+        }
         if let Err(e) = self.store.put_thread(&self.threads[i]) {
             tracing::error!(thread = thread_id, "could not write the thread: {e:#}");
         }
@@ -1473,6 +1497,7 @@ impl Engine {
                         && self.threads[i].status != Status::Waiting
                     {
                         self.threads[i].status = Status::Waiting;
+                        self.asked_on_screen.insert(thread_id.to_string());
                         self.persist(thread_id);
                     }
                     return;
@@ -1522,13 +1547,18 @@ impl Engine {
         let Some(adapter) = self.adapter(&pty.agent) else { return };
         let asking = adapter.waiting(&pty.tail_text(ASKING_ROWS));
         let status = self.threads[i].status;
+        // Only a wait the screen began ends with the screen: a form waits on the user, not on it.
+        let on_screen = self.asked_on_screen.contains(thread_id);
         let next = match status {
             Status::Working if asking => Status::Waiting,
-            Status::Waiting if !asking => Status::Working,
+            Status::Waiting if !asking && on_screen => Status::Working,
             other => other,
         };
         if next != status {
             self.threads[i].status = next;
+            if next == Status::Waiting {
+                self.asked_on_screen.insert(thread_id.to_string());
+            }
             self.persist(thread_id);
         }
     }
@@ -1941,6 +1971,11 @@ impl Engine {
                 self.idx(&thread_id).map(|_| Reply::Events { events: self.store.all_events(&thread_id).unwrap_or_default() })
             }
             Command::Prompt { thread_id, text } => self.prompt(&thread_id, &text),
+            Command::FormNew { thread_id, form } => self.form_new(&thread_id, &form),
+            Command::FormAnswer { form_id, answer } => self.form_answer(&form_id, &answer),
+            Command::FormClose { form_id, by } => self.form_close(&form_id, &by),
+            Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
+            Command::FormGet { form_id } => self.form_get(&form_id),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Exit { thread_id } => self.exit_agent(&thread_id),
             Command::Restart { thread_id } => self.restart_agent(&thread_id),
@@ -2244,12 +2279,29 @@ impl Engine {
         Ok(Reply::Workspace(Box::new(self.workspace(project_id, focus))))
     }
 
+    /// A prompt to the thread's agent, after a line for each form the user dismissed since its
+    /// last one, so it knows no answer is coming.
     fn prompt(&mut self, thread_id: &str, text: &str) -> Outcome {
-        let i = self.idx(thread_id)?;
+        self.idx(thread_id)?;
         let text = text.trim();
         if text.is_empty() {
             return Err("The prompt is empty. Type something to send.".to_string());
         }
+        let notes = self.store.untold_dismissals(thread_id).unwrap_or_default();
+        if notes.is_empty() {
+            return self.send_prompt(thread_id, text);
+        }
+        let lines: Vec<String> = notes.iter().map(|(id, title)| form::dismissed_note(id, title)).collect();
+        let sent = self.send_prompt(thread_id, &format!("{}\n\n{text}", lines.join("\n")))?;
+        let ids: Vec<String> = notes.into_iter().map(|(id, _)| id).collect();
+        if let Err(e) = self.store.mark_told(&ids) {
+            tracing::warn!(thread = thread_id, "could not note that the agent heard of a dismissed form: {e:#}");
+        }
+        Ok(sent)
+    }
+
+    fn send_prompt(&mut self, thread_id: &str, text: &str) -> Outcome {
+        let i = self.idx(thread_id)?;
         let agent = self.threads[i].active_agent.clone();
         if !is_agent(&agent) {
             return Err(format!(
@@ -2279,6 +2331,137 @@ impl Engine {
         }
         self.dispatch(thread_id, text, None);
         Ok(Reply::Sent { queued: false })
+    }
+
+    // ---- forms (docs/design/2026-11-21-web-forms.md) ----------------------------------------
+
+    fn new_form_id(&self) -> String {
+        use std::hash::{Hash, Hasher};
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        for salt in 0u32.. {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (nanos, salt, std::process::id(), "form").hash(&mut h);
+            let id = format!("f-{:04x}", h.finish() & 0xffff);
+            if self.store.form(&id).ok().flatten().is_none() {
+                return id;
+            }
+        }
+        unreachable!("a free form id always exists")
+    }
+
+    fn form_new(&mut self, thread_id: &str, form: &Value) -> Outcome {
+        let i = self.idx(thread_id)?;
+        let agent = self.threads[i].active_agent.clone();
+        if !is_agent(&agent) {
+            return Err(format!("A {} thread has no agent to put a form in front of the user.", program_word(&agent)));
+        }
+        let json = form.to_string();
+        if json.len() > form::MAX_BYTES {
+            return Err(format!(
+                "The form is {} KB; desl takes at most 256 KB. Put long text in a file of the project and name the file in the form.",
+                json.len().div_ceil(1024)
+            ));
+        }
+        let checked = form::check(form)?;
+        let blob = self.store.blob_put(&json).map_err(|e| format!("desl could not keep the form ({e:#}). Try again."))?;
+        let id = self.new_form_id();
+        let at = now();
+        self.store
+            .form_put(&id, thread_id, &checked.title, at, &blob)
+            .map_err(|e| format!("desl could not keep the form ({e:#}). Try again."))?;
+        self.append(thread_id, EventKind::Form { form_id: id.clone(), title: checked.title.clone(), blob });
+        self.threads[i].open_forms.push(OpenForm { id: id.clone(), title: checked.title, at });
+        self.persist(thread_id);
+        Ok(Reply::FormShown { form_id: id })
+    }
+
+    /// A form the store has, open: a sentence otherwise.
+    fn open_form(&self, form_id: &str) -> Result<StoredForm, String> {
+        let row = self
+            .store
+            .form(form_id)
+            .map_err(|e| format!("desl could not read {form_id} ({e:#})."))?
+            .ok_or_else(|| format!("There is no form {form_id}. `desl form list` lists the open ones."))?;
+        match row.closed_by.as_deref() {
+            None => Ok(row),
+            Some("user") => Err(format!("{form_id} was answered already. Nothing more was sent.")),
+            Some("withdrawn") => Err(format!("{form_id} was withdrawn by its agent. Nothing was sent.")),
+            Some(_) => Err(format!("{form_id} was dismissed. Nothing was sent.")),
+        }
+    }
+
+    fn form_answer(&mut self, form_id: &str, answer: &Value) -> Outcome {
+        let row = self.open_form(form_id)?;
+        self.idx(&row.thread_id)?;
+        let text = self.store.blob_get(&row.blob).ok().flatten().ok_or_else(|| format!("desl lost the form {form_id}."))?;
+        let form = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()).and_then(|v| form::check(&v))?;
+        form::check_answer(&form, answer)?;
+        let blob =
+            self.store.blob_put(&answer.to_string()).map_err(|e| format!("desl could not keep the answer ({e:#}). Send it again."))?;
+        self.closed(&row, "user", Some(blob))?;
+        self.prompt(&row.thread_id, &form::answer_prompt(form_id, &row.title, answer))
+            .map_err(|e| format!("{form_id} is answered and its answer kept, but desl could not send it to the agent: {e}"))?;
+        Ok(Reply::Done)
+    }
+
+    fn form_close(&mut self, form_id: &str, by: &str) -> Outcome {
+        if !matches!(by, "withdrawn" | "dismissed") {
+            return Err(format!("A form closes unanswered as dismissed or withdrawn, not \"{by}\"."));
+        }
+        let row = self.open_form(form_id)?;
+        self.closed(&row, by, None)?;
+        Ok(Reply::Done)
+    }
+
+    /// Closes the form in the store and in its thread, which no longer waits on it.
+    fn closed(&mut self, row: &StoredForm, by: &str, answer: Option<String>) -> Result<(), String> {
+        let done =
+            self.store.form_close(&row.id, by, answer.as_deref()).map_err(|e| format!("desl could not close {} ({e:#}).", row.id))?;
+        if !done {
+            return Err(format!("{} was closed already. Nothing was sent.", row.id));
+        }
+        self.append(&row.thread_id, EventKind::FormAnswer { form_id: row.id.clone(), by: by.to_string(), blob: answer });
+        if let Ok(i) = self.idx(&row.thread_id) {
+            self.threads[i].open_forms.retain(|f| f.id != row.id);
+            if self.threads[i].status == Status::Waiting && !self.asked_on_screen.contains(&row.thread_id) {
+                self.threads[i].status = Status::Idle;
+            }
+        }
+        self.persist(&row.thread_id);
+        Ok(())
+    }
+
+    fn form_draft(&mut self, form_id: &str, draft: &Value) -> Outcome {
+        let json = draft.to_string();
+        if json.len() > form::MAX_BYTES {
+            return Err("The draft is over 256 KB, so desl did not keep it.".to_string());
+        }
+        self.open_form(form_id)?;
+        match self.store.form_draft(form_id, &json) {
+            Ok(true) => Ok(Reply::Done),
+            Ok(false) => Err(format!("{form_id} closed meanwhile, so the draft was not kept.")),
+            Err(e) => Err(format!("desl could not keep the draft ({e:#}).")),
+        }
+    }
+
+    fn form_get(&self, form_id: &str) -> Outcome {
+        let row = self
+            .store
+            .form(form_id)
+            .map_err(|e| format!("desl could not read {form_id} ({e:#})."))?
+            .ok_or_else(|| format!("There is no form {form_id}."))?;
+        let json = |hash: Option<&str>| {
+            hash.and_then(|h| self.store.blob_get(h).ok().flatten()).and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        };
+        let form = json(Some(&row.blob)).ok_or_else(|| format!("desl lost the form {form_id}."))?;
+        Ok(Reply::Form {
+            form_id: row.id,
+            thread_id: row.thread_id,
+            form,
+            draft: row.draft.as_deref().and_then(|d| serde_json::from_str(d).ok()),
+            answer: json(row.answer_blob.as_deref()),
+            closed_by: row.closed_by,
+        })
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Outcome {

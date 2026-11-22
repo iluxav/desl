@@ -1236,3 +1236,145 @@ fn a_turn_whose_agent_was_handed_over_is_not_called_interrupted() {
     engine.let_go();
     assert_eq!(engine.terminals(), 0);
 }
+
+fn pick_form() -> serde_json::Value {
+    json!({"title": "Which milestone next?", "widgets": [{"kind": "choice", "id": "next", "options": [{"label": "M4"}, {"label": "M5"}]}]})
+}
+
+fn show(r: &mut Rig, thread: &str) -> String {
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: thread.to_string(), form: pick_form() }) else {
+        panic!("shown")
+    };
+    form_id
+}
+
+#[test]
+fn a_form_waits_for_the_user_and_its_answer_is_the_next_prompt() {
+    let mut r = rig("form");
+    let t = r.t.clone();
+    let form_id = show(&mut r, &t);
+    assert!(form_id.starts_with("f-") && form_id.len() == 6, "{form_id}");
+    assert_eq!(r.thread(&t).status, Status::Waiting, "idle with an open form");
+    assert_eq!(r.thread(&t).open_forms.iter().map(|f| f.title.as_str()).collect::<Vec<_>>(), ["Which milestone next?"]);
+    assert_eq!(r.kinds(&t), ["form"]);
+    let Ok(Reply::Form { form, draft, answer, closed_by, thread_id, .. }) = r.cmd(Command::FormGet { form_id: form_id.clone() }) else {
+        panic!("the form")
+    };
+    assert_eq!((form, draft, answer, closed_by, thread_id), (pick_form(), None, None, None, t.clone()));
+    let wrong = r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M6"}) }).unwrap_err();
+    assert!(wrong.contains("not one of the options"), "{wrong}");
+    r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M5"}) }).unwrap();
+    let sent = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert_eq!(sent, desl_proto::form::answer_prompt(&form_id, "Which milestone next?", &json!({"next": "M5"})));
+    let after = r.thread(&t);
+    assert!(after.open_forms.is_empty());
+    assert_eq!(after.status, Status::Idle, "the fake agent answered the prompt and is idle again");
+    assert!(r.kinds(&t).starts_with(&["form", "form_answer"]));
+    let Ok(Reply::Form { answer, closed_by, .. }) = r.cmd(Command::FormGet { form_id }) else { panic!("the form") };
+    assert_eq!((answer, closed_by.as_deref()), (Some(json!({"next": "M5"})), Some("user")));
+    r.check_invariants();
+}
+
+#[test]
+fn a_form_is_answered_once() {
+    let mut r = rig("form-once");
+    let t = r.t.clone();
+    let form_id = show(&mut r, &t);
+    r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M5"}) }).unwrap();
+    let again = r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M4"}) }).unwrap_err();
+    assert_eq!(again, format!("{form_id} was answered already. Nothing more was sent."));
+    assert_eq!(r.claude.lock().unwrap().payloads.len(), 1);
+    let unknown = r.cmd(Command::FormAnswer { form_id: "f-0000".into(), answer: json!({}) }).unwrap_err();
+    assert!(unknown.starts_with("There is no form f-0000."), "{unknown}");
+}
+
+#[test]
+fn an_answer_while_the_agent_works_is_queued() {
+    let mut r = rig("form-queue");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().plan.push_back(vec![]);
+    r.prompt(&t, "one");
+    let form_id = show(&mut r, &t);
+    assert_eq!(r.thread(&t).status, Status::Working, "working while its turn goes on");
+    r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M4"}) }).unwrap();
+    let answer = desl_proto::form::answer_prompt(&form_id, "Which milestone next?", &json!({"next": "M4"}));
+    assert_eq!(r.thread(&t).queued, std::slice::from_ref(&answer));
+    let claude = r.claude.clone();
+    r.emit(&claude, vec![AdapterEvent::TurnEnd { error: None }]);
+    assert_eq!(r.claude.lock().unwrap().payloads, ["one".to_string(), answer]);
+    assert_eq!(r.thread(&t).status, Status::Idle);
+}
+
+#[test]
+fn a_dismissal_is_told_before_the_next_prompt() {
+    let mut r = rig("form-dismiss");
+    let t = r.t.clone();
+    let form_id = show(&mut r, &t);
+    let bad = r.cmd(Command::FormClose { form_id: form_id.clone(), by: "user".into() }).unwrap_err();
+    assert!(bad.contains("dismissed or withdrawn"), "{bad}");
+    r.cmd(Command::FormClose { form_id: form_id.clone(), by: "dismissed".into() }).unwrap();
+    assert!(r.claude.lock().unwrap().payloads.is_empty(), "dismissing starts no turn");
+    assert_eq!(r.thread(&t).status, Status::Idle);
+    r.prompt(&t, "go on");
+    let note = desl_proto::form::dismissed_note(&form_id, "Which milestone next?");
+    assert_eq!(r.claude.lock().unwrap().payloads.last().unwrap(), &format!("{note}\n\ngo on"));
+    r.prompt(&t, "again");
+    assert_eq!(r.claude.lock().unwrap().payloads.last().unwrap(), "again", "told once");
+}
+
+#[test]
+fn an_open_form_and_its_draft_survive_a_restart() {
+    let mut r = rig("form-restart");
+    let t = r.t.clone();
+    let form_id = show(&mut r, &t);
+    r.cmd(Command::FormDraft { form_id: form_id.clone(), draft: json!({"next": "M5"}) }).unwrap();
+    let (tx, _rx) = channel();
+    let store = std::mem::replace(&mut r.engine.store, Store::in_memory(&r.dir.join("blobs2")).unwrap());
+    let engine = Engine::new(store, vec![Arc::new(Fake { id: "claude", state: r.claude.clone() })], tx).unwrap();
+    let thread = engine.threads.iter().find(|x| x.id == t).unwrap();
+    assert_eq!(thread.status, Status::Waiting, "still waiting on the user");
+    assert_eq!(thread.open_forms.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), [form_id.as_str()]);
+    let last = engine.store.all_events(&t).unwrap().pop().unwrap();
+    assert!(matches!(last.kind, EventKind::Form { .. }), "no word of an interrupted turn: {last:?}");
+    assert_eq!(engine.store.form(&form_id).unwrap().unwrap().draft.as_deref(), Some("{\"next\":\"M5\"}"));
+}
+
+#[test]
+fn a_fork_copies_no_open_form() {
+    let mut r = rig("form-fork");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    let form_id = show(&mut r, &t);
+    let Reply::Created { thread_id: g } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None, worktree: false }).unwrap()
+    else {
+        panic!("a fork")
+    };
+    assert!(r.thread(&g).open_forms.is_empty());
+    assert_ne!(r.thread(&g).status, Status::Waiting);
+    r.cmd(Command::FormAnswer { form_id, answer: json!({"next": "M5"}) }).unwrap();
+    assert!(r.kinds(&t).contains(&"form_answer"));
+    assert!(!r.kinds(&g).contains(&"form_answer"), "the answer goes to the thread that asked");
+}
+
+#[test]
+fn a_form_too_big_or_for_no_agent_is_refused() {
+    let mut r = rig("form-refused");
+    let t = r.t.clone();
+    let big = json!({"title": "t", "widgets": [{"kind": "markdown", "id": "m", "text": "x".repeat(300_000)}]});
+    let err = r.cmd(Command::FormNew { thread_id: t.clone(), form: big }).unwrap_err();
+    assert!(err.contains("at most 256 KB"), "{err}");
+    let Ok(Reply::Created { thread_id: shell }) = r.cmd(Command::NewThread {
+        cwd: r.thread(&t).cwd,
+        agent: Some(SHELL.into()),
+        prompt: None,
+        beside: Some(t.clone()),
+        worktree: false,
+    }) else {
+        panic!("a shell thread")
+    };
+    let err = r.cmd(Command::FormNew { thread_id: shell, form: pick_form() }).unwrap_err();
+    assert!(err.contains("no agent"), "{err}");
+    let err = r.cmd(Command::FormNew { thread_id: t.clone(), form: json!({"title": "t", "widgets": []}) }).unwrap_err();
+    assert!(err.contains("no widgets"), "{err}");
+    assert!(r.thread(&t).open_forms.is_empty() && r.kinds(&t).is_empty(), "a refused form leaves nothing");
+}

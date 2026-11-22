@@ -298,8 +298,8 @@ Binding {
 | usage | agent, input\_tokens, output\_tokens, cost\_estimate | Per turn |
 | error | message, recoverable | Process crashes, adapter failures |
 | interrupt |  | The user stopped the turn |
-| question | question\_id, text, options\[\] {label, description?}, multi, allow\_text | The agent asked the user with `desl ask`; the thread is `waiting` until it is answered (see `web-spec.md`) |
-| question\_answer | question\_id, choices\[\], text?, by (user/superseded) | Sent to the agent as its next prompt |
+| form | form\_id, title, blob | The agent put a form in front of the user on desl web's page (`docs/design/2026-11-21-web-forms.md`); the blob is the form's JSON. The thread is `waiting` while a form is open and its agent idle |
+| form\_answer | form\_id, by (user/withdrawn/dismissed), blob? | The form closed; the user's answer, in the blob, goes to the agent as its next prompt |
 | comment | comment\_id, path, quote, heading?, text | A comment on a document, sent to this thread as a prompt |
 | comment\_resolved | comment\_id, by (user/agent), note? | |
 

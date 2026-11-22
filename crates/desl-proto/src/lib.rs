@@ -252,6 +252,31 @@ pub enum Command {
         thread_id: String,
         subagent_id: String,
     },
+    /// Puts a form in front of the user on desl web's page, on behalf of the thread's agent
+    /// (docs/design/2026-11-21-web-forms.md). Replied with `form_shown`.
+    FormNew {
+        thread_id: String,
+        form: Value,
+    },
+    /// The user's answer: it closes the form and goes to the thread's agent as its next prompt.
+    FormAnswer {
+        form_id: String,
+        answer: Value,
+    },
+    /// Closes a form unanswered: `withdrawn` by the agent, `dismissed` by the user.
+    FormClose {
+        form_id: String,
+        by: String,
+    },
+    /// The page's state of an open form, kept until it closes.
+    FormDraft {
+        form_id: String,
+        draft: Value,
+    },
+    /// A form with its draft and, once closed, its answer. Replied with `form`.
+    FormGet {
+        form_id: String,
+    },
     /// Stops every agent and the daemon.
     Shutdown,
     /// The daemon starts again from the desl binary at `exe` and hands it the terminal of every
@@ -346,6 +371,18 @@ pub enum Reply {
     /// `queued` when the agent was busy and the prompt waits its turn.
     Sent {
         queued: bool,
+    },
+    FormShown {
+        form_id: String,
+    },
+    Form {
+        form_id: String,
+        thread_id: String,
+        form: Value,
+        draft: Option<Value>,
+        answer: Option<Value>,
+        /// `user`, `withdrawn` or `dismissed`; None while it is open.
+        closed_by: Option<String>,
     },
     Created {
         thread_id: String,

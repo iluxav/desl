@@ -13,7 +13,7 @@ pub const MAX_BYTES: usize = 256 * 1024;
 
 const KINDS: [&str; 10] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table", "images"];
 
-/// The most pictures one `images` widget shows.
+/// The most pictures one form shows, in all its `images` widgets.
 pub const MAX_IMAGES: usize = 12;
 /// The most one picture may weigh.
 pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
@@ -204,6 +204,9 @@ fn cell_fits(c: &Column, v: &Value) -> Result<(), String> {
             _ => Err(format!("{v} is not one of its options, in column \"{}\".", c.id)),
         },
         Some(Edit::Text) if !v.is_string() => Err(format!("a cell of \"{}\" is text.", c.id)),
+        Some(Edit::Text) if v.as_str().is_some_and(|t| t.chars().any(char::is_control)) => {
+            Err(format!("a cell of \"{}\" is one line of text, edited in a one-line field.", c.id))
+        }
         _ if v.is_object() || v.is_array() => Err(format!("a cell of \"{}\" is text, a number, true or false.", c.id)),
         _ => Ok(()),
     }
@@ -368,7 +371,13 @@ pub fn check(form: &Value) -> Result<Form, String> {
     if let Some(extra) = top.keys().find(|k| !["title", "widgets", "send_label"].contains(&k.as_str())) {
         return Err(format!("The form has \"{extra}\", which desl does not know. A form has a title, widgets and a send_label."));
     }
-    Ok(Form { title: title.to_string(), widgets: parsed, send_label })
+    let form = Form { title: title.to_string(), widgets: parsed, send_label };
+    // Each is read from disk and sent to the page whole: a form keeps to a dozen.
+    let images = image_paths(&form).len();
+    if images > MAX_IMAGES {
+        return Err(format!("The form shows {images} images; desl shows at most 12 in one form. Split it into two forms."));
+    }
+    Ok(form)
 }
 
 /// What only a sound widget has: options to choose from, a range with its value in it.
@@ -992,6 +1001,14 @@ mod tests {
     }
 
     #[test]
+    fn an_editable_text_cell_is_one_line() {
+        // A one-line field drops a line break, so an untouched cell would come back changed.
+        let err = check(&table(columns(), json!([{"id": "r1", "note": "a\nb"}]))).unwrap_err();
+        assert!(err.contains("one line"), "{err}");
+        assert!(check(&table(columns(), json!([{"id": "r1", "title": "a\nb"}]))).is_ok(), "a read-only cell may hold lines");
+    }
+
+    #[test]
     fn a_table_answer_lists_the_changed_cells() {
         let f =
             check(&table(columns(), json!([{"id": "r1", "title": "Fix login", "prio": "high"}, {"id": "r2", "title": "Docs"}]))).unwrap();
@@ -1024,6 +1041,13 @@ mod tests {
         let many = check(&pics(true, two)).unwrap();
         assert!(check_answer(&many, &json!({"logo": ["art/a.png", "art/b.svg"]})).is_ok());
         assert!(check_answer(&many, &json!({"logo": "art/a.png"})).unwrap_err().contains("a list"));
+    }
+
+    #[test]
+    fn a_form_shows_at_most_12_images_in_all() {
+        let widget = |id: &str| json!({"kind": "images", "id": id, "images": (0..7).map(|i| json!({"path": format!("{id}{i}.png")})).collect::<Vec<_>>()});
+        let err = check(&json!({"title": "t", "widgets": [widget("a"), widget("b")]})).unwrap_err();
+        assert!(err.contains("14 images") && err.contains("at most 12"), "{err}");
     }
 
     #[test]

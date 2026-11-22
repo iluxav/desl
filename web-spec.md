@@ -162,8 +162,8 @@ tool and the tests.
 | `toggle` | `label`, `value?` | true or false |
 | `select` | `label`, `options[] {label, detail?}` (1 to 50), `value?` | the label |
 | `preview` | `label?`, `html`, `css?` (each at most 64 KB), `controls[]` (at most 12): `range {var, label?, min, max, step?, unit?, value?}`, `colour {var, label?, value?}` (`color` also), `select {var, label?, options[] (CSS values, 1 to 20), value?}` | `{var: value}` for every control: a number, `#rrggbb`, or the CSS value |
-| `table` | `label?`, `columns[] {id, label?, edit?: text, select or check, options?}` (1 to 12), `rows[] {id, <column id>: value}` (1 to 200) | the changed rows, `[{id, <column>: value}]` with only the changed cells; `[]` when nothing changed |
-| `images` | `label?`, `images[] {path, caption?}` (1 to 12), `multi?`, `value?` | the path, or a list |
+| `table` | `label?`, `columns[] {id, label?, edit?: text, select or check, options?}` (1 to 12), `rows[] {id, <column id>: value}` (1 to 200; an editable text cell is one line) | the changed rows, `[{id, <column>: value}]` with only the changed cells; `[]` when nothing changed |
+| `images` | `label?`, `images[] {path, caption?}` (at least 1, and at most 12 in the whole form), `multi?`, `value?` | the path, or a list |
 
 `value`, where a widget takes one, is where it starts: the tool tells the agent to set it to what
 is true now or what it recommends, so the user changes only what differs.

@@ -414,7 +414,8 @@ textarea.fw-text { resize: vertical; line-height: 1.45; }
 /* Wide: the preview takes the waiting list's place too. */
 body.wide .form-card { max-width: none; }
 body.wide .fw-preview-box { height: 62vh; }
-@media (min-width: 900px) { body.wide .wait, body.wide #grip-wait { display: none; } }
+/* Only while a preview, and so its Narrow button, is on screen: another thread shows the list. */
+@media (min-width: 900px) { body.wide:has(#conv .fw-wide) .wait, body.wide:has(#conv .fw-wide) #grip-wait { display: none; } }
 .quiet { margin: 0; color: var(--muted); font-size: 12.5px; }
 
 /* Buttons. */

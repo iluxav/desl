@@ -258,6 +258,10 @@ const DRAW = {
           i.step = c.step ? String(c.step) : 'any';
           i.value = String(vars.get(c.var));
         }
+        // The slider keeps to its range and step: what the frame shows, the box says and the
+        // answer sends is always its value.
+        num.value = range.value;
+        vars.set(c.var, Number(range.value));
         range.addEventListener('input', () => {
           num.value = range.value;
           set(Number(range.value));
@@ -265,7 +269,10 @@ const DRAW = {
         num.addEventListener('input', () => {
           if (num.value === '') return;
           range.value = num.value;
-          set(Number(num.value));
+          set(Number(range.value));
+        });
+        num.addEventListener('change', () => {
+          num.value = range.value;
         });
         const line = el('div', 'fw-number');
         line.append(range, num);
@@ -351,7 +358,11 @@ const DRAW = {
           input.value = typeof cur === 'string' ? cur : '';
           input.setAttribute('aria-label', name);
           input.dataset.col = c.id;
-          input.dataset.was = JSON.stringify(typeof was === 'string' ? was : '');
+          // As the field holds it, so a cell the user leaves alone never reads as changed.
+          const field = el('input');
+          field.type = 'text';
+          field.value = typeof was === 'string' ? was : '';
+          input.dataset.was = JSON.stringify(field.value);
           td.append(input);
         } else {
           const shown = c.id === 'id' ? row.id : was;
@@ -412,7 +423,7 @@ function cssValue(c, v) {
 }
 
 // What a preview never keeps: it would load, run or go somewhere. The frame runs no script
-// anyway (no `allow-scripts`, and no `'unsafe-inline'` in the CSP); this is the second lock.
+// anyway (its sandbox allows no script, and no `'unsafe-inline'` in the CSP); this is the second lock.
 const DROP = 'script, iframe, frame, frameset, object, embed, applet, base, meta, link, noscript, portal';
 
 /**

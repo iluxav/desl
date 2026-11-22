@@ -326,3 +326,14 @@ fn the_page_serves_no_terminal_and_allows_nothing_inline() {
     assert!(!csp.contains("unsafe-inline"), "{csp}");
     assert!(csp.starts_with("default-src 'self';"), "{csp}");
 }
+
+#[test]
+fn a_preview_frame_never_runs_script() {
+    // The frame shares the page's origin so the page can fill it; a script in it would hold the
+    // key and the socket. So no page file may ever allow one.
+    let forms = FILES.iter().find(|(path, _, _)| *path == "/forms.js").map(|(_, _, body)| *body).unwrap();
+    assert!(forms.contains("setAttribute('sandbox', 'allow-same-origin')"), "the preview frame is sandboxed");
+    for (path, _, body) in FILES {
+        assert!(!body.contains("allow-scripts"), "{path} allows scripts in a frame");
+    }
+}

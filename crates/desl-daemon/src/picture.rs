@@ -23,10 +23,11 @@ fn open(dir: &Path, path: &str) -> Result<(File, PathBuf), String> {
     if !real.starts_with(&root) {
         return Err(format!("The image \"{path}\" is outside the thread's directory, {}. Name a file inside it.", root.display()));
     }
-    // The last part may not be swapped for a link between the check above and the read.
+    // The last part may not be swapped for a link between the check above and the read, and a
+    // FIFO or a device is refused below rather than waited on: a regular file ignores NONBLOCK.
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
         .open(&real)
         .map_err(|e| format!("desl could not open the image \"{path}\" ({e})."))?;
     let meta = file.metadata().map_err(|e| format!("desl could not read the image \"{path}\" ({e})."))?;
@@ -78,4 +79,28 @@ pub fn read(dir: &Path, path: &str) -> Result<(&'static str, Vec<u8>), String> {
     }
     let mime = kind(&bytes[..bytes.len().min(SNIFF)], &real).ok_or_else(|| not_a_picture(path))?;
     Ok((mime, bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    #[test]
+    fn a_fifo_named_as_an_image_is_refused_without_waiting() {
+        // An open of a FIFO waits for a writer; on the engine's one thread that would stop desl.
+        let dir = std::env::temp_dir().join(format!("desl-picture-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("mkfifo").arg(dir.join("x.png")).status().unwrap().success());
+        let (tx, rx) = channel();
+        let d = dir.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((check(&d, "x.png"), read(&d, "x.png").map(|_| ())));
+        });
+        let (checked, read) = rx.recv_timeout(Duration::from_secs(3)).expect("refused at once, not waiting on the FIFO");
+        assert!(checked.unwrap_err().contains("not a file"));
+        assert!(read.unwrap_err().contains("not a file"));
+    }
 }

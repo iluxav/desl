@@ -1378,3 +1378,27 @@ fn a_form_too_big_or_for_no_agent_is_refused() {
     assert!(err.contains("no widgets"), "{err}");
     assert!(r.thread(&t).open_forms.is_empty() && r.kinds(&t).is_empty(), "a refused form leaves nothing");
 }
+
+#[test]
+fn an_answer_reaches_the_agent_while_another_form_is_open() {
+    let mut r = rig("form-two");
+    let t = r.t.clone();
+    let first = show(&mut r, &t);
+    let _second = show(&mut r, &t);
+    r.cmd(Command::FormAnswer { form_id: first.clone(), answer: json!({"next": "M5"}) }).unwrap();
+    let answer = desl_proto::form::answer_prompt(&first, "Which milestone next?", &json!({"next": "M5"}));
+    assert_eq!(r.claude.lock().unwrap().payloads, [answer], "typed, not queued behind the other form");
+    assert!(r.thread(&t).queued.is_empty());
+    assert_eq!(r.thread(&t).status, Status::Waiting, "the other form is still open");
+}
+
+#[test]
+fn a_prompt_reaches_the_agent_while_a_form_is_open() {
+    let mut r = rig("form-talk");
+    let t = r.t.clone();
+    show(&mut r, &t);
+    assert!(matches!(r.cmd(Command::Prompt { thread_id: t.clone(), text: "hello".into() }), Ok(Reply::Sent { queued: false })));
+    assert_eq!(r.claude.lock().unwrap().payloads, ["hello"]);
+    assert_eq!(r.thread(&t).status, Status::Waiting, "after the turn it waits on the form again");
+    assert_eq!(r.thread(&t).open_forms.len(), 1, "talking to the agent closes no form");
+}

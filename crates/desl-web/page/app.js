@@ -159,7 +159,11 @@ function handle(msg) {
       break;
     case 'event':
       // Something was added to the log of the conversation on screen: read it again.
-      if (msg.change && msg.change.what === 'appended' && msg.change.event && msg.change.event.thread_id === conv.thread) conversationChanged();
+      if (msg.change && msg.change.what === 'appended' && msg.change.event && msg.change.event.thread_id === conv.thread) {
+        // A form shown or closed is read at once (web-forms design, "Budgets"); the rest in a batch.
+        const kind = msg.change.event.kind;
+        conversationChanged(kind === 'form' || kind === 'form_answer');
+      }
       break;
     default:
       break;
@@ -396,11 +400,11 @@ function conversationArrived(msg) {
   drawConversation(atEnd);
 }
 
-function conversationChanged() {
+function conversationChanged(now = false) {
   clearTimeout(conv.timer);
   conv.timer = setTimeout(() => {
     if (conv.thread) readConversation(conv.thread);
-  }, 600);
+  }, now ? 0 : 600);
 }
 
 /** Inline Markdown as nodes: code, bold, italics and links. Never HTML. */

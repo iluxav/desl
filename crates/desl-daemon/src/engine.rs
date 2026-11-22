@@ -1459,13 +1459,22 @@ impl Engine {
         }
         self.refresh_subagents(thread_id);
         self.check_asking(thread_id);
-        // The turn ended: the next queued prompt goes in.
-        if let Ok(i) = self.idx(thread_id)
-            && self.threads[i].status == Status::Idle
-            && !self.threads[i].queued.is_empty()
-            && !self.typing.contains_key(thread_id)
-            && let Ok(Some(text)) = self.store.queue_pop(thread_id)
+        self.drain(thread_id);
+    }
+
+    /// The next queued prompt goes into an agent desl runs in its own interface once it is free:
+    /// its turn ended, or it waits on a form. Also for an agent that has no session file yet,
+    /// such as one whose only events are forms.
+    fn drain(&mut self, thread_id: &str) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        if self.threads[i].queued.is_empty()
+            || !self.agent_free(i)
+            || self.typing.contains_key(thread_id)
+            || !self.ptys.contains_key(thread_id)
         {
+            return;
+        }
+        if let Ok(Some(text)) = self.store.queue_pop(thread_id) {
             self.threads[i].queued.remove(0);
             self.type_prompt(thread_id, text);
         }
@@ -1863,6 +1872,10 @@ impl Engine {
         let tailed: Vec<String> = self.tails.keys().cloned().collect();
         for id in tailed {
             self.poll_tail(&id);
+        }
+        let queued: Vec<String> = self.threads.iter().filter(|t| !t.queued.is_empty()).map(|t| t.id.clone()).collect();
+        for id in queued {
+            self.drain(&id);
         }
         if !self.ticks.is_multiple_of(5 * TICKS_PER_SECOND) {
             return;
@@ -2334,7 +2347,7 @@ impl Engine {
         // An agent desl runs in its own interface gets the prompt typed there; the headless
         // turn is left for agents without one.
         let native = self.adapter(&agent).is_some_and(|a| a.session_reader(Path::new(&self.threads[i].cwd)).is_some());
-        if self.threads[i].status.busy() || self.typing.contains_key(thread_id) {
+        if !self.agent_free(i) || self.typing.contains_key(thread_id) {
             self.store
                 .queue_push(thread_id, text, now())
                 .map_err(|e| format!("Could not queue the prompt ({e:#}). Send it again when the agent is idle."))?;
@@ -2394,6 +2407,17 @@ impl Engine {
         self.threads[i].open_forms.push(OpenForm { id: id.clone(), title: checked.title, at });
         self.persist(thread_id);
         Ok(Reply::FormShown { form_id: id })
+    }
+
+    /// Thread `i`'s agent has no turn going and its screen asks nothing, so a prompt can go in.
+    /// A thread waiting on a form is free: the agent is idle, and the user may talk to it.
+    fn agent_free(&self, i: usize) -> bool {
+        let t = &self.threads[i];
+        match t.status {
+            Status::Working => false,
+            Status::Waiting => !self.asked_on_screen.contains(&t.id),
+            _ => true,
+        }
     }
 
     /// A form the store has, open: a sentence otherwise.

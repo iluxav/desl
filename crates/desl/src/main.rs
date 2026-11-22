@@ -309,6 +309,12 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
         None => anyhow::bail!("The desl daemon could not be started. Its log is {}.", paths.log.display()),
     };
     let settings = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref());
+    // desl web runs beside desl from the start, so forms show without a key pressed first. In
+    // the background: attaching never waits for it, and `prefix v` says why if it failed.
+    let beside = paths.clone();
+    std::thread::spawn(move || {
+        let _ = web::ensure(&beside);
+    });
     // Leaving the client is never a failure: detaching, or the last agent quitting.
     match native::run(conn, cwd, settings, paths.clone())? {
         native::End::Line(Some(line)) => println!("{line}"),

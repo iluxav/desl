@@ -18,6 +18,8 @@ All notable changes to desl are recorded here. The format follows
   open goes straight to it. A thread with a form open shows waiting, and talking to its agent
   meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
   from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
+- `desl` starts desl web in the background when it attaches, if none is running, without
+  opening a browser. `ctrl+space v` then only opens the page.
 - Three more form widgets: a **preview** of HTML and CSS the agent wrote, tuned with sliders,
   colour pickers and lists that set its CSS variables, drawn in a frame where nothing runs; a
   **table** whose cells you edit, sent back as just the cells you changed; and **pictures** of

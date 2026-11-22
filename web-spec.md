@@ -260,7 +260,10 @@ browser ──WebSocket──▶ desl web (tokio, axum) ─┘
 without it, 9.8 MB.
 
 **Opening the page.** One `desl web` serves each workspace. While it runs it notes its process
-and address in `<socket>.web`, beside the daemon's socket and readable by the user alone. `prefix
+and address in `<socket>.web`, beside the daemon's socket and readable by the user alone. `desl`
+starts it in the background as it attaches when none runs, without opening a browser, so a form
+an agent pushes is on the page before any key is pressed; it runs on when desl closes, and after
+an install it starts again from the new binary on the same address. `prefix
 v` in the TUI opens the browser on it, on the thread's open form when it has one, and starts it
 in the background when none runs, in a session of its own. Over SSH, or with no `xdg-open`
 (`open` on macOS), the address goes to the clipboard instead. From a shell, `desl web --open`

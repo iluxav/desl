@@ -106,7 +106,7 @@ a model call of desl's own.
 | --- | --- |
 | Left | Projects and their agent threads, one line each: the status mark, the title, the age, `⎇` for a worktree |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; Stop while it works |
-| Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed |
+| Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`) |
 | Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line saying to answer it in the terminal |
 | Bottom | The prompt to the selected thread; a sentence from desl, for a few seconds |
 

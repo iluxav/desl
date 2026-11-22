@@ -252,6 +252,8 @@ function render() {
   drawWaiting();
   drawTasks();
   drawChrome(cur);
+  // The last entry says "working" while the agent is.
+  if (conv.view === 'highlights') drawHighlights(false);
   if (cur && $('link').dataset.state === 'connected' && cur.t.id !== conv.thread) readConversation(cur.t.id);
 }
 
@@ -406,6 +408,10 @@ const conv = {
   /** The thread whose conversation is drawn, or asked for. */
   thread: null,
   items: [],
+  /** Its story in short questions and answers (docs/design/2026-11-22-highlights.md). */
+  highlights: [],
+  /** `conversation` or `highlights`, as the user left it. */
+  view: readJson('desl-web-view').view === 'highlights' ? 'highlights' : 'conversation',
   /** The request in flight, by its id. */
   asking: null,
   timer: null,
@@ -419,7 +425,9 @@ function readConversation(id) {
   if (conv.thread !== id) {
     conv.thread = id;
     conv.items = [];
+    conv.highlights = [];
     drawConversation(true);
+    drawHighlights(true);
   }
   const reqId = state.nextId++;
   conv.asking = reqId;
@@ -435,8 +443,76 @@ function conversationArrived(msg) {
   }
   const list = $('conv');
   const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40 || !conv.items.length;
+  const high = $('highlights');
+  const highAtEnd = high.scrollHeight - high.scrollTop - high.clientHeight < 40 || !conv.highlights.length;
   conv.items = msg.items || [];
+  conv.highlights = msg.highlights || [];
   drawConversation(atEnd);
+  drawHighlights(highAtEnd);
+}
+
+const ASKED_BY = { you: 'You', task: 'Task', form: 'Form', desl: 'desl' };
+
+/**
+ * The thread's story: each entry who asked and when, the question, and the answer in at most two
+ * sentences; the last one still being answered while the agent works. A click opens the
+ * conversation at its moment.
+ */
+function drawHighlights(toEnd) {
+  const list = $('highlights');
+  const top = list.scrollTop;
+  if (!conv.highlights.length) {
+    list.replaceChildren(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet. Each question and its answer shows here.'));
+    return;
+  }
+  const cur = current();
+  const working = cur && cur.t.id === conv.thread && cur.t.status === 'working';
+  const nodes = conv.highlights.map((h, i) => {
+    const last = i === conv.highlights.length - 1;
+    const node = el('button', `hl by-${h.by}${last && working ? ' running' : ''}`);
+    node.type = 'button';
+    node.title = 'Open the conversation here';
+    node.append(el('div', 'hl-who', `${ASKED_BY[h.by] || h.by} · ${clock(h.at)}`));
+    const q = el('div', 'hl-q');
+    q.append(el('span', 'hl-mark', 'Q'), el('span', 'hl-text', h.question));
+    const a = el('div', 'hl-a');
+    const answer = h.answer || (last && working ? 'Working on it…' : 'No answer.');
+    a.append(el('span', 'hl-mark', 'A'), el('span', 'hl-text', answer));
+    node.append(q, a);
+    node.addEventListener('click', () => openAt(h.event));
+    return node;
+  });
+  list.replaceChildren(...nodes);
+  list.scrollTop = toEnd ? list.scrollHeight : top;
+}
+
+/** Shows the conversation, at the first item from event `event` on. */
+function openAt(event) {
+  setView('conversation');
+  const items = [...document.querySelectorAll('#conv .item')];
+  const target = items.find((n) => Number(n.dataset.event) >= event) || items[items.length - 1];
+  if (!target) return;
+  target.scrollIntoView({ block: 'start' });
+  target.classList.add('flash');
+  setTimeout(() => target.classList.remove('flash'), 1600);
+}
+
+function setView(view) {
+  conv.view = view;
+  const high = view === 'highlights';
+  $('conv').hidden = high;
+  $('highlights').hidden = !high;
+  for (const id of ['conv-find', 'conv-count', 'conv-toggle']) $(id).hidden = high;
+  $('view-conv').classList.toggle('on', !high);
+  $('view-high').classList.toggle('on', high);
+  $('view-conv').setAttribute('aria-pressed', String(!high));
+  $('view-high').setAttribute('aria-pressed', String(high));
+  try {
+    localStorage.setItem('desl-web-view', JSON.stringify({ view }));
+  } catch (e) {
+    // The choice is only for this visit, then.
+  }
+  if (high) drawHighlights(true);
 }
 
 function conversationChanged(now = false) {
@@ -620,6 +696,8 @@ function drawConversation(toEnd) {
         node = el('div', 'item item-note', item.text);
         break;
     }
+    // Which event it shows, for a highlight's link to it.
+    if (item.event !== undefined) node.dataset.event = String(item.event);
     nodes.push(node);
   }
   place(list, nodes);
@@ -1045,6 +1123,9 @@ function findAgain(move) {
 }
 
 function setupConversation() {
+  $('view-conv').addEventListener('click', () => setView('conversation'));
+  $('view-high').addEventListener('click', () => setView('highlights'));
+  setView(conv.view);
   $('conv-tools').addEventListener('change', (e) => {
     $('conv').classList.toggle('no-tools', !e.target.checked);
     findAgain(false);

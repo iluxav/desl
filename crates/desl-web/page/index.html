@@ -26,11 +26,16 @@
     <div class="pane">
       <div id="conv-pane" class="conv-pane">
         <div class="conv-tools">
+          <div class="seg conv-view" role="group" aria-label="What the thread shows">
+            <button id="view-conv" type="button" class="on" aria-pressed="true">Conversation</button>
+            <button id="view-high" type="button" aria-pressed="false" title="The thread's story: each question and its answer, in two sentences">Highlights</button>
+          </div>
           <input id="conv-find" type="search" aria-label="Find in the conversation" placeholder="Find in the conversation">
           <span id="conv-count" class="conv-count"></span>
-          <label class="conv-toggle"><input id="conv-tools" type="checkbox" checked> Tool calls</label>
+          <label id="conv-toggle" class="conv-toggle"><input id="conv-tools" type="checkbox" checked> Tool calls</label>
         </div>
         <div id="conv" class="conv"></div>
+        <div id="highlights" class="conv highlights" aria-label="Highlights" hidden></div>
       </div>
       <section id="diffview" class="diffview" aria-label="A task's changes" hidden>
         <div class="diff-top"><span id="diff-title" class="diff-title"></span><button id="diff-close" type="button" class="secondary">Close</button></div>

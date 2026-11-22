@@ -7,6 +7,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- Highlights on desl web: beside a thread's conversation, its story as short questions and
+  answers, at most two sentences each, live. Each turn is one: what started it (your prompt, a
+  task, a form's answer) and the first two sentences of the agent's reply, or its words so far
+  while it works. A click opens the conversation at that moment. desl runs no model for it.
 - Forms on desl web: an agent puts a form in front of you, and your answer is its next
   prompt. Claude Code, Codex and Copilot get desl's MCP tool `show_form` when desl starts them,
   through their own flags, with your configuration untouched. A form is drawn as a card in the

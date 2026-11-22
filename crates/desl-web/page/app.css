@@ -273,6 +273,23 @@ body.resizing { cursor: col-resize; user-select: none; }
 .conv-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; }
 .conv-toggle input { accent-color: var(--accent); }
 .conv { flex: 1; min-height: 0; overflow: auto; padding: 8px 28px 28px; }
+.conv[hidden] { display: none; }
+.conv-view { flex: none; }
+.conv-view button { font-size: 12.5px; padding: 4px 12px; }
+/* Highlights: each entry who asked and when, its question and its answer. */
+.highlights { display: flex; flex-direction: column; gap: 2px; padding-top: 12px; }
+.hl { display: grid; gap: 4px; width: 100%; text-align: left; font: inherit; color: var(--text); background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 12px 14px; cursor: pointer; }
+.hl:hover { background: var(--raised); }
+.hl:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.hl-who { color: var(--muted); font: 11.5px var(--mono); letter-spacing: .02em; }
+.hl.by-task .hl-who, .hl.by-form .hl-who { color: var(--accent); }
+.hl-q, .hl-a { display: flex; gap: 10px; align-items: baseline; line-height: 1.5; }
+.hl-mark { flex: none; width: 14px; font: 600 12px var(--mono); color: var(--accent); }
+.hl-a .hl-mark { color: var(--muted); }
+.hl-q .hl-text { font-weight: 500; overflow-wrap: anywhere; }
+.hl-a .hl-text { color: var(--dim); overflow-wrap: anywhere; }
+.hl.running .hl-a .hl-text::after { content: ' ✻'; color: var(--accent); }
+.item.flash { box-shadow: 0 0 0 3px var(--accent); border-radius: 8px; transition: box-shadow .3s; }
 .conv > * { max-width: 860px; }
 .conv.no-tools .item-tool { display: none; }
 .item { margin: 14px 0 0; }

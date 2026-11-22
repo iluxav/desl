@@ -235,6 +235,9 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     let conv = next(&mut c).await;
     assert_eq!((conv["type"].as_str(), conv["id"].as_u64()), (Some("conversation"), Some(4)), "{conv}");
     assert_eq!(conv["items"][0]["text"], "hello");
+    assert_eq!(conv["items"][0]["event"], 1, "each item says the event behind it, for a highlight's link");
+    let h = &conv["highlights"][0];
+    assert_eq!((h["by"].as_str(), h["question"].as_str(), h["event"].as_u64()), (Some("you"), Some("hello"), Some(1)), "{conv}");
 }
 
 #[test]
@@ -266,7 +269,7 @@ fn a_form_reaches_the_page_as_one_item_with_how_it_closed() {
     use desl_ir::{Event, EventKind};
     let ev = |index, kind| Event { index, thread_id: "t-1".into(), timestamp: 0, agent: "claude".into(), kind };
     let open = crate::bridge::items(&[ev(1, EventKind::Form { form_id: "f-4b1e".into(), title: "Pick".into(), blob: "ab".into() })]);
-    assert_eq!(open, [json!({ "kind": "form", "form_id": "f-4b1e", "title": "Pick", "by": null })]);
+    assert_eq!(open, [json!({ "kind": "form", "form_id": "f-4b1e", "title": "Pick", "by": null, "event": 1 })]);
     let closed = crate::bridge::items(&[
         ev(1, EventKind::Form { form_id: "f-4b1e".into(), title: "Pick".into(), blob: "ab".into() }),
         ev(2, EventKind::FormAnswer { form_id: "f-4b1e".into(), by: "dismissed".into(), blob: None }),

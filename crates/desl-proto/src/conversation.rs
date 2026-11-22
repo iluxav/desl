@@ -71,6 +71,8 @@ pub struct Thread {
     pub messages: Vec<u64>,
     pub cost_usd: f64,
     pub turns: u32,
+    /// The event behind each item, for a link to it; [`conversation`] fills it.
+    pub origins: Vec<u64>,
 }
 
 impl Default for Thread {
@@ -81,12 +83,13 @@ impl Default for Thread {
 
 impl Thread {
     pub fn new() -> Self {
-        Thread { items: Vec::new(), messages: Vec::new(), cost_usd: 0.0, turns: 0 }
+        Thread { items: Vec::new(), messages: Vec::new(), cost_usd: 0.0, turns: 0, origins: Vec::new() }
     }
 
     /// Replaces everything this view knows with the daemon's events.
     pub fn load(&mut self, events: &[Event]) {
         self.items.clear();
+        self.origins.clear();
         self.messages.clear();
         self.cost_usd = 0.0;
         self.turns = 0;
@@ -300,6 +303,7 @@ pub fn conversation(events: &[Event], tools: bool) -> (Thread, Vec<(usize, i64)>
         }
         let before = m.items.len();
         m.apply(e);
+        m.origins.resize(m.items.len(), e.index);
         if matches!(e.kind, EventKind::UserMessage { .. }) && m.items.len() > before {
             prompts.push((m.items.len() - 1, e.timestamp));
         }

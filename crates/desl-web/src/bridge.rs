@@ -106,9 +106,13 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
                     && let Some((page_id, thread_id)) = asked.remove(id)
                 {
                     let answer = match (ok, error) {
-                        (Some(Reply::Events { events }), _) => {
-                            json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "items": items(events) })
-                        }
+                        (Some(Reply::Events { events }), _) => json!({
+                            "type": "conversation",
+                            "id": page_id,
+                            "thread_id": thread_id,
+                            "items": items(events),
+                            "highlights": desl_proto::highlights::highlights(events),
+                        }),
                         (_, Some(e)) => json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "error": e }),
                         _ => continue,
                     };
@@ -186,11 +190,11 @@ fn capped(text: &str, lines: usize) -> Value {
 }
 
 /// A thread's conversation as the page draws it: the items of the TUI's history, each a JSON
-/// object with its `kind`. A prompt says when it was sent.
+/// object with its `kind` and the `event` behind it. A prompt says when it was sent.
 pub(crate) fn items(events: &[Event]) -> Vec<Value> {
     let (thread, prompts) = conversation(events, true);
     let sent: HashMap<usize, i64> = prompts.into_iter().collect();
-    thread
+    let mut out: Vec<Value> = thread
         .items
         .iter()
         .enumerate()
@@ -214,7 +218,11 @@ pub(crate) fn items(events: &[Event]) -> Vec<Value> {
             // The page asks for the form itself (`form_get`) to draw its card.
             Item::Form { form_id, title, by, .. } => json!({ "kind": "form", "form_id": form_id, "title": title, "by": by }),
         })
-        .collect()
+        .collect();
+    for (item, event) in out.iter_mut().zip(&thread.origins) {
+        item["event"] = json!(event);
+    }
+    out
 }
 
 async fn say(ws: &mut WebSocket, v: Value) -> Result<(), axum::Error> {

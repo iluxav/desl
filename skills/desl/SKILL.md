@@ -1,6 +1,6 @@
 ---
 name: desl
-description: "Drive desl, the terminal workspace this agent runs in: keep the project's task list (.tasks.md) with `desl task`, open threads on Claude Code, Codex or GitHub Copilot, prompt them and read the reply, fork this conversation to another agent for a second opinion, and wait on threads working in parallel. Use when the user mentions tasks, the task list, a task number such as #12, what to work on next, or desl; when a .tasks.md is in the project; or when the user asks to hand work to another agent or thread, or to run work in parallel. Requires DESL_THREAD to be set, except for `desl task`. A form for the user is the `show_form` tool, called directly."
+description: "Drive desl, the terminal workspace this agent runs in: keep the project's task list (.tasks.md) with `desl task`, open threads on Claude Code, Codex or GitHub Copilot, prompt them and read the reply, fork this conversation to another agent for a second opinion, and wait on threads working in parallel. Use when the user mentions tasks, the task list, a task number such as #12, what to work on next, or desl; when a .tasks.md is in the project; or when the user asks to hand work to another agent or thread, or to run work in parallel. Requires DESL_THREAD to be set, except for `desl task`."
 ---
 
 # desl

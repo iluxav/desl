@@ -13,6 +13,7 @@ mod mcp;
 mod model;
 mod native;
 mod rawkeys;
+mod taskpane;
 mod tasks;
 mod theme;
 mod ui;

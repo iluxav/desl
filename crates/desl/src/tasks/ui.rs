@@ -79,7 +79,7 @@ fn status_label(s: Status) -> &'static str {
 /// A type's mark: a Nerd Font's Material Design icon when desl uses them (a sparkle, a bug, a
 /// checked box, recycling arrows, a test tube, an open book, a bulb), else none: the word
 /// carries it.
-fn kind_icon(k: Kind) -> &'static str {
+pub(crate) fn kind_icon(k: Kind) -> &'static str {
     match k {
         Kind::Feature => "\u{f0ae2}",
         Kind::Bug => "\u{f00e4}",
@@ -96,7 +96,7 @@ fn note_mark(nerd: bool) -> &'static str {
     if nerd { "\u{f09ed}" } else { "≡" }
 }
 
-fn kind_style(k: Kind) -> Style {
+pub(crate) fn kind_style(k: Kind) -> Style {
     theme::hue(match k {
         Kind::Feature => Color::Magenta,
         Kind::Bug => Color::Red,
@@ -109,7 +109,7 @@ fn kind_style(k: Kind) -> Style {
 }
 
 /// Five columns at most, for the list.
-fn kind_short(k: Kind) -> &'static str {
+pub(crate) fn kind_short(k: Kind) -> &'static str {
     match k {
         Kind::Feature => "feat",
         Kind::Refactor => "refac",
@@ -119,7 +119,7 @@ fn kind_short(k: Kind) -> &'static str {
 
 /// With a Nerd Font, signal bars as Linear marks priority: three in the critical colour, two in
 /// the warning one, one in grey. Without, `!!!`, `!!` and `!`, as Reminders marks it.
-fn priority_mark(p: Priority) -> (&'static str, Style) {
+pub(crate) fn priority_mark(p: Priority) -> (&'static str, Style) {
     priority_mark_in(p, theme::nerd())
 }
 

@@ -18,6 +18,11 @@ All notable changes to desl are recorded here. The format follows
   open goes straight to it. A thread with a form open shows waiting, and talking to its agent
   meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
   from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
+- The TUI has the task list in a pane on the right, as desl web does: `prefix t` shows it and
+  moves the keys into it, `esc` gives them back, `prefix t` again hides it. Filters, start an
+  agent on a task (with the agent and place to pick), merge, diff, rebase, go to the task's
+  thread, or open the full editor. It opens by itself on a terminal 180 columns wide or more.
+  The sidebar no longer lists the task list.
 - Tasks are desl's first-class record. desl web's right column shows the project's task list,
   live, with filters, and each task starts an agent with one click (**Fix now**, **Work on it**,
   with the agent and the place to pick: its own worktree by default). An agent on its own branch

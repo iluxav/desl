@@ -63,7 +63,8 @@ through the skill, which they read sometimes. The author's call:
 ## Non-goals
 
 - Task boards, assignees, due dates, sub-tasks.
-- Changing the TUI's tasks thread (`desl task ui`); it stays as it is, beside agents.
+- Changing the TUI's task editor (`desl task ui`): it stays as it is. (Later the same day the
+  author asked for the TUI to have the same task pane: see "The TUI's pane" below.)
 - Answering forms in the terminal (task #4, parked).
 
 ## Constraints
@@ -92,3 +93,25 @@ as proposals and accepted.
 - The brief's exact wording and the tools' descriptions.
 - How the page shows the diff, and what the merge's refusals say.
 - Which branch counts as main: the branch the main checkout has checked out.
+
+## The TUI's pane (2026-11-22, the author: "toggle with prefix t, go ahead")
+
+- **The sidebar** no longer lists the task list.
+- **A pane on the TUI's right** shows the task list of the project on screen. It is 28 hundredths
+  of the width, 36 to 56 columns.
+- **Showing it:**
+  - `prefix t` shows it and moves the keys into it.
+  - With the keys there, `prefix t` hides it.
+  - `esc` gives the keys back to the agent.
+  - It opens by itself on a terminal 180 columns wide or more, which keeps the agent's screen
+    wide, until the user presses `prefix t`.
+- **Keys in the pane:**
+  - `j`/`k` move.
+  - `h`/`l` or tab change the filter, through the page's segments and More.
+  - `enter` starts a task with the last pick, shows a ready task's diff, or goes to the thread of
+    one in progress.
+  - `w` opens a picker under the task: `a` for the agent, `p` for the place.
+  - `m` merges, `d` shows the diff over the panes, `r` asks for a rebase.
+  - `g` goes to the task's thread.
+  - `e` shows the full task editor (`desl task ui`) in the pane.
+- **Data:** it reads the daemon's `tasks` replies and changes, the same ones the page reads.

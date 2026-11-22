@@ -4,4 +4,4 @@
 pub mod cli;
 mod editor;
 pub mod list;
-mod ui;
+pub(crate) mod ui;

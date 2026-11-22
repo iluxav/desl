@@ -42,6 +42,7 @@ pub enum Action {
     Close,
     Detach,
     Web,
+    Tasks,
     Help,
 }
 
@@ -81,6 +82,7 @@ pub const KEYS: &[Bind] = &[
     bind("desl", "b", "Hide or show the sidebar", Some(Action::Sidebar)),
     bind("desl", "d", "Detach; the agents keep working", Some(Action::Detach)),
     bind("desl", "v", "View the workspace in the browser (desl web)", Some(Action::Web)),
+    bind("desl", "t", "Tasks: show the task pane and move into it; again hides it", Some(Action::Tasks)),
     bind("desl", "?", "This list; typing filters it, enter runs the row", Some(Action::Help)),
     bind("desl", "prefix", "Send the prefix key itself to the agent", None),
 ];
@@ -132,14 +134,23 @@ pub struct Areas {
     /// exactly this size.
     pub panes: Vec<Rect>,
     pub footer: Rect,
+    /// The task pane's panel, on the right, when it shows.
+    pub tasks: Option<Rect>,
 }
 
 /// The sidebar takes three tenths of the width, 32 to 52 columns, and steps aside below 80.
 /// `split` is `Some(stacked)` for two panes: beside each other, or one above the other.
 pub fn areas(cols: u16, rows: u16, sidebar: bool, split: Option<bool>) -> Areas {
+    areas_with(cols, rows, sidebar, split, false)
+}
+
+/// As [`areas`], with the task pane on the right when `tasks`: 28 hundredths of the width, 36 to
+/// 56 columns.
+pub fn areas_with(cols: u16, rows: u16, sidebar: bool, split: Option<bool>, tasks: bool) -> Areas {
     let side_w = if sidebar && cols >= 80 { (cols * 3 / 10).clamp(32, 52) } else { 0 };
+    let task_w = if tasks && cols >= 80 { (cols * 28 / 100).clamp(36, 56) } else { 0 };
     let body_h = rows.saturating_sub(1).max(3);
-    let body = Rect::new(side_w, 0, cols.saturating_sub(side_w).max(5), body_h);
+    let body = Rect::new(side_w, 0, cols.saturating_sub(side_w + task_w).max(5), body_h);
     let mains = match split {
         None => vec![body],
         Some(false) => {
@@ -159,6 +170,7 @@ pub fn areas(cols: u16, rows: u16, sidebar: bool, split: Option<bool>) -> Areas 
         mains,
         panes,
         footer: Rect::new(0, rows.saturating_sub(1), cols, 1),
+        tasks: (task_w > 0).then(|| Rect::new(cols.saturating_sub(task_w), 0, task_w, body_h)),
     }
 }
 
@@ -176,7 +188,8 @@ pub enum Row {
 pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     let mut out = Vec::new();
     let mut last: Option<&str> = None;
-    for t in order(projects, threads) {
+    // The task list has a pane of its own (`prefix t`), not a row.
+    for t in order(projects, threads).into_iter().filter(|t| t.active_agent != desl_ir::TASKS) {
         if last != Some(t.project_id.as_str()) {
             // A blank row between projects; threads sit row on row.
             if last.is_some() {
@@ -362,6 +375,22 @@ pub struct View<'a> {
     pub pulse: f32,
     /// The prefix as the interface writes it: `ctrl+space`.
     pub prefix: &'a str,
+    /// The task pane, when it shows.
+    pub tasks: Option<TasksView<'a>>,
+    /// A task's diff over the panes: its title, its lines, the first one shown.
+    pub diff: Option<(&'a str, &'a [String], usize)>,
+}
+
+/// The task pane: the project's tasks the filter keeps, the one under the cursor, and the
+/// agent-and-place picker under it while it is open (the agent's name, the place's words).
+pub struct TasksView<'a> {
+    pub project: String,
+    pub filter: &'static str,
+    pub count: usize,
+    pub rows: Vec<&'a desl_proto::tasks::Task>,
+    pub cursor: usize,
+    pub focused: bool,
+    pub picking: Option<(String, String)>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -758,6 +787,102 @@ fn with_keys(mut spans: Vec<Span<'static>>, keys: &[(&'static str, &'static str)
     Line::from(spans)
 }
 
+/// The task pane: the filter, then each task on two lines (its kind and title; its number,
+/// priority, status and thread), the cursor's lit while the pane has the keys.
+fn tasks_pane(f: &mut Frame, tv: &TasksView, threads: &[Thread], area: Rect) {
+    use crate::tasks::ui::{kind_icon, kind_short, kind_style, priority_mark};
+    let block = panel(tv.focused).title(Line::from(Span::styled(format!(" Tasks · {} ", tv.project), theme::bold())));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let body = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+    let w = body.width as usize;
+    let nerd = theme::nerd();
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(vec![
+            Span::styled("‹ ", theme::dim()),
+            Span::styled(tv.filter.to_string(), theme::accent().add_modifier(Modifier::BOLD)),
+            Span::styled(format!(" {} ›", tv.count), theme::dim()),
+        ]),
+        Line::default(),
+    ];
+    if tv.rows.is_empty() {
+        lines.push(Line::from(Span::styled("No task here.", theme::muted())));
+    }
+    let mut cursor_line = 0;
+    for (i, t) in tv.rows.iter().enumerate() {
+        let lit = tv.focused && i == tv.cursor;
+        if lit {
+            cursor_line = lines.len();
+        }
+        let bg = |s: Style| if lit { s.patch(theme::focus_surface()) } else { s };
+        let (mark, mark_style) = if nerd { (kind_icon(t.kind), kind_style(t.kind)) } else { (kind_short(t.kind), kind_style(t.kind)) };
+        let title_w = w.saturating_sub(mark.chars().count() + 2);
+        lines.push(Line::from(vec![
+            Span::styled(format!("{mark} "), bg(mark_style)),
+            Span::styled(truncate_end(&t.title, title_w), bg(theme::normal())),
+        ]));
+        let (prio, prio_style) = priority_mark(t.priority);
+        let mut meta = vec![
+            Span::styled("  ", bg(Style::default())),
+            Span::styled(format!("#{} ", t.id), bg(theme::dim())),
+            Span::styled(format!("{prio} "), bg(prio_style)),
+            Span::styled(t.status.word().to_string(), bg(theme::muted())),
+        ];
+        if let Some(th) = &t.thread {
+            let name = threads.iter().find(|x| x.id == *th).map(|x| x.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| th.clone());
+            meta.push(Span::styled(format!(" · {}", truncate_end(&name, 24)), bg(theme::accent())));
+        }
+        if let Some(b) = &t.branch {
+            meta.push(Span::styled(format!(" · {b}"), bg(theme::muted())));
+        }
+        lines.push(Line::from(meta));
+        if lit && let Some((agent, place)) = &tv.picking {
+            lines.push(Line::from(vec![
+                Span::styled("  agent ", theme::dim()),
+                Span::styled(format!("‹ {agent} ›"), theme::accent()),
+                Span::styled("  a", theme::bold()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  where ", theme::dim()),
+                Span::styled(format!("‹ {place} ›"), theme::accent()),
+                Span::styled("  p", theme::bold()),
+            ]));
+        }
+        lines.push(Line::default());
+    }
+    // The cursor stays in view.
+    let h = body.height as usize;
+    let skip = (cursor_line + 4).saturating_sub(h);
+    f.render_widget(Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()), body);
+}
+
+/// A task's change against main, over the panes: added lines green, removed ones red.
+fn diff_view(f: &mut Frame, title: &str, lines: &[String], top: usize, area: Rect) {
+    let block = panel(true).title(Line::from(Span::styled(format!(" {title} "), theme::bold())));
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    let body = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
+    let shown: Vec<Line<'static>> = lines
+        .iter()
+        .skip(top)
+        .take(body.height as usize)
+        .map(|l| {
+            let style = if l.starts_with('+') && !l.starts_with("+++") {
+                theme::added()
+            } else if l.starts_with('-') && !l.starts_with("---") {
+                theme::removed()
+            } else if l.starts_with("@@") {
+                theme::muted()
+            } else {
+                theme::normal()
+            };
+            Line::from(Span::styled(truncate_end(l, body.width as usize), style))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(shown), body);
+}
+
 fn footer(f: &mut Frame, v: &View, area: Rect) {
     let line = if let Some(n) = v.notice {
         Line::from(vec![Span::styled(format!("  {} ", icons::notice()), theme::warning()), Span::styled(n.to_string(), theme::normal())])
@@ -787,6 +912,25 @@ fn footer(f: &mut Frame, v: &View, area: Rect) {
             ("g/G", "top/end"),
         ];
         with_keys(vec![Span::raw("  ")], &keys, area.width)
+    } else if v.diff.is_some() {
+        with_keys(vec![Span::raw("  ")], &[("j/k", "scroll"), ("space", "page"), ("g/G", "top/end"), ("esc", "back")], area.width)
+    } else if let Some(tv) = v.tasks.as_ref().filter(|t| t.focused) {
+        let keys: &[(&str, &str)] = if tv.picking.is_some() {
+            &[("a", "agent"), ("p", "place"), ("enter", "start"), ("esc", "cancel")]
+        } else {
+            &[
+                ("enter", "start"),
+                ("w", "pick agent, place"),
+                ("m", "merge"),
+                ("d", "diff"),
+                ("r", "rebase"),
+                ("g", "go to its thread"),
+                ("h l", "filter"),
+                ("e", "edit"),
+                ("esc", "back"),
+            ]
+        };
+        with_keys(vec![Span::raw("  ")], keys, area.width)
     } else if v.help.is_some() {
         let mut spans = vec![Span::raw("  ")];
         for (k, what) in [("type", "filter"), ("↑↓", "move"), ("enter", "run"), ("esc", "close")] {
@@ -1125,6 +1269,9 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
             }
         }
     }
+    if let (Some(area), Some(tv)) = (a.tasks, &v.tasks) {
+        tasks_pane(f, tv, v.threads, area);
+    }
     footer(f, v, a.footer);
     if let Some(m) = &v.menu {
         menu(f, m, a.body);
@@ -1134,6 +1281,9 @@ pub fn draw(f: &mut Frame, v: &View, a: &Areas, screens: &[&vt100::Screen]) {
     }
     if let Some(rows) = v.info {
         info(f, rows, a.body);
+    }
+    if let Some((title, lines, top)) = v.diff {
+        diff_view(f, title, lines, top, a.body);
     }
     if let Some(p) = &v.help {
         help(f, p, v.prefix, a.body);
@@ -1276,6 +1426,67 @@ mod tests {
             .join("\n")
     }
 
+    #[test]
+    fn the_task_pane_takes_the_right_and_the_task_list_leaves_the_sidebar() {
+        let a = areas_with(200, 40, true, None, true);
+        let tasks = a.tasks.expect("a task pane");
+        assert_eq!((tasks.x + tasks.width, tasks.width), (200, 56), "on the right, at most 56 columns");
+        assert_eq!(a.body.x + a.body.width, tasks.x, "the agent's panel ends where it begins");
+        assert!(a.body.width >= 90, "a wide terminal keeps the agent wide: {}", a.body.width);
+        assert_eq!(areas_with(120, 30, true, None, true).tasks.map(|t| t.width), Some(36), "at least 36");
+        assert_eq!(areas_with(200, 40, true, None, false).tasks, None);
+        assert_eq!(areas(200, 40, true, None).body.width, 148, "without it, as before");
+        let mut list = thread("t-9", "desl", 9, Status::Idle, "tasks");
+        list.active_agent = desl_ir::TASKS.into();
+        let rows = rows(&[project("desl")], &[thread("t-1", "desl", 1, Status::Idle, "a"), list]);
+        assert!(!rows.contains(&Row::Thread("t-9".into())), "the task list has a pane of its own: {rows:?}");
+    }
+
+    #[test]
+    fn the_task_pane_shows_the_filter_and_each_task_on_two_lines() {
+        use desl_proto::tasks::{Kind, Priority, Status as S, Task};
+        let projects = vec![project("desl")];
+        let threads = vec![thread("t-1", "desl", 1, Status::Idle, "Forms")];
+        let mut bug = Task { status: S::InProgress, priority: Priority::High, ..Task::new(12, "Wheel report typed as text", Kind::Bug) };
+        bug.thread = Some("t-1".into());
+        let feature = Task::new(13, "Release pipeline", Kind::Feature);
+        let rows = vec![&bug, &feature];
+        let a = areas_with(160, 30, true, None, true);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let mut v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView { thread_id: "t-1", agent: "claude", scrolled: 0, selection: None }],
+            focus: 0,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: None,
+            now: 0,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+            tasks: Some(TasksView { project: "desl".into(), filter: "Open", count: 2, rows, cursor: 1, focused: true, picking: None }),
+            diff: None,
+        };
+        let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        for said in ["Tasks · desl", "Open", "Wheel report typed as text", "#12", "in progress", "Release pipeline", "#13"] {
+            assert!(s.contains(said), "{said}: {s}");
+        }
+        assert!(s.contains("start") && s.contains("merge"), "the key line says what the keys do: {s}");
+        v.tasks = None;
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        assert!(!screen(&t).contains("Release pipeline"));
+    }
+
     /// web-spec.md "Indicators": a parity check, a release gate. The page draws what
     /// `desl_proto::view` works out, word for word, so each of those words must be on the
     /// terminal's screen too: the waiting count, each project's name, branch and count, each
@@ -1316,6 +1527,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1415,6 +1628,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1455,6 +1670,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1494,6 +1711,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1620,6 +1839,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1684,6 +1905,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(150, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen(), vt.screen()])).unwrap();
@@ -1726,6 +1949,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
@@ -1774,6 +1999,8 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
+            tasks: None,
+            diff: None,
         };
         t2.draw(|f| draw(f, &v2, &a, &[vt.screen()])).unwrap();
         let b2 = t2.backend().buffer();

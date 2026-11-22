@@ -259,6 +259,11 @@ struct Client {
     cols: u16,
     rows: u16,
     sidebar_on: bool,
+    /// The task pane on the right (`prefix t`), and what it asked the daemon for.
+    taskpane: crate::taskpane::TaskPane,
+    task_req: Option<(u64, TaskReq)>,
+    /// A task's diff over the panes: its title, its lines, the first one shown.
+    diff: Option<(String, Vec<String>, usize)>,
     term: Terminal<TestBackend>,
     /// What the terminal shows now, for painting only what changes.
     shown: Option<Buffer>,
@@ -327,6 +332,14 @@ struct Sub {
     /// The request for its events in flight.
     asked: Option<u64>,
     last: Instant,
+}
+
+/// What a task request of the pane was, for its reply.
+enum TaskReq {
+    Start(u32),
+    Merge(String, u32),
+    Diff(u32),
+    Rebase(u32),
 }
 
 /// What the menu on screen picks for.
@@ -400,7 +413,8 @@ fn shell_name() -> String {
 
 impl Client {
     fn areas(&self) -> Areas {
-        layout::areas(self.cols, self.rows, self.sidebar_on, (self.panes.len() > 1).then_some(self.stacked))
+        let tasks = self.taskpane.shown(self.cols);
+        layout::areas_with(self.cols, self.rows, self.sidebar_on, (self.panes.len() > 1).then_some(self.stacked), tasks)
     }
 
     /// Where pane `i` draws its agent's screen.
@@ -690,6 +704,8 @@ impl Client {
                 continue;
             }
             let ours = self.side.is_some()
+                || self.taskpane.focused
+                || self.diff.is_some()
                 || self.help.is_some()
                 || self.menu.is_some()
                 || self.finder.is_some()
@@ -935,8 +951,10 @@ impl Client {
         layout::side_skip(rows.len(), keep, s)
     }
 
+    /// The threads in the sidebar's order: next, previous and the numbers move through these.
+    /// The task list is not one of them; it has a pane of its own.
     fn ordered(&self) -> Vec<String> {
-        layout::order(&self.projects, &self.threads).iter().map(|t| t.id.clone()).collect()
+        layout::order(&self.projects, &self.threads).iter().filter(|t| t.active_agent != TASKS).map(|t| t.id.clone()).collect()
     }
 
     fn act(&mut self, a: Action) -> Option<String> {
@@ -954,6 +972,22 @@ impl Client {
             Action::Sidebar => {
                 self.sidebar_on = !self.sidebar_on;
                 self.side = None;
+                self.relayout();
+                return None;
+            }
+            // Shows the task pane and gives it the keys; with the keys already there, hides it.
+            Action::Tasks => {
+                let p = &mut self.taskpane;
+                if p.shown(self.cols) && p.focused {
+                    p.chosen = Some(false);
+                    p.focused = false;
+                    p.picking = None;
+                } else {
+                    p.chosen = Some(true);
+                    p.focused = true;
+                    self.side = None;
+                }
+                self.ask_tasks();
                 self.relayout();
                 return None;
             }
@@ -1117,7 +1151,7 @@ impl Client {
             },
             Action::SplitBeside | Action::SplitStacked => self.split(a == Action::SplitStacked, None),
             Action::Zoom => self.zoom(),
-            Action::Detach | Action::Web | Action::Help | Action::Sidebar | Action::OtherPane => {}
+            Action::Detach | Action::Web | Action::Help | Action::Sidebar | Action::Tasks | Action::OtherPane => {}
         }
         None
     }
@@ -1283,6 +1317,124 @@ impl Client {
         };
         let id = self.link.request(command);
         self.busy = Some(Busy::Create(id));
+    }
+
+    /// The installed agents' ids, for the task pane's picker.
+    fn task_agents(&self) -> Vec<String> {
+        self.agents.iter().filter(|a| a.usable()).map(|a| a.id.clone()).collect()
+    }
+
+    /// Asks for the task list of the project on screen, once a connection.
+    fn ask_tasks(&mut self) {
+        let Some(project) = self.project().map(|p| p.id.clone()) else { return };
+        if self.taskpane.asked.insert(project.clone()) {
+            self.link.request(Command::Tasks { project_id: project });
+        }
+    }
+
+    /// A key while the task pane has them.
+    fn task_key(&mut self, key: SKey) {
+        use crate::taskpane::{Ask, Key};
+        let k = match key {
+            SKey::Up | SKey::MoveUp => Key::Up,
+            SKey::Down | SKey::MoveDown => Key::Down,
+            SKey::Enter => Key::Enter,
+            SKey::Close => Key::Close,
+            SKey::Char('\t') => Key::Tab,
+            SKey::Char(c) => Key::Char(c),
+            SKey::Back | SKey::PageUp | SKey::PageDown => return,
+        };
+        let Some(project) = self.project().map(|p| p.id.clone()) else { return };
+        let agents = self.task_agents();
+        let here = self.thread_id().to_string();
+        let Some(ask) = self.taskpane.key(&project, k, &agents, &here) else { return };
+        let request = |s: &mut Self, command: Command, what: TaskReq| {
+            let id = s.link.request(command);
+            s.task_req = Some((id, what));
+        };
+        match ask {
+            Ask::Start { task, agent, place } => {
+                self.notice(&format!("Starting #{task}…"));
+                request(self, Command::TaskStart { project_id: project, task, agent, place }, TaskReq::Start(task));
+            }
+            Ask::Merge(task) => request(self, Command::TaskMerge { project_id: project.clone(), task }, TaskReq::Merge(project, task)),
+            Ask::Diff(task) => request(self, Command::TaskDiff { project_id: project, task }, TaskReq::Diff(task)),
+            Ask::Rebase(task) => request(self, Command::TaskRebase { project_id: project, task }, TaskReq::Rebase(task)),
+            Ask::Go(thread) => {
+                self.taskpane.focused = false;
+                if thread != self.thread_id() {
+                    self.go(thread);
+                }
+            }
+            Ask::Edit => {
+                // The full editor: the project's task list, in the pane.
+                self.taskpane.focused = false;
+                let list = self.threads.iter().find(|t| t.project_id == project && t.active_agent == TASKS).map(|t| t.id.clone());
+                match list {
+                    Some(id) if id != self.thread_id() => self.go(id),
+                    Some(_) => {}
+                    None => self.notice("This project has no task list yet. Ask an agent to add a task."),
+                }
+            }
+            Ask::Back => self.taskpane.focused = false,
+            Ask::Say(sentence) => self.notice(&sentence),
+        }
+    }
+
+    fn task_reply(&mut self, what: TaskReq, ok: Option<Reply>, error: Option<String>) {
+        if let Some(sentence) = error {
+            return self.notice(&sentence);
+        }
+        match (what, ok) {
+            (TaskReq::Start(n), Some(Reply::Task { task, .. })) => {
+                let thread = task.thread.unwrap_or_default();
+                let place = task.branch.map(|b| format!(", in its own worktree on {b}")).unwrap_or_default();
+                self.notice(&format!("Started #{n} in {thread}{place}. g goes there."));
+            }
+            (TaskReq::Merge(project, n), Some(Reply::MergeRefused { reason, rebase })) => {
+                if rebase {
+                    self.taskpane.needs_rebase.insert((project, n));
+                    self.notice(&format!("{reason} r asks its agent to rebase."));
+                } else {
+                    self.notice(&reason);
+                }
+            }
+            (TaskReq::Merge(project, n), Some(Reply::Task { task, .. })) => {
+                self.taskpane.needs_rebase.remove(&(project, n));
+                self.notice(&format!("Merged #{n}: {} is in the main checkout's branch now.", task.branch.unwrap_or_default()));
+            }
+            (TaskReq::Diff(n), Some(Reply::Diff { base, text, more })) => {
+                let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+                if lines.is_empty() {
+                    lines.push("(no change against the main checkout's branch)".into());
+                }
+                if more > 0 {
+                    lines.push(format!("… {more} more lines"));
+                }
+                self.diff = Some((format!("#{n} against {base}"), lines, 0));
+            }
+            (TaskReq::Rebase(n), Some(Reply::Task { .. })) => {
+                self.notice(&format!("Asked #{n}'s agent to rebase onto main; it comes back ready."))
+            }
+            _ => {}
+        }
+        self.dirty = true;
+    }
+
+    fn diff_key(&mut self, key: SKey) {
+        let height = usize::from(self.areas().body.height.saturating_sub(2)).max(1);
+        let Some((_, lines, top)) = &mut self.diff else { return };
+        let last = lines.len().saturating_sub(height);
+        match key {
+            SKey::Close | SKey::Char('q') => self.diff = None,
+            SKey::Down | SKey::Char('j') => *top = (*top + 1).min(last),
+            SKey::Up | SKey::Char('k') => *top = top.saturating_sub(1),
+            SKey::PageDown | SKey::Char(' ') => *top = (*top + height).min(last),
+            SKey::PageUp | SKey::Char('b') => *top = top.saturating_sub(height),
+            SKey::Char('g') => *top = 0,
+            SKey::Char('G') => *top = last,
+            _ => {}
+        }
     }
 
     /// Hands this thread, with its whole conversation, to agent `to`.
@@ -1515,6 +1667,12 @@ impl Client {
         if self.menu.is_some() {
             return self.menu_key(key);
         }
+        if self.diff.is_some() {
+            return self.diff_key(key);
+        }
+        if self.taskpane.focused && self.side.is_none() {
+            return self.task_key(key);
+        }
         let Some(cursor) = self.side else { return };
         let rows = layout::rows(&self.projects, &self.threads);
         let thread_at = |i: usize| match rows.get(i) {
@@ -1628,7 +1786,30 @@ impl Client {
             info: self.info.as_deref(),
             pulse: pulse(),
             prefix: &self.prefix_label,
+            tasks: None,
+            diff: self.diff.as_ref().map(|(t, l, top)| (t.as_str(), l.as_slice(), *top)),
         };
+        let mut view = view;
+        let project = self.project().map(|p| p.id.clone()).unwrap_or_default();
+        if self.taskpane.shown(self.cols) {
+            let rows = self.taskpane.rows(&project);
+            let count = rows.len();
+            let cursor = self.taskpane.cursor.min(count.saturating_sub(1));
+            let picking = self.taskpane.picking.map(|p| {
+                let agents = self.task_agents();
+                let agent = p.agent.checked_sub(1).and_then(|i| agents.get(i)).cloned().unwrap_or_else(|| "the project's default".into());
+                (agent, crate::taskpane::PLACES[p.place % crate::taskpane::PLACES.len()].1.to_string())
+            });
+            view.tasks = Some(layout::TasksView {
+                project: self.project().map(|p| desl_proto::view::project_name(&p.path)).unwrap_or_default(),
+                filter: crate::taskpane::FILTERS[self.taskpane.filter % crate::taskpane::FILTERS.len()].0,
+                count,
+                rows,
+                cursor,
+                focused: self.taskpane.focused,
+                picking,
+            });
+        }
         let choices = self.choices();
         let items: Vec<MenuItem> = choices.into_iter().map(|c| c.item).collect();
         let mut title = match self.menu_for {
@@ -1784,6 +1965,17 @@ impl Client {
     }
 
     fn reply(&mut self, id: u64, ok: Option<Reply>, error: Option<String>) {
+        // A project's task list, whoever asked: the pane keeps it.
+        if let Some(Reply::Tasks { project_id, tasks }) = &ok {
+            self.taskpane.lists.insert(project_id.clone(), tasks.clone());
+            self.dirty = true;
+        }
+        if let Some((asked, what)) = self.task_req.take() {
+            if asked == id {
+                return self.task_reply(what, ok, error);
+            }
+            self.task_req = Some((asked, what));
+        }
         if self.removing == Some(id) {
             self.removing = None;
             match (ok, error) {
@@ -1910,8 +2102,11 @@ impl Client {
                     }
                 }
             }
-            // The tasks thread reads its own file; the page shows the list from these.
-            Change::Tasks { .. } => {}
+            // The task pane shows the list as the daemon tells it.
+            Change::Tasks { project_id, tasks } => {
+                self.taskpane.lists.insert(project_id, tasks);
+                self.dirty = true;
+            }
             Change::ProjectOrder { ids } => {
                 // The cursor stays on the row it was on, wherever that row is now.
                 let on = self.side.and_then(|i| layout::rows(&self.projects, &self.threads).get(i).cloned());
@@ -2025,6 +2220,9 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config, p
         cols,
         rows,
         sidebar_on: true,
+        taskpane: crate::taskpane::TaskPane::default(),
+        task_req: None,
+        diff: None,
         term: Terminal::new(TestBackend::new(cols, rows))?,
         shown: None,
         dirty: true,

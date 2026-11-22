@@ -201,8 +201,9 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `alt+h` / `alt+l` | The other pane gets the keys, while two are open, without the prefix; a click does too | zellij |
 | `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
+| `prefix t` | The task pane on the right: the project's task list, as desl web's right column. `prefix t` shows it and moves the keys into it; with the keys there, it hides it; `esc` gives them back. In it: `j`/`k` move, `h`/`l` (or tab) change the filter (Open, To do, In progress, Ready, Done, Issue, Parked, Bugs), `enter` starts a task with the last pick (or shows a ready one's diff), `w` picks the agent and the place, `m` merges, `d` shows the diff, `r` asks for a rebase, `g` goes to the task's thread, `e` opens the full task editor. It opens by itself on a terminal 180 columns wide or more | Linear, lazygit |
 | `prefix d` | Detach | tmux |
-| `prefix v` | View the workspace in the browser: opens `desl web` for this workspace, started in the background when none runs, on this thread at its form when it has one open; over SSH, the address goes to the clipboard instead | gh (`--web`) |
+| `prefix v` | View the workspace in the browser: opens `desl web` for this workspace, started in the background when none runs, on this thread (on a shell or the task list, the project's agent thread used last), at its form when it has one open; over SSH, the address goes to the clipboard instead | gh (`--web`) |
 | `prefix ?` | The keys desl owns, in a list that runs the one picked: typing filters it, `↑`/`↓` move, `enter` runs, `esc` closes | lazygit, fzf |
 | `prefix prefix` | Send the prefix key to the agent | tmux |
 

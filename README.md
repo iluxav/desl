@@ -97,6 +97,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `,` `x` | Rename this thread, close it |
 | `%` `"` `z` | Split: another thread beside or under this one; zoom back to one pane |
 | `b` `d` `?` | Hide the sidebar, detach, the key list |
+| `t` | Tasks: the project's task list in a pane on the right, as on desl web. `enter` starts a task, `w` picks the agent and the place, `m` merges, `d` shows the diff, `g` goes to its thread, `e` edits; `esc` back, `prefix t` again hides it. It opens by itself on a wide terminal |
 | `v` | View the workspace in the browser: starts `desl web` when it is not running, and opens it |
 
 Without the prefix: `alt+j` / `alt+k` move between threads, `alt+h` / `alt+l` between panes

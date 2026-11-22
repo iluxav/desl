@@ -164,6 +164,7 @@ tool and the tests.
 | `preview` | `label?`, `html`, `css?` (each at most 64 KB), `controls[]` (at most 12): `range {var, label?, min, max, step?, unit?, value?}`, `colour {var, label?, value?}` (`color` also), `select {var, label?, options[] (CSS values, 1 to 20), value?}` | `{var: value}` for every control: a number, `#rrggbb`, or the CSS value |
 | `table` | `label?`, `columns[] {id, label?, edit?: text, select or check, options?}` (1 to 12), `rows[] {id, <column id>: value}` (1 to 200; an editable text cell is one line) | the changed rows, `[{id, <column>: value}]` with only the changed cells; `[]` when nothing changed |
 | `images` | `label?`, `images[] {path, caption?}` (at least 1, and at most 12 in the whole form), `multi?`, `value?` | the path, or a list |
+| `document` | `label?`, `path` (a Markdown file of the project), `section?` (a heading) | from the page: `{text, base?, comments}`; to the agent: `{saved, diff, more?, comments[{quote, note}]}` |
 
 `value`, where a widget takes one, is where it starts: the tool tells the agent to set it to what
 is true now or what it recommends, so the user changes only what differs.
@@ -184,8 +185,24 @@ an SVG also by its name) of at most 10 MB. The daemon checks this when the form 
 again when the page asks for the picture (`form_image`), which it answers only for a path the form
 names; the page shows it as a `data:` URL, so an SVG runs nothing.
 
-`document` and `diff` follow in milestones 3 and 4, as the design describes them: the agent
-names files and desl reads them, so a form stays small and the user sees the file as it is.
+**Documents.** A `document` widget names a Markdown file and, optionally, a heading; its section
+(the heading's line and everything up to the next heading of its level or higher, headings in
+fenced code skipped) is what the user edits, the whole file without one. The file must resolve,
+links followed, inside the thread's directory, end in `.md` or `.markdown`, be UTF-8 with Unix line
+endings, and weigh at most 1 MB; the section at most 256 KB. desl reads the section when the form is
+pushed and keeps it in the stored form as `original`. The card shows the path and an editor with a
+Markdown preview; **Comment** quotes the selected text, or the paragraph at the caret, for a note.
+The page answers `{text, base?, comments}`. On Send desl checks every document against its file
+first: when the section on disk is no longer `base` (the text the edit started from, `original`
+unless the user settled a conflict), nothing is saved and the send is refused; the card then asks
+for the section as it is now (`form_section`) and shows it, with **Use the file's version** and
+**Save mine over it**, and the choice is kept in the draft. Otherwise desl writes each file in one
+go, through a file beside it renamed over it with its mode, and the agent gets
+`{saved, diff, more?, comments[{quote, note}]}`: the unified diff by `git diff --no-index`, at most
+400 lines. A text sent unchanged writes nothing (`saved: false`). A form names a file once.
+
+`diff` follows in milestone 4, as the design describes it: the agent names the change and desl
+reads it with git, so a form stays small and the user sees the change as it is.
 
 **Lifecycle.**
 1. `show_form` (or `desl form new`): the daemon checks the form, keeps its JSON as a blob, gives it
@@ -319,8 +336,8 @@ the agents. Every rule below follows from that.
    Pictures reach the page as `data:` URLs, never as files it can name.
 5. **The MCP server acts on its own thread only:** `desl mcp` is started with the thread's id and
    can push and withdraw that thread's forms, nothing else.
-6. **Files stay in the project.** An `images` widget, and the `document` and `diff` widgets
-   (milestones 3 and 4), read only files inside the thread's directory once links are resolved, of the kinds and sizes
+6. **Files stay in the project.** The `images` and `document` widgets, and the `diff` widget
+   (milestone 4), read only files inside the thread's directory once links are resolved, of the kinds and sizes
    the design lists; a document save writes only the section the card opened, and only if it is
    unchanged on disk.
 7. **Secrets.** The environment denylist and the key scan in `SPEC.md` apply unchanged. The
@@ -332,7 +349,7 @@ the agents. Every rule below follows from that.
 | --- | --- | --- |
 | 1 | The page reshaped | Done 2026-11-21: the screen, xterm.js and the page's size rule removed; the left column as projects and threads; the conversation as the middle; the right column ready for forms |
 | 2 | Forms | Done 2026-11-22: `desl mcp`, the launch flags for Claude Code 2.1.330, Codex 0.171.0 and Copilot 1.0.114, the events, the protocol, `desl form`, and the seven widgets of milestone 2 in the conversation and the right column. Each of the three agents called `show_form` without a dialog of its own and ended its turn; answers sent from the page and the shell reached Claude, Codex and Copilot as their next prompt; open forms and drafts survived daemon restarts. Two defects found on the way are fixed with tests: a migrating upgrade lost the new daemon's writes (`VACUUM INTO` for the backup), and a thread waiting on a form queued every prompt |
-| 3 | Document | A section of a Markdown file edited in place with comments; the conflict on save |
+| 3 | Document | Done 2026-11-22: a section of a Markdown file edited in place with a preview and comments, saved in one write only over what the user started from, and the conflict shown with both versions. Checked live: Claude Code (Haiku) pushed a document on a section, the page edited, commented and sent, the file changed in that section alone, and the agent read the diff and the comment; a file changed behind an open card was refused, shown, and saved over once the user chose so, with the choice surviving a reload |
 | 4 | Diff review | Each hunk accepted, rejected or commented on |
 | 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
 | 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |

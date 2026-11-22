@@ -53,7 +53,8 @@ function write(name, value) {
 /** The key from the address desl web printed, kept for this tab and taken out of the address bar. */
 function takeKey() {
   const m = location.hash.match(/(?:^#|&)t=([0-9a-f]{32})\b/);
-  // `prefix v` on a thread with a form open names the thread: the page opens on it, at the form.
+  // `prefix v` names the thread on the terminal's screen: the page opens on it, at its open form
+  // when it has one.
   const on = location.hash.match(/&thread=([\w/-]+)/);
   if (on) {
     state.selected = on[1];
@@ -240,6 +241,11 @@ function select(id) {
 }
 
 function render() {
+  // Opened on a thread with no form open: nothing to go to, so a form shown later does not take
+  // the page and the keys from the user.
+  if (state.toForm === true && state.view && !(state.view.forms || []).some((f) => f.thread_id === state.selected)) {
+    state.toForm = null;
+  }
   const cur = current();
   drawSide(cur);
   drawHead(cur);

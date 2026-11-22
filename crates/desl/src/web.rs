@@ -156,6 +156,21 @@ pub fn stop(paths: &Paths) -> Result<bool> {
     Ok(true)
 }
 
+/// The thread the page opens on when `prefix v` is pressed on `on`: that thread when the page
+/// shows it (an agent's), else its project's agent thread used last, so the page lands on the
+/// project the user is in. None when that project has no agent thread.
+pub fn page_thread(threads: &[desl_ir::Thread], on: &str) -> Option<String> {
+    let here = threads.iter().find(|t| t.id == on)?;
+    if desl_proto::view::on_page(here) {
+        return Some(here.id.clone());
+    }
+    threads
+        .iter()
+        .filter(|t| t.project_id == here.project_id && desl_proto::view::on_page(t))
+        .max_by_key(|t| t.updated_at)
+        .map(|t| t.id.clone())
+}
+
 /// The page's address, opened on one thread: the page selects it and goes to its open form.
 pub fn url_for(url: &str, thread: &str) -> String {
     format!("{url}&thread={thread}")
@@ -179,6 +194,30 @@ mod tests {
             socket: dir.join("d.sock"),
             config: dir.join("config.toml"),
         }
+    }
+
+    fn thread(id: &str, project: &str, agent: &str, updated: i64) -> desl_ir::Thread {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "project_id": project, "name": "", "cwd": "/src", "worktree": null, "parent_id": null,
+            "fork_point": null, "active_agent": agent, "status": "idle", "permission_mode": "edits",
+            "created_at": 0, "updated_at": updated, "head": 0, "bindings": {}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn the_page_opens_on_the_thread_on_screen_or_its_projects_latest_agent() {
+        let threads = [
+            thread("t-1", "desl", "claude", 10),
+            thread("t-2", "desl", "codex", 30),
+            thread("t-3", "desl", desl_ir::SHELL, 40),
+            thread("t-4", "desl", desl_ir::TASKS, 50),
+            thread("t-5", "rebrand", desl_ir::FILES, 60),
+        ];
+        assert_eq!(page_thread(&threads, "t-1").as_deref(), Some("t-1"), "an agent's thread: itself");
+        assert_eq!(page_thread(&threads, "t-3").as_deref(), Some("t-2"), "a shell: its project's latest agent");
+        assert_eq!(page_thread(&threads, "t-4").as_deref(), Some("t-2"), "the task list too");
+        assert_eq!(page_thread(&threads, "t-5"), None, "no agent in that project: the page picks");
     }
 
     #[test]

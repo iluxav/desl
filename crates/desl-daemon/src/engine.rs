@@ -2421,10 +2421,27 @@ impl Engine {
         // A document's section is read now and kept with the form: the card edits it, and the
         // save checks the file still has it.
         let mut form = form.clone();
+        let mut files: Vec<(PathBuf, &str)> = Vec::new();
+        let mut total = 0;
         for (n, w) in checked.widgets.iter().enumerate() {
             if let form::Widget::Document { path, section, .. } = w {
-                form["widgets"][n]["original"] = Value::String(crate::document::read(&dir, path, section.as_deref())?);
+                let (text, real) = crate::document::read(&dir, path, section.as_deref())?;
+                if let Some((_, other)) = files.iter().find(|(r, _)| *r == real) {
+                    return Err(format!(
+                        "The form names \"{other}\" and \"{path}\", which are the same file. Show one section of a file per form; two saves to one file would undo each other."
+                    ));
+                }
+                files.push((real, path));
+                total += text.len();
+                form["widgets"][n]["original"] = Value::String(text);
             }
+        }
+        // A draft holds each text as edited and as it started, with the comments: within 1 MB.
+        if total > form::MAX_SECTION_BYTES {
+            return Err(format!(
+                "The form's documents are {} KB in all; desl edits at most 256 KB in all in one form. Name smaller sections, or use two forms.",
+                total.div_ceil(1024)
+            ));
         }
         let json = form.to_string();
         let blob = self.store.blob_put(&json).map_err(|e| format!("desl could not keep the form ({e:#}). Try again."))?;
@@ -2522,6 +2539,11 @@ impl Engine {
             let text = given["text"].as_str().unwrap_or_default();
             let base = given.get("base").and_then(Value::as_str).or(original.as_deref()).unwrap_or_default();
             let plan = crate::document::plan(dir, path, section.as_deref(), base, text)?;
+            // Paths that lead to one file since the form was shown: one save would undo the other.
+            let real = |p: &Option<crate::document::Plan>| p.as_ref().map(|p| p.real().to_path_buf());
+            if real(&plan).is_some() && plans.iter().any(|(_, _, p, _)| real(p) == real(&plan)) {
+                return Err(format!("\"{path}\" now leads to a file another document of this form edits. Nothing was saved."));
+            }
             plans.push((id, path, plan, given.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]))));
         }
         let mut out = answer.clone();

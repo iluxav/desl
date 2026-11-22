@@ -391,6 +391,10 @@ const DRAW = {
     }
     const draft = value && typeof value === 'object' ? value : {};
     into.deslBase = typeof draft.base === 'string' ? draft.base : original;
+    // Closed without an answer: what the user wrote stays here to copy, and the file is as it was.
+    if (ctx.closed && typeof draft.text === 'string' && draft.text !== into.deslBase) {
+      into.append(el('p', 'fw-doc-state', `Not saved into ${w.path}: this form closed without an answer. Your text is below to copy.`));
+    }
     const tabs = el('div', 'fw-tabs');
     tabs.setAttribute('role', 'tablist');
     const editTab = el('button', 'fw-tab', 'Edit');
@@ -420,9 +424,21 @@ const DRAW = {
     const list = el('div', 'fw-comments');
     for (const c of Array.isArray(draft.comments) ? draft.comments : []) list.append(commentRow(c.quote, c.note, list));
     comment.addEventListener('click', () => {
-      show(true);
-      const picked = area.value.slice(area.selectionStart, area.selectionEnd).trim();
-      const quote = picked || paragraphAt(area.value, area.selectionStart);
+      let quote = '';
+      if (!view.hidden) {
+        // On the preview: what is selected in it, or nothing to quote yet.
+        const sel = window.getSelection();
+        const inside = sel && sel.rangeCount && view.contains(sel.getRangeAt(0).commonAncestorContainer);
+        quote = inside ? sel.toString().trim() : '';
+        if (!quote) {
+          comment.title = 'Select text in the preview first, or switch to Edit';
+          return;
+        }
+      } else {
+        const picked = area.value.slice(area.selectionStart, area.selectionEnd).trim();
+        quote = picked || paragraphAt(area.value, area.selectionStart);
+      }
+      quote = quote.slice(0, 2000);
       if (!quote) return;
       const row = commentRow(quote, '', list);
       list.append(row);
@@ -736,7 +752,7 @@ export function card(got, opts) {
   top.append(el('span', 'form-id', got.form_id));
   root.append(top);
   const values = closed === 'user' ? got.answer || {} : got.draft || {};
-  const ctx = { markdown: opts.markdown, image: opts.image, section: opts.section, answered: closed === 'user' };
+  const ctx = { markdown: opts.markdown, image: opts.image, section: opts.section, answered: closed === 'user', closed: Boolean(closed) };
   for (const w of form.widgets || []) {
     const box = el('div', `fw fw-kind-${w.kind}`);
     box.dataset.widget = w.id;
@@ -746,7 +762,11 @@ export function card(got, opts) {
     root.append(box);
   }
   if (!live) {
-    for (const i of root.querySelectorAll('input, textarea, select, button:not(.fw-wide)')) i.disabled = true;
+    // Text stays readable and can be copied; nothing else can be changed.
+    for (const i of root.querySelectorAll('input, textarea, select, button:not(.fw-wide)')) {
+      if (i.tagName === 'TEXTAREA' || (i.tagName === 'INPUT' && i.type === 'text')) i.readOnly = true;
+      else i.disabled = true;
+    }
     const said = closed ? CLOSED[closed] || closed : opts.note || '';
     if (said) root.append(el('p', 'form-state', said));
     return root;
@@ -762,10 +782,16 @@ export function card(got, opts) {
   bar.append(err, dismiss, send);
   root.append(bar);
   let timer = null;
+  // A draft desl would not keep is said on the card, not lost in silence.
+  const keep = async () => {
+    const reply = await opts.onDraft(valuesOf(form, root));
+    if (reply && reply.error) err.textContent = `Not kept as a draft: ${reply.error}`;
+    else if (err.textContent.startsWith('Not kept as a draft')) err.textContent = '';
+  };
   const changed = () => {
     send.disabled = answerOf(form, root) === null;
     clearTimeout(timer);
-    timer = setTimeout(() => opts.onDraft(valuesOf(form, root)), 1000);
+    timer = setTimeout(keep, 1000);
   };
   root.addEventListener('input', changed);
   root.addEventListener('change', changed);
@@ -784,8 +810,21 @@ export function card(got, opts) {
       for (const b of root.querySelectorAll('[data-widget]')) if (b.deslRecheck) await b.deslRecheck();
     }
   });
+  // A document edited and not sent asks once more: Dismiss does not save it.
+  const edited = () => [...root.querySelectorAll('[data-widget]')].some((b) => {
+    const area = b.querySelector('.fw-doc-text');
+    return area && area.value !== b.deslBase;
+  });
+  let armed = false;
   dismiss.addEventListener('click', async () => {
+    if (edited() && !armed) {
+      armed = true;
+      dismiss.textContent = 'Dismiss without saving?';
+      return;
+    }
     clearTimeout(timer);
+    // What was typed in the last second is kept with the closed card too.
+    await keep();
     const why = await opts.onDismiss();
     if (why) err.textContent = why;
   });

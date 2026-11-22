@@ -339,7 +339,10 @@ impl Store {
     /// Closes an open form. False when it was closed already, or is not there.
     pub fn form_close(&self, id: &str, by: &str, answer_blob: Option<&str>) -> Result<bool> {
         let n = self.conn.execute(
-            "UPDATE forms SET closed_by = ?2, answer_blob = ?3, draft = NULL WHERE id = ?1 AND closed_by IS NULL",
+            // An answered form needs its draft no more; one closed unanswered keeps it, so what the
+            // user wrote can still be read and copied from its card.
+            "UPDATE forms SET closed_by = ?2, answer_blob = ?3, draft = CASE WHEN ?3 IS NULL THEN draft END
+             WHERE id = ?1 AND closed_by IS NULL",
             params![id, by, answer_blob],
         )?;
         Ok(n == 1)

@@ -779,6 +779,13 @@ fn answers(w: &Widget, v: &Value) -> Result<(), String> {
                     return Err(format!("Each comment on \"{id}\" has a quote and a note, both text."));
                 }
             }
+            let long = |c: &Value, k: &str, most: usize| c[k].as_str().is_some_and(|t| t.chars().count() > most);
+            if comments.iter().any(|c| long(c, "quote", 2000)) {
+                return Err(format!("A comment on \"{id}\" quotes over 2,000 characters; quote less."));
+            }
+            if comments.iter().any(|c| long(c, "note", 4000)) {
+                return Err(format!("A note on \"{id}\" is over 4,000 characters."));
+            }
             Ok(())
         }
         Widget::Images { images, multi, optional, .. } => {
@@ -1168,6 +1175,18 @@ mod tests {
         assert!(answer(json!({"comments": []})).unwrap_err().contains("text"));
         assert!(answer(json!({"text": "x", "comments": [{"quote": "a"}]})).unwrap_err().contains("quote and a note"));
         assert!(answer(json!({"text": "x", "base": 3})).unwrap_err().contains("base"));
+    }
+
+    #[test]
+    fn a_comment_is_a_short_quote_and_a_note() {
+        // Drafts keep every comment: long ones would push a draft past what desl keeps.
+        let f = check(&document(json!({"original": "x"}))).unwrap();
+        let answer = |quote: usize, note: usize| {
+            check_answer(&f, &json!({"doc": {"text": "x", "comments": [{"quote": "q".repeat(quote), "note": "n".repeat(note)}]}}))
+        };
+        assert!(answer(2000, 4000).is_ok());
+        assert!(answer(2001, 1).unwrap_err().contains("2,000"));
+        assert!(answer(1, 4001).unwrap_err().contains("4,000"));
     }
 
     #[test]

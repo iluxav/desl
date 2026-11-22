@@ -1626,3 +1626,47 @@ fn a_document_outside_the_thread_or_not_markdown_is_refused() {
     }
     assert!(r.thread(&t).open_forms.is_empty());
 }
+
+#[test]
+fn one_file_named_twice_in_a_form_is_refused() {
+    // Two sections of one file saved one after the other: the second would undo the first.
+    let mut r = rig("form-doc-twice");
+    let t = r.t.clone();
+    let cwd = PathBuf::from(r.thread(&t).cwd);
+    std::fs::write(cwd.join("a.md"), GUIDE).unwrap();
+    std::os::unix::fs::symlink(cwd.join("a.md"), cwd.join("b.md")).unwrap();
+    for other in ["./a.md", "b.md"] {
+        let form = json!({"title": "t", "widgets": [
+            {"kind": "document", "id": "one", "path": "a.md", "section": "Install"},
+            {"kind": "document", "id": "two", "path": other, "section": "Use"}]});
+        let err = r.cmd(Command::FormNew { thread_id: t.clone(), form }).unwrap_err();
+        assert!(err.contains("same file"), "{other}: {err}");
+    }
+}
+
+#[test]
+fn a_form_closed_unanswered_keeps_what_the_user_wrote() {
+    // An hour's edit to a document must not vanish because the agent withdrew the form.
+    let mut r = rig("form-doc-withdrawn");
+    let (form_id, _) = pushed_document(&mut r, "guide.md");
+    let draft = json!({"doc": {"text": "## Install\n\nAn hour of work.\n\n", "comments": []}});
+    r.cmd(Command::FormDraft { form_id: form_id.clone(), draft: draft.clone() }).unwrap();
+    r.cmd(Command::FormClose { form_id: form_id.clone(), by: "withdrawn".into() }).unwrap();
+    let Ok(Reply::Form { draft: kept, closed_by, .. }) = r.cmd(Command::FormGet { form_id }) else { panic!("the form") };
+    assert_eq!((kept, closed_by.as_deref()), (Some(draft), Some("withdrawn")));
+}
+
+#[test]
+fn a_form_edits_at_most_256_kb_of_sections_in_all() {
+    // Its draft holds each text as edited and as it started: that must fit what desl keeps.
+    let mut r = rig("form-doc-much");
+    let t = r.t.clone();
+    let cwd = PathBuf::from(r.thread(&t).cwd);
+    let big = format!("# A\n\n{}\n", "x".repeat(150 * 1024));
+    std::fs::write(cwd.join("a.md"), &big).unwrap();
+    std::fs::write(cwd.join("b.md"), &big).unwrap();
+    let form = json!({"title": "t", "widgets": [
+        {"kind": "document", "id": "one", "path": "a.md"}, {"kind": "document", "id": "two", "path": "b.md"}]});
+    let err = r.cmd(Command::FormNew { thread_id: t.clone(), form }).unwrap_err();
+    assert!(err.contains("256 KB") && err.contains("in all"), "{err}");
+}

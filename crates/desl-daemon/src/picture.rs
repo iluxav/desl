@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 const SNIFF: usize = 4096;
 
 fn open(dir: &Path, path: &str) -> Result<(File, PathBuf), String> {
-    crate::files::open_inside(dir, path, "image", MAX_IMAGE_BYTES)
+    crate::files::open_inside(dir, path, "image", MAX_IMAGE_BYTES).map(|(file, at)| (file, at.real))
 }
 
 /// The media type of a picture, from its first bytes; an SVG also needs its name to say so.

@@ -199,7 +199,14 @@ for the section as it is now (`form_section`) and shows it, with **Use the file'
 **Save mine over it**, and the choice is kept in the draft. Otherwise desl writes each file in one
 go, through a file beside it renamed over it with its mode, and the agent gets
 `{saved, diff, more?, comments[{quote, note}]}`: the unified diff by `git diff --no-index`, at most
-400 lines. A text sent unchanged writes nothing (`saved: false`). A form names a file once.
+400 lines. A text sent unchanged writes nothing (`saved: false`). A form names a file once, by
+its real path, so two spellings of one file or a link to it are refused; its documents hold at most
+256 KB in all, so its draft fits. The file's folder is opened part by part without following a
+link and held from the check to the write, the temporary file is made in it with `O_EXCL`, given
+the file's mode and renamed over the file there: a folder or the file swapped for a link meanwhile
+leads nowhere else. The file's real name must be Markdown too. A comment quotes at most 2,000
+characters and its note at most 4,000. Dismiss asks once more when a document is edited and not
+sent.
 
 `diff` follows in milestone 4, as the design describes it: the agent names the change and desl
 reads it with git, so a form stays small and the user sees the change as it is.
@@ -227,7 +234,9 @@ reads it with git, so a form stays small and the user sees the change as it is.
    starts. `close_form` withdraws one.
 5. **Drafts:** what the user fills in goes to the daemon a second after the last change and is
    kept beside the open form, so a reload, an install, a daemon restart or another tab finds the
-   card as it was.
+   card as it was. A draft desl refuses (over 1 MB) is said on the card. A form closed unanswered,
+   dismissed or withdrawn, keeps its last draft: its card shows what the user wrote, read-only, to
+   copy; an answered one drops it.
 
 A form closes once. Open forms live in the store, so a restart of anything keeps them. After a
 switch the answer goes to whichever agent the thread runs then; a fork shows its parent's forms

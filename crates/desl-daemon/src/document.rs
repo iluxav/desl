@@ -2,9 +2,10 @@
 //! images"): a Markdown file inside the thread's directory, of at most 1 MB, whose section is read
 //! when the form is pushed and saved on Send, in one write, only over what the user started from.
 
-use crate::files::open_inside;
+use crate::files::{Located, open_inside};
 use desl_proto::form::MAX_SECTION_BYTES;
 use desl_proto::markdown;
+use rustix::fs::{Mode, OFlags, fchmod, openat, renameat, unlinkat};
 use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -15,9 +16,15 @@ const MAX_FILE_BYTES: u64 = 1024 * 1024;
 /// Lines of the diff the agent gets before `more` says how many were left out.
 const DIFF_LINES: usize = 400;
 
-/// The file's text and real path, checked: inside, Markdown, UTF-8, LF line endings.
-fn load(dir: &Path, path: &str) -> Result<(String, PathBuf), String> {
-    let (file, real) = open_inside(dir, path, "document", MAX_FILE_BYTES)?;
+/// The file's text, where it is and its mode, checked: inside, Markdown, UTF-8, LF line endings.
+fn load(dir: &Path, path: &str) -> Result<(String, Located, u32), String> {
+    let (file, at) = open_inside(dir, path, "document", MAX_FILE_BYTES)?;
+    // Its real name too: a .md link to another file of the project is not that file's way in.
+    let markdown = at.real.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
+    if !markdown {
+        return Err(format!("\"{path}\" leads to {}, which is not a Markdown file.", at.real.display()));
+    }
+    let mode = file.metadata().map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o644);
     let mut bytes = Vec::new();
     file.take(MAX_FILE_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("desl could not read \"{path}\" ({e})."))?;
     if bytes.len() as u64 > MAX_FILE_BYTES {
@@ -29,12 +36,13 @@ fn load(dir: &Path, path: &str) -> Result<(String, PathBuf), String> {
             "The document \"{path}\" has Windows line endings (CRLF); desl edits files with Unix line endings only. Convert it first."
         ));
     }
-    Ok((text, real))
+    Ok((text, at, mode))
 }
 
-/// The section under `heading` (the whole file without one), as the card shows it for editing.
-pub fn read(dir: &Path, path: &str, heading: Option<&str>) -> Result<String, String> {
-    let (text, _) = load(dir, path)?;
+/// The section under `heading` (the whole file without one), as the card shows it for editing,
+/// and the file's real path.
+pub fn read(dir: &Path, path: &str, heading: Option<&str>) -> Result<(String, PathBuf), String> {
+    let (text, at, _) = load(dir, path)?;
     let range = markdown::section(&text, heading).map_err(|e| format!("In \"{path}\": {e}"))?;
     let part = &text[range];
     if part.len() > MAX_SECTION_BYTES {
@@ -43,20 +51,28 @@ pub fn read(dir: &Path, path: &str, heading: Option<&str>) -> Result<String, Str
             part.len().div_ceil(1024)
         ));
     }
-    Ok(part.to_string())
+    Ok((part.to_string(), at.real))
 }
 
 /// The section as it is on disk now: None when its heading is gone from the file.
 pub fn current(dir: &Path, path: &str, heading: Option<&str>) -> Result<Option<String>, String> {
-    let (text, _) = load(dir, path)?;
+    let (text, _, _) = load(dir, path)?;
     Ok(markdown::section(&text, heading).ok().map(|r| text[r].to_string()))
 }
 
-/// A save worked out and checked, not yet written.
+/// A save worked out and checked, not yet written: the folder it was checked in stays open.
 pub struct Plan {
-    real: PathBuf,
+    at: Located,
+    mode: u32,
     before: String,
     after: String,
+}
+
+impl Plan {
+    /// The file's real path when it was checked.
+    pub fn real(&self) -> &Path {
+        &self.at.real
+    }
 }
 
 /// The file with the section replaced by `text`, when the section on disk is still `base`, the
@@ -66,7 +82,7 @@ pub fn plan(dir: &Path, path: &str, heading: Option<&str>, base: &str, text: &st
     if text == base {
         return Ok(None);
     }
-    let (before, real) = load(dir, path)?;
+    let (before, at, mode) = load(dir, path)?;
     let changed =
         || format!("\"{path}\" changed on disk since the form was shown: its section is not what you started from. Nothing was saved.");
     let range = markdown::section(&before, heading).map_err(|_| changed())?;
@@ -79,23 +95,27 @@ pub fn plan(dir: &Path, path: &str, heading: Option<&str>, base: &str, text: &st
         middle.push('\n');
     }
     let after = format!("{}{middle}{}", &before[..range.start], &before[range.end..]);
-    Ok(Some(Plan { real, before, after }))
+    Ok(Some(Plan { at, mode, before, after }))
 }
 
-/// Writes a planned save in one go: a file beside it, renamed over it, with its mode.
+/// Writes a planned save in one go, in the folder it was checked in: a new file beside it,
+/// given the file's mode, renamed over it.
 pub fn write(plan: &Plan, path: &str) -> Result<(), String> {
-    let folder = plan.real.parent().ok_or_else(|| format!("desl could not save \"{path}\": it has no folder."))?;
-    let name = plan.real.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = folder.join(format!(".{name}.desl-{}", std::process::id()));
-    let mode = std::fs::metadata(&plan.real).map(|m| m.permissions().mode() & 0o7777).unwrap_or(0o644);
     let failed = |e: std::io::Error| format!("desl could not save \"{path}\" ({e}). The file is as it was.");
-    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(mode).open(&tmp).map_err(failed)?;
-    if let Err(e) = f.write_all(plan.after.as_bytes()).and_then(|()| f.sync_all()) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(failed(e));
-    }
-    if let Err(e) = std::fs::rename(&tmp, &plan.real) {
-        let _ = std::fs::remove_file(&tmp);
+    let dir = &plan.at.dir;
+    let mut tmp = std::ffi::OsString::from(".");
+    tmp.push(&plan.at.name);
+    tmp.push(format!(".desl-{}-{}", std::process::id(), unique()));
+    let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+    let fd = openat(dir, &tmp, flags, Mode::from_raw_mode(0o600)).map_err(|e| failed(e.into()))?;
+    let mut f = std::fs::File::from(fd);
+    let done = f
+        .write_all(plan.after.as_bytes())
+        .and_then(|()| fchmod(&f, Mode::from_raw_mode(plan.mode)).map_err(Into::into))
+        .and_then(|()| f.sync_all())
+        .and_then(|()| renameat(dir, &tmp, dir, &plan.at.name).map_err(Into::into));
+    if let Err(e) = done {
+        let _ = unlinkat(dir, &tmp, rustix::fs::AtFlags::empty());
         return Err(failed(e));
     }
     Ok(())
@@ -138,4 +158,56 @@ fn unique() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
     NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    const DOC: &str = "# Guide\n\n## Install\n\nRun it.\n\n## Use\n\nGo.\n";
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("desl-doc-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("proj/sub")).unwrap();
+        std::fs::create_dir_all(d.join("outside")).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_folder_swapped_for_a_link_between_check_and_write_is_not_written_through() {
+        let d = scratch("swap");
+        let proj = d.join("proj");
+        std::fs::write(proj.join("sub/a.md"), DOC).unwrap();
+        std::fs::write(d.join("outside/a.md"), DOC).unwrap();
+        let plan = plan(&proj, "sub/a.md", Some("Install"), "## Install\n\nRun it.\n\n", "## Install\n\nMine.\n\n").unwrap().unwrap();
+        // Between the check and the write, the folder becomes a link to one outside.
+        std::fs::rename(proj.join("sub"), proj.join("held")).unwrap();
+        std::os::unix::fs::symlink(d.join("outside"), proj.join("sub")).unwrap();
+        let _ = write(&plan, "sub/a.md");
+        assert_eq!(std::fs::read_to_string(d.join("outside/a.md")).unwrap(), DOC, "nothing written outside");
+        assert!(std::fs::read_to_string(proj.join("held/a.md")).unwrap().contains("Mine."), "written where it was checked");
+    }
+
+    #[test]
+    fn a_save_keeps_the_files_mode() {
+        let d = scratch("mode");
+        let proj = d.join("proj");
+        std::fs::write(proj.join("a.md"), DOC).unwrap();
+        std::fs::set_permissions(proj.join("a.md"), std::fs::Permissions::from_mode(0o664)).unwrap();
+        let p = plan(&proj, "a.md", None, DOC, "# Guide\n").unwrap().unwrap();
+        write(&p, "a.md").unwrap();
+        assert_eq!(std::fs::metadata(proj.join("a.md")).unwrap().permissions().mode() & 0o777, 0o664);
+    }
+
+    #[test]
+    fn a_markdown_name_linked_to_another_file_is_refused() {
+        let d = scratch("ext");
+        let proj = d.join("proj");
+        std::fs::write(proj.join(".env"), "TOKEN=x\n").unwrap();
+        std::os::unix::fs::symlink(proj.join(".env"), proj.join("notes.md")).unwrap();
+        let err = read(&proj, "notes.md", None).unwrap_err();
+        assert!(err.contains("Markdown"), "{err}");
+    }
 }

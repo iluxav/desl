@@ -74,7 +74,7 @@ Every tool in this space grew sideways. Staying narrow is a feature, and these a
 - **No new coding agent, model router or API proxy.** desl drives the agents the user already has, under the user's own logins. It never calls a model API itself.
 - **No plugin runtime, workflow engine or scheduler.** No marketplaces, no event-driven loops, no cron. Long-running automation belongs in the agents or in CI; desl's CLI and skill file let them drive it.
 - **No dashboard.** No metrics pages and no boards. The remote client in phase 3 is the same TUI over TCP. `desl web` is the one browser client (the author's call on 2026-11-21, specified in `web-spec.md`): the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user (`docs/design/2026-11-21-web-forms.md`); the agent's screen stays in the terminal. It adds no feature the CLI lacks. The one list desl keeps besides threads is a project's task list (the author's call on 2026-11-20): a flat list in a Markdown file of the project, which the user and the agents both change, shown in a thread of its own (see "Tasks"). It stays flat: no columns, sprints, assignees, estimates or accounts.
-- **No IDE features.** No file browser, editor or language server of desl's own. `o` opens the file in `$EDITOR`, and a files thread runs the file manager the user installed (yazi) in a terminal, as a shell thread runs their shell: desl draws nothing of it. That is the integration. `desl web` shows a project's Markdown files with what the agents changed in them, takes comments on them, and edits them a paragraph at a time (the author's call on 2026-11-21); it opens no other kind of file.
+- **No IDE features.** No file browser, editor or language server of desl's own. `o` opens the file in `$EDITOR`, and a files thread runs the file manager the user installed (yazi) in a terminal, as a shell thread runs their shell: desl draws nothing of it. That is the integration. A form's `document` widget on `desl web` edits one section of a project's Markdown file that an agent put in front of the user (`web-spec.md`, "Forms"); it opens no other kind of file.
 - **No team or cloud features in the core.** No accounts, no hosted sync, no shared state. `export` and `import` move a thread between the user's own machines.
 - **No agent beyond the three in the core.** Claude Code, Codex and GitHub Copilot CLI are the whole surface until phase 3 (Copilot joined on 2026-11-15, at the author's call, as the third agent he runs daily); more agents come through the third-party adapter protocol, not the core.
 - **No ambient AI in the chrome.** desl does not summarise, suggest, rank or auto-complete anything with a model of its own. The one exception is the opt-in agent-written brief, which the outgoing agent writes.
@@ -101,9 +101,9 @@ All user-facing words are fixed here. Code, docs, help text and error messages u
 | switch | Continue this thread with a different agent | new |
 | fork | Copy a thread up to a point into a new thread | git, Claude Code |
 | task | One item of a project's task list: a title, a type, a status, a priority and a description | Jira, GitHub issues |
-| question | What a thread's agent asks the user with `desl ask`, with options to choose from | Claude Code (`AskUserQuestion`) |
+| form | What a thread's agent puts in front of the user on `desl web`'s page, made of widgets (choices, a checklist, fields, later a document, a diff, a preview), answered with Send; the answer is the agent's next prompt | Claude Code (`AskUserQuestion`), A2UI |
 | comment | A note the user attaches to a passage of a project's document and sends to a thread | GitHub reviews, Google Docs |
-| waiting list | Every pending approval and question in the workspace, in one place | Herdr's attention queue |
+| waiting list | Every open form and every agent dialog in the workspace, in one place | Herdr's attention queue |
 | detach / attach | Leave or rejoin the workspace, agents keep running | tmux |
 
 Status words, used identically in the thread list, the CLI and notifications:
@@ -111,7 +111,7 @@ Status words, used identically in the thread list, the CLI and notifications:
 | Status | Meaning | Colour role |
 | --- | --- | --- |
 | working | The agent is generating or running a tool | accent |
-| waiting | The agent asked a question or needs an approval | warning |
+| waiting | The agent asked a question, needs an approval, or put a form in front of the user | warning |
 | idle | The last turn finished, nothing pending | muted |
 | failed | The agent process exited abnormally | critical |
 | detached | Pane is running but no client is attached | muted |
@@ -472,8 +472,9 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 | Binary size, stripped | < 25 MB |
 | Store growth | < 1 KB per event excluding tool output blobs |
 | `desl web`: page load to a usable thread list, 20 threads | < 500 ms |
-| `desl web`: an agent's edit to its mark in the open document | < 1.5 s |
-| `desl web`: a save to the file on disk | < 100 ms |
+| `desl web`: `show_form` to the card on an open page | < 300 ms |
+| `desl web`: Send to the prompt typed into an idle agent | < 1 s |
+| `desl mcp`: the tool's description and schemas | ≤ 1,500 tokens |
 | `desl web`: memory with three tabs open | < 50 MB |
 
 **Rendering.** The agent draws into desl's emulator; desl paints the changed cells at most once per 12 ms, each paint one synchronized-output frame, and passes the agent's key-mode requests (kitty keyboard, modifyOtherKeys, bracketed paste, focus reports) to the real terminal. desl answers the agent's questions to its terminal (cursor position, colours, attributes) from the user's terminal's answers, probed once. Resize goes to the agent's PTY at once and to hidden PTYs debounced at 50 ms. When a pane gets a new width, desl wraps what is on its screen and in its scrollback again at that width, as the user's own terminal does: a line that wrapped is joined and wrapped anew, a line too long for a narrower pane continues on the next row and is whole again when the pane widens, and the cursor stays on its character. A program on the alternate screen (an editor, a pager, an agent's full-screen view) draws itself afresh for the new size; the screen behind it is wrapped again all the same, so it is right when the program quits. The daemon's screen model of each PTY is resized the same way, so it stays what a client shows.

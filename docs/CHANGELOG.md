@@ -7,6 +7,17 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- Forms on desl web: an agent puts a form in front of you, and your answer is its next
+  prompt. Claude Code, Codex and Copilot get desl's MCP tool `show_form` when desl starts them,
+  through their own flags, with your configuration untouched. A form is drawn as a card in the
+  thread's conversation: text to read, a choice with an optional typed answer, a checklist to
+  untick, reorder and annotate, text, a number with a slider, a toggle, a list to pick from. Send
+  stays off until the required answers are in; Dismiss closes it, and the agent is told before
+  its next prompt. What you fill in is kept as you go, so a reload, an install or a restart finds
+  it as you left it. The right column lists every open form; `ctrl+space v` on a thread with one
+  open goes straight to it. A thread with a form open shows waiting, and talking to its agent
+  meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
+  from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
 - `desl web`: the workspace in a browser, the first milestone of `web-spec.md`. It prints an
   address on 127.0.0.1 with a key that is new each time, and the page lists every project and
   agent thread with the same marks and words as the terminal's sidebar: the agent logo as the

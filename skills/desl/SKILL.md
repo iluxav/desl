@@ -96,6 +96,10 @@ After `desl interrupt`, `desl wait <thread>` returns once the turn has ended. Af
 
 When `desl send` reports that the agent is asking something before it goes on, such as whether to trust a new folder, desl has not typed your prompt; tell the user, who answers in desl's screen.
 
+## Put a form in front of the user
+
+When the user should edit, review, reorder or compare something, or choose with room for a note, use desl's MCP tool `show_form` (desl gives it to every agent it starts; its description lists the widgets), then end your turn: the answer arrives as your next prompt, starting `desl: answer to f-…`. From a shell, `desl form new` takes the same JSON on stdin. For a yes or no, ask in your own way.
+
 ## Rules
 
 - **Never target your own thread** with `send`, `wait`, `interrupt`, `exit`, `restart`, `switch` or `thread rm`; desl refuses, because each would hang you or end you mid-turn. Fork it instead.

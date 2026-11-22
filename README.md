@@ -121,12 +121,18 @@ it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
 
 Open the address it prints. The page lists every project and agent thread with the same marks
 and words as the sidebar, and shows the whole conversation of the thread you pick, with a
-search and a prompt box under it (queued while the agent works). Stop in the thread's header
-ends its turn, and the right column says which threads wait on you in their own screen. The
-agent's screen stays in the terminal. It listens on 127.0.0.1 only, and the key after `#t=` is
-new each time desl web starts. `ctrl+c` stops it; the agents keep working. Next: agents put
-forms in front of you on the page, to choose, edit, tune and review, and get your answer as
-their next prompt (see `docs/design/2026-11-21-web-forms.md`).
+search and a prompt box under it (queued while the agent works).
+
+It is where your agents put **forms** in front of you: when a choice needs its trade-offs, a
+plan should be approved step by step, or a setting tuned, the agent calls desl's `show_form`
+tool and ends its turn, and the form appears as a card in its conversation: options, a
+checklist to untick and reorder, fields, a slider. Press Send, and your answer is the agent's
+next prompt. The right column lists every open form, and `ctrl+space v` on a waiting thread
+goes straight to it. desl gives the tool to Claude Code, Codex and Copilot when it starts them;
+nothing to configure.
+
+The agent's own screen stays in the terminal. desl web listens on 127.0.0.1 only, and the key
+after `#t=` is new each time it starts. `ctrl+c` stops it; the agents keep working.
 
 ## From a script
 

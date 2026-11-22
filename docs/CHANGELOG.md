@@ -7,9 +7,6 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
-- desl web's waiting list shows what each waiting agent asks: the dialog its screen shows, an
-  approval or a folder trust, as text on the thread's card, and **Open its screen** takes you to
-  the agent's screen with the keys in it to answer. Works with Claude Code, Codex and Copilot.
 - `desl web`: the workspace in a browser, the first milestone of `web-spec.md`. It prints an
   address on 127.0.0.1 with a key that is new each time, and the page lists every project and
   agent thread with the same marks and words as the terminal's sidebar: the agent logo as the
@@ -27,11 +24,6 @@ All notable changes to desl are recorded here. The format follows
   to a line you can open, a rule at each new day. A search box finds a word (enter for the next,
   shift+enter for the one before), a box hides the tool calls, and it follows new turns as they
   land.
-- desl web shows the agent's own screen: the selected thread's Claude Code, Codex, Copilot or
-  task list, drawn by xterm.js, with keys, paste and the mouse, as in the terminal. When the
-  terminal shows the same thread, the page draws it at the terminal's size so the terminal stays
-  right, and takes its own size back when the terminal moves on. It comes back by itself after
-  `desl daemon restart`, and an agent that ended starts again with one click.
 - `ctrl+space v` opens the workspace in your browser: it starts `desl web` in the background
   when none runs for this workspace, and it runs on after desl closes. Over SSH the address goes
   to the clipboard instead. `desl web --open` does the same from a shell, `desl web` says where

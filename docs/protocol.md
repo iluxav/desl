@@ -70,7 +70,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `files` | `thread_id` | `files {files}` | The project's files, for the `@` picker. |
 | `blob` | `hash` | `blob {text}` | The full text of a truncated tool output. |
 | `save_view` | `view` | `done` | What the client wants back on its next attach. Opaque to the daemon. |
-| `attach` | `thread_id`, `rows`, `cols`, `answers` | `attached {thread_id, agent, replay, rows, cols}` | Shows the thread's agent in this client's terminal (the native route). The agent's own interface starts at this size if it is not running, resuming its session when the thread has one. `replay` draws its screen as it is now, base64: what it drew, with a mark wherever its terminal was given a size (`ESC _ desl;size;<rows>;<cols> ESC \`, an application program command, which a terminal ignores), and with everything older than the last megabyte or so folded into the screen, the history and the modes it left behind. The client draws each part at its size (`desl_proto::replay::play`) and puts the result on screen in one frame, and `pty` frames follow. `answers` is what the client's terminal replied to the questions agents ask (`fg`, `bg`, `cursor_color`, `da1`, `kitty`, each the reply verbatim); the daemon gives the same replies while no client shows the agent. |
+| `attach` | `thread_id`, `rows`, `cols`, `answers` | `attached {thread_id, agent, replay}` | Shows the thread's agent in this client's terminal (the native route). The agent's own interface starts at this size if it is not running, resuming its session when the thread has one. `replay` draws its screen as it is now, base64: what it drew, with a mark wherever its terminal was given a size (`ESC _ desl;size;<rows>;<cols> ESC \`, an application program command, which a terminal ignores), and with everything older than the last megabyte or so folded into the screen, the history and the modes it left behind. The client draws each part at its size (`desl_proto::replay::play`) and puts the result on screen in one frame, and `pty` frames follow. `answers` is what the client's terminal replied to the questions agents ask (`fg`, `bg`, `cursor_color`, `da1`, `kitty`, each the reply verbatim); the daemon gives the same replies while no client shows the agent. |
 | `input` | `thread_id`, `data` | none | Keys for the shown agent, base64, exactly as the terminal sent them. Never replied to. |
 | `resize` | `thread_id`, `rows`, `cols` | none | The client's terminal changed size. Never replied to. |
 | `leave` | `thread_id` | none | This client no longer shows the thread: its pane closed or moved to another thread. A client may show several threads at once, one per pane. Never replied to. |
@@ -89,7 +89,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `what` | Carries | When |
 | --- | --- | --- |
 | `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
-| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval or branch changed, or what its agent's screen asks. While a thread is `waiting` on a dialog in its agent's screen, `thread.asking` holds that dialog as text: the bottom rows of the screen without the blank ones around them. It is absent otherwise, and never stored. |
+| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval or branch changed. |
 | `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |
@@ -143,20 +143,11 @@ Codex in exec mode sends no deltas: its messages arrive whole.
 ```json
 {"type": "pty", "thread_id": "t-7f3a", "data": "G1szMm3il48bWzBtIFJvdGF0aW9u"}
 {"type": "pty_ended", "thread_id": "t-7f3a", "code": 0}
-{"type": "pty_size", "thread_id": "t-7f3a", "rows": 33, "cols": 101}
 ```
 
 On the native route a client that attached to a thread gets every byte its agent draws, base64,
 in order, after the `attached` reply. `pty_ended` says the agent's interface quit; the next
 `attach` starts it again on the same session.
-
-A client that says `hello` as `web` (`desl web`'s bridge) is a page. While a TUI shows a thread,
-its terminal keeps the size the TUI that asked last wants, whatever a page asks with `attach` or
-`resize`: a TUI draws the agent through an emulator of its pane's size. Once no TUI shows it, the
-page that asked last sets the size. `attached` says the size the terminal has, and `pty_size`
-tells the pages that show a thread each time it changes; a TUI never gets `pty_size`. The daemon
-answers the questions an agent asks its terminal (cursor position, colours, attributes) whenever
-no TUI shows the thread, so a page answers none and the agent hears each answer once.
 
 ```json
 {"type": "pty_replace", "thread_id": "t-7f3a", "agent": "codex", "data": "G1s/MjAyNmg…"}

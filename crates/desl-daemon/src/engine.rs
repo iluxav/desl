@@ -80,21 +80,8 @@ struct Client {
     subscribed: bool,
     /// The thread whose token stream this client receives.
     viewing: Option<String>,
-    /// The threads whose agents' interfaces this client shows (the native route), one per pane,
-    /// each with the size it asked for.
-    shows: HashMap<String, Asked>,
-    /// `desl web`'s bridge, by the name it gave in `hello`: a TUI's size wins over its, and it
-    /// answers no terminal questions (web-spec.md "The agent's screen on the page").
-    web: bool,
-}
-
-/// The size a client asked a thread's terminal to be, and when, by [`Engine::stamp`].
-#[derive(Clone, Copy)]
-struct Asked {
-    rows: u16,
-    cols: u16,
-    at: u64,
-    web: bool,
+    /// The threads whose agents' interfaces this client shows (the native route), one per pane.
+    shows: HashSet<String>,
 }
 
 /// The turn in flight on a thread.
@@ -174,14 +161,6 @@ const TURN_START_LIMIT: Duration = Duration::from_secs(30);
 /// The lines of the screen's bottom that are checked for a question from the agent.
 const ASKING_ROWS: usize = 14;
 
-/// The rows of a screen without the blanks at their ends, and the blank rows above and below.
-fn trimmed(text: &str) -> String {
-    let rows: Vec<&str> = text.lines().map(str::trim_end).collect();
-    let first = rows.iter().position(|r| !r.trim().is_empty()).unwrap_or(rows.len());
-    let last = rows.iter().rposition(|r| !r.trim().is_empty()).map_or(first, |i| i + 1);
-    rows[first..last].join("\n")
-}
-
 /// What exists only while the daemon runs.
 #[derive(Default)]
 struct Live {
@@ -211,8 +190,6 @@ pub struct Engine {
     models: HashMap<String, Vec<ModelInfo>>,
     tx: Sender<Msg>,
     generation: u64,
-    /// Counts the sizes clients ask for, so the newest is known.
-    stamp: u64,
     /// Each thread's running agent interface, with the generation its output is tagged with.
     ptys: HashMap<String, (u64, Pty)>,
     /// What the user's terminal answers to the questions agents ask, from the last attach.
@@ -388,7 +365,6 @@ impl Engine {
             models: HashMap::new(),
             tx,
             generation: 0,
-            stamp: 0,
             ptys: HashMap::new(),
             answers: term::Answers::default(),
             tails: HashMap::new(),
@@ -575,10 +551,6 @@ impl Engine {
     fn persist(&mut self, thread_id: &str) {
         let Ok(i) = self.idx(thread_id) else { return };
         self.threads[i].updated_at = now();
-        if self.threads[i].status != Status::Waiting {
-            // Answered, or the turn ended some other way: nothing is asked any more.
-            self.threads[i].asking = None;
-        }
         if let Err(e) = self.store.put_thread(&self.threads[i]) {
             tracing::error!(thread = thread_id, "could not write the thread: {e:#}");
         }
@@ -723,7 +695,6 @@ impl Engine {
             bindings: Default::default(),
             queued: Vec::new(),
             pending_approval: None,
-            asking: None,
             subagents: Vec::new(),
         };
         let id = thread.id.clone();
@@ -1007,16 +978,12 @@ impl Engine {
     pub fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Connected { client, out } => {
-                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: HashMap::new(), web: false });
+                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: HashSet::new() });
                 self.refresh_git();
             }
             Msg::Disconnected { client } => {
-                let shown: Vec<String> = self.clients.remove(&client).map(|c| c.shows.into_keys().collect()).unwrap_or_default();
+                self.clients.remove(&client);
                 self.waiters.retain(|(c, _, _)| *c != client);
-                // A TUI that showed them is gone: a page that shows them takes their size.
-                for thread_id in shown {
-                    self.fit(&thread_id);
-                }
             }
             Msg::Request { client, request } => {
                 let id = request.id;
@@ -1290,42 +1257,15 @@ impl Engine {
         if answers != term::Answers::default() {
             self.answers = answers;
         }
-        if !self.ptys.contains_key(thread_id) {
-            // It starts at the size of the first client to show it.
-            self.start_pty(i, rows, cols)?;
+        match self.ptys.get_mut(thread_id) {
+            Some((_, pty)) => pty.resize(rows, cols),
+            None => self.start_pty(i, rows, cols)?,
         }
-        self.stamp += 1;
         if let Some(c) = self.clients.get_mut(&client) {
-            let asked = Asked { rows, cols, at: self.stamp, web: c.web };
-            c.shows.insert(thread_id.to_string(), asked);
+            c.shows.insert(thread_id.to_string());
         }
-        self.fit(thread_id);
         let (_, pty) = &self.ptys[thread_id];
-        let (rows, cols) = pty.size();
-        Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()), rows, cols })
-    }
-
-    /// Gives a thread's terminal the size its clients ask for (web-spec.md "One thread on two
-    /// screens"): while a TUI shows it, the size the TUI that asked last wants, since a TUI draws
-    /// the agent through an emulator of its pane's size; otherwise the size the page that asked
-    /// last wants. The pages that show it hear the size whenever it changes, and draw the agent
-    /// at that size.
-    fn fit(&mut self, thread_id: &str) {
-        let want = self.clients.values().filter_map(|c| c.shows.get(thread_id)).max_by_key(|a| (!a.web, a.at)).map(|a| (a.rows, a.cols));
-        let Some((rows, cols)) = want else { return };
-        let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
-        let before = pty.size();
-        pty.resize(rows, cols);
-        let (rows, cols) = pty.size();
-        if (rows, cols) == before {
-            return;
-        }
-        let frame = ServerFrame::PtySize { thread_id: thread_id.to_string(), rows, cols };
-        let pages: Vec<ClientId> =
-            self.clients.iter().filter(|(_, c)| c.web && c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
-        for client in pages {
-            self.send(client, &frame);
-        }
+        Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()) })
     }
 
     fn pty_output(&mut self, thread_id: &str, generation: u64, data: &[u8]) {
@@ -1349,16 +1289,13 @@ impl Engine {
             self.poll_tail(thread_id);
         }
         let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
-        if !shown.iter().any(|id| self.clients.get(id).is_some_and(|c| !c.web)) {
-            // No TUI's terminal is there to answer what the agent asks it: answer as it would.
-            // A page leaves its questions to the daemon, so they are answered once.
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
+        if shown.is_empty() {
+            // Nobody's terminal is there to answer what the agent asks it: answer as it would.
             let replies = term::replies(data, &self.answers, pty.cursor());
             if !replies.is_empty() {
                 pty.write(&replies);
             }
-        }
-        if shown.is_empty() {
             return;
         }
         let frame = ServerFrame::Pty { thread_id: thread_id.to_string(), data: b64::encode(data) };
@@ -1528,15 +1465,13 @@ impl Engine {
             }
             Some(_) => {}
             None if pty.ready() => {
-                let tail = pty.tail_text(ASKING_ROWS);
-                let asking = self.adapters.iter().find(|a| a.id() == pty.agent).is_some_and(|a| a.waiting(&tail));
+                let asking = self.adapters.iter().find(|a| a.id() == pty.agent).is_some_and(|a| a.waiting(&pty.tail_text(ASKING_ROWS)));
                 if asking {
                     // Its own question comes first: the thread waits for the user.
                     if let Ok(i) = self.idx(thread_id)
                         && self.threads[i].status != Status::Waiting
                     {
                         self.threads[i].status = Status::Waiting;
-                        self.threads[i].asking = Some(trimmed(&tail));
                         self.persist(thread_id);
                     }
                     return;
@@ -1584,26 +1519,16 @@ impl Engine {
         let Ok(i) = self.idx(thread_id) else { return };
         let Some((_, pty)) = self.ptys.get(thread_id) else { return };
         let Some(adapter) = self.adapter(&pty.agent) else { return };
-        let tail = pty.tail_text(ASKING_ROWS);
-        let asking = adapter.waiting(&tail);
+        let asking = adapter.waiting(&pty.tail_text(ASKING_ROWS));
         let status = self.threads[i].status;
         let next = match status {
             Status::Working if asking => Status::Waiting,
             Status::Waiting if !asking => Status::Working,
             other => other,
         };
-        // What it asks, while the thread waits on its screen: the waiting list shows it.
-        let shown = (asking && next == Status::Waiting).then(|| trimmed(&tail));
         if next != status {
             self.threads[i].status = next;
-            self.threads[i].asking = shown;
             self.persist(thread_id);
-        } else if self.threads[i].asking != shown {
-            // The dialog changed, as when a cursor moves in it: said, not stored, and the
-            // thread's age stays.
-            self.threads[i].asking = shown;
-            let thread = self.threads[i].clone();
-            self.broadcast(Change::Thread { thread: Box::new(thread) });
         }
     }
 
@@ -1763,7 +1688,7 @@ impl Engine {
     }
 
     fn showing(&self, thread_id: &str) -> Vec<ClientId> {
-        self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect()
+        self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect()
     }
 
     fn pty_exit(&mut self, thread_id: &str, generation: u64) {
@@ -1815,7 +1740,7 @@ impl Engine {
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
         // A task list closed on screen stays in the sidebar while its file is there.
         let own_program = self.idx(thread_id).is_ok_and(|i| !is_agent(&self.threads[i].active_agent) && !self.keeps_list(i));
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
             if let Some(c) = self.clients.get_mut(&client) {
@@ -1903,7 +1828,7 @@ impl Engine {
         }
         let mut dirs: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
         for c in self.clients.values() {
-            for id in c.shows.keys().chain(c.viewing.iter()) {
+            for id in c.shows.iter().chain(c.viewing.iter()) {
                 if let Ok(i) = self.idx(id)
                     && !dirs.contains(&self.threads[i].cwd)
                 {
@@ -1988,9 +1913,6 @@ impl Engine {
                     ))
                 } else {
                     tracing::debug!(client, name, "hello");
-                    if let Some(c) = self.clients.get_mut(&client) {
-                        c.web = name == "web";
-                    }
                     Ok(Reply::Hello { protocol: PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), pid: std::process::id() })
                 }
             }
@@ -2151,19 +2073,15 @@ impl Engine {
                 return None;
             }
             Command::Resize { thread_id, rows, cols } => {
-                self.stamp += 1;
-                let stamp = self.stamp;
-                if let Some(a) = self.clients.get_mut(&client).and_then(|c| c.shows.get_mut(&thread_id)) {
-                    (a.rows, a.cols, a.at) = (rows, cols, stamp);
+                if let Some((_, pty)) = self.ptys.get_mut(&thread_id) {
+                    pty.resize(rows, cols);
                 }
-                self.fit(&thread_id);
                 return None;
             }
             Command::Leave { thread_id } => {
                 if let Some(c) = self.clients.get_mut(&client) {
                     c.shows.remove(&thread_id);
                 }
-                self.fit(&thread_id);
                 return None;
             }
             Command::Subagent { thread_id, subagent_id } => self.idx(&thread_id).map(|i| {
@@ -2603,7 +2521,6 @@ impl Engine {
                 .collect(),
             queued: Vec::new(),
             pending_approval: None,
-            asking: None,
             subagents: Vec::new(),
             // The copy's agent may title it apart from the parent.
             named: false,

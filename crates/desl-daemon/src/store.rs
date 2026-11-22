@@ -267,7 +267,6 @@ impl Store {
                 bindings: bindings.remove(&id).unwrap_or_default(),
                 queued: queued.remove(&id).unwrap_or_default(),
                 pending_approval: None,
-                asking: None,
                 subagents: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
                 named: r.get(13)?,
                 git: GitState::default(),
@@ -487,7 +486,6 @@ mod tests {
             bindings: BTreeMap::new(),
             queued: vec![],
             pending_approval: None,
-            asking: None,
             subagents: Vec::new(),
             git: GitState::default(),
         }

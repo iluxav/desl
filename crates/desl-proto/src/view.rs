@@ -116,10 +116,10 @@ pub fn project_name(path: &str) -> String {
     Path::new(path).file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Shown in the browser: agent threads and the task list. Shells and file managers stay in the
-/// terminal, where they already are what a browser could show (web-spec.md "Scope").
+/// Shown in the browser: agent threads. Shells and file managers stay in the terminal, and the
+/// task list has the page's right column (docs/design/2026-11-22-tasks-first-class.md).
 pub fn on_page(t: &Thread) -> bool {
-    t.active_agent != SHELL && t.active_agent != FILES
+    t.active_agent != SHELL && t.active_agent != FILES && t.active_agent != desl_ir::TASKS
 }
 
 /// The sidebar, as words and marks.
@@ -133,6 +133,15 @@ pub struct Sidebar {
     /// The waiting threads whose agent asks in its own screen, answered in the terminal: those
     /// with no form open, and those whose screen asks beside a form.
     pub screen: Vec<String>,
+    /// The projects that have a task list, in the sidebar's order: the page's task column.
+    pub task_lists: Vec<TaskListRow>,
+}
+
+/// A project with a task list, as the page's task column names it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct TaskListRow {
+    pub id: String,
+    pub name: String,
 }
 
 /// An open form, as the waiting column names it.
@@ -268,7 +277,15 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
         })
         .collect();
     forms.sort_by_key(|(at, f)| (*at, f.form_id.clone()));
-    Sidebar { waiting, projects: rows, forms: forms.into_iter().map(|(_, f)| f).collect(), screen }
+    let task_lists = order(projects, threads)
+        .into_iter()
+        .filter(|t| t.active_agent == desl_ir::TASKS)
+        .map(|t| {
+            let path = projects.iter().find(|p| p.id == t.project_id).map_or(t.project_id.as_str(), |p| p.path.as_str());
+            TaskListRow { id: t.project_id.clone(), name: project_name(path) }
+        })
+        .collect();
+    Sidebar { waiting, projects: rows, forms: forms.into_iter().map(|(_, f)| f).collect(), screen, task_lists }
 }
 
 #[cfg(test)]
@@ -394,6 +411,26 @@ mod tests {
         let on_screen = thread("t-3", "desl", 3, "codex", Status::Waiting);
         let v = sidebar(&projects, &[on_form, both, on_screen], 0, |_| true);
         assert_eq!(v.screen, ["t-2", "t-3"], "t-1 waits on its form alone, answered on its card");
+    }
+
+    #[test]
+    fn the_page_lists_agent_threads_only() {
+        let agent = thread("t-1", "desl", 1, "claude", Status::Idle);
+        let tasks = thread("t-2", "desl", 2, desl_ir::TASKS, Status::Idle);
+        let shell = thread("t-3", "desl", 3, desl_ir::SHELL, Status::Idle);
+        assert!(on_page(&agent));
+        assert!(!on_page(&tasks), "the task list has a column of its own on the page");
+        assert!(!on_page(&shell));
+    }
+
+    #[test]
+    fn the_projects_with_a_task_list_are_named_for_the_page() {
+        let projects = [project("desl", Some("main"), 0), project("rebrand", None, 0)];
+        let tasks = thread("t-2", "rebrand", 2, desl_ir::TASKS, Status::Idle);
+        let agent = thread("t-1", "desl", 1, "claude", Status::Idle);
+        let v = sidebar(&projects, &[agent, tasks], 0, on_page);
+        let named: Vec<(&str, &str)> = v.task_lists.iter().map(|p| (p.id.as_str(), p.name.as_str())).collect();
+        assert_eq!(named, [("rebrand", "rebrand")], "a project whose only thread is its list still has its tasks on the page");
     }
 
     #[test]

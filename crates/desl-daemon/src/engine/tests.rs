@@ -1866,3 +1866,77 @@ fn a_dialog_on_the_screen_of_a_thread_with_a_form_is_told_to_the_clients() {
     r.engine.persist(&t);
     assert!(!r.thread(&t).screen_asks);
 }
+
+impl Rig {
+    /// The changes the daemon told the clients since the last look.
+    fn changes(&mut self) -> Vec<Change> {
+        let mut out = Vec::new();
+        while let Ok(bytes) = self.out.try_recv() {
+            if let Ok(Some(ServerFrame::Event { change })) = desl_proto::read_frame::<_, ServerFrame>(&mut &bytes[..]) {
+                out.push(change);
+            }
+        }
+        out
+    }
+
+    fn project_of(&self, thread: &str) -> (String, PathBuf) {
+        let pid = self.thread(thread).project_id;
+        let p = self.engine.projects.iter().find(|p| p.id == pid).unwrap();
+        (pid, PathBuf::from(&p.path))
+    }
+
+    /// A second of ticks.
+    fn second(&mut self) {
+        for _ in 0..TICKS_PER_SECOND {
+            self.engine.handle(Msg::Tick);
+        }
+    }
+}
+
+#[test]
+fn a_task_list_changed_on_disk_reaches_the_clients_once() {
+    let mut r = rig("tasks-watch");
+    let t = r.t.clone();
+    let (project, root) = r.project_of(&t);
+    std::fs::write(root.join(".tasks.md"), "# Tasks\n\n## Fix the wheel\n- id: 1\n- type: bug\n- status: todo\n- priority: high\n")
+        .unwrap();
+    r.changes();
+    r.second();
+    let sent: Vec<Change> = r.changes().into_iter().filter(|c| matches!(c, Change::Tasks { .. })).collect();
+    assert!(
+        matches!(&sent[..], [Change::Tasks { project_id, tasks }] if *project_id == project && tasks[0].title == "Fix the wheel"),
+        "{sent:?}"
+    );
+    r.second();
+    assert!(!r.changes().iter().any(|c| matches!(c, Change::Tasks { .. })), "nothing changed since");
+    let Ok(Reply::Tasks { tasks, .. }) = r.cmd(Command::Tasks { project_id: project }) else { panic!("the list") };
+    assert_eq!(tasks.len(), 1);
+}
+
+#[test]
+fn a_task_added_through_the_daemon_is_in_the_file_and_told() {
+    let mut r = rig("tasks-add");
+    let t = r.t.clone();
+    let (project, root) = r.project_of(&t);
+    let add = Command::TaskAdd {
+        project_id: project.clone(),
+        title: "Forms in the terminal".into(),
+        kind: desl_proto::tasks::Kind::Idea,
+        status: desl_proto::tasks::Status::Parked,
+        priority: desl_proto::tasks::Priority::Low,
+        body: "Not now.".into(),
+    };
+    let Ok(Reply::Task { task, .. }) = r.cmd(add) else { panic!("the task") };
+    assert_eq!((task.id, task.status), (1, desl_proto::tasks::Status::Parked));
+    assert!(std::fs::read_to_string(root.join(".tasks.md")).unwrap().contains("- status: parked"));
+    let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::Todo), ..Default::default() };
+    let set = Command::TaskSet { project_id: project.clone(), id: 1, edit };
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 500, command: set } });
+    let told = r.changes().into_iter().find_map(|c| match c {
+        Change::Tasks { project_id, tasks } if project_id == project => Some(tasks),
+        _ => None,
+    });
+    assert_eq!(told.map(|t| t[0].status), Some(desl_proto::tasks::Status::Todo), "told at once");
+    let missing = r.cmd(Command::TaskSet { project_id: project, id: 9, edit: Default::default() }).unwrap_err();
+    assert!(missing.contains("#9"), "{missing}");
+}

@@ -31,6 +31,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/", "text/html; charset=utf-8", include_str!("../page/index.html")),
     ("/app.js", "text/javascript; charset=utf-8", include_str!("../page/app.js")),
     ("/forms.js", "text/javascript; charset=utf-8", include_str!("../page/forms.js")),
+    ("/tasks.js", "text/javascript; charset=utf-8", include_str!("../page/tasks.js")),
     ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
 ];
 

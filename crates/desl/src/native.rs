@@ -1910,6 +1910,8 @@ impl Client {
                     }
                 }
             }
+            // The tasks thread reads its own file; the page shows the list from these.
+            Change::Tasks { .. } => {}
             Change::ProjectOrder { ids } => {
                 // The cursor stays on the row it was on, wherever that row is now.
                 let on = self.side.and_then(|i| layout::rows(&self.projects, &self.threads).get(i).cloned());

@@ -235,6 +235,8 @@ pub struct Engine {
     /// What a tasks thread runs, before `--project <root>`: this desl's own `task ui`. Tests
     /// name a program every machine has.
     tasks_program: Vec<String>,
+    /// Each project's task list as last read: when its file changes, the clients hear.
+    task_stamps: HashMap<String, desl_proto::tasks::Stamp>,
     /// Opens the browser on a thread's form; tests watch it instead. None: `desl web --open`.
     page_opener: Option<PageOpener>,
     /// When the browser was last opened for a form: once in a while, while the page loads.
@@ -411,6 +413,7 @@ impl Engine {
             config_file: None,
             file_manager: desl_ir::FILE_MANAGER.to_string(),
             tasks_program: task_list_program(),
+            task_stamps: HashMap::new(),
             page_opener: None,
             page_opened: None,
             ticks: 0,
@@ -1909,6 +1912,49 @@ impl Engine {
     /// A project in the sidebar whose root holds a task list shows it, as a thread of its own,
     /// whoever made the file: an agent that starts one with `desl task add` needs no one to open
     /// it. Its program starts only when the thread is shown.
+    /// Every project's task list whose file changed since it was last read, sent to the clients.
+    fn watch_tasks(&mut self) {
+        let projects: Vec<(String, String)> = self.projects.iter().map(|p| (p.id.clone(), p.path.clone())).collect();
+        for (id, path) in projects {
+            let store = desl_proto::tasks::Store::of(Path::new(&path));
+            let stamp = store.stamp();
+            if self.task_stamps.get(&id) == Some(&stamp) {
+                continue;
+            }
+            self.task_stamps.insert(id.clone(), stamp);
+            if stamp.is_none() {
+                continue;
+            }
+            if let Ok(list) = store.read() {
+                self.broadcast(Change::Tasks { project_id: id, tasks: list.tasks });
+            }
+        }
+    }
+
+    fn task_store(&self, project_id: &str) -> Result<desl_proto::tasks::Store, String> {
+        let p = self.projects.iter().find(|p| p.id == project_id).ok_or_else(|| format!("There is no project {project_id}."))?;
+        Ok(desl_proto::tasks::Store::of(Path::new(&p.path)))
+    }
+
+    fn tasks(&self, project_id: &str) -> Outcome {
+        let list = self.task_store(project_id)?.read().map_err(|e| format!("desl could not read the task list ({e})."))?;
+        Ok(Reply::Tasks { project_id: project_id.to_string(), tasks: list.tasks })
+    }
+
+    /// One change to a project's list, made as the CLI makes it, then told to every client.
+    fn task_change(&mut self, project_id: &str, change: &desl_proto::tasks::Change) -> Outcome {
+        let store = self.task_store(project_id)?;
+        let (list, id) = match store.apply(change) {
+            Ok(Ok(done)) => done,
+            Ok(Err(desl_proto::tasks::Missing(n))) => return Err(format!("There is no task #{n} in this project's list.")),
+            Err(e) => return Err(format!("desl could not change the task list ({e}).")),
+        };
+        self.task_stamps.insert(project_id.to_string(), store.stamp());
+        let task = list.get(id).cloned().ok_or_else(|| format!("desl lost task #{id}."))?;
+        self.broadcast(Change::Tasks { project_id: project_id.to_string(), tasks: list.tasks });
+        Ok(Reply::Task { project_id: project_id.to_string(), task })
+    }
+
     fn task_lists(&mut self) {
         let missing: Vec<String> = self
             .projects
@@ -1962,6 +2008,7 @@ impl Engine {
         for id in queued {
             self.drain(&id);
         }
+        self.watch_tasks();
         if !self.ticks.is_multiple_of(5 * TICKS_PER_SECOND) {
             return;
         }
@@ -2098,6 +2145,12 @@ impl Engine {
             Command::FormClose { form_id, by } => self.form_close(&form_id, &by),
             Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
             Command::FormGet { form_id } => self.form_get(&form_id),
+            Command::Tasks { project_id } => self.tasks(&project_id),
+            Command::TaskAdd { project_id, title, kind, status, priority, body } => {
+                let add = desl_proto::tasks::Change::Add { title, kind, status, priority, body };
+                self.task_change(&project_id, &add)
+            }
+            Command::TaskSet { project_id, id, edit } => self.task_change(&project_id, &desl_proto::tasks::Change::Set { id, edit }),
             Command::FormImage { form_id, path } => match self.form_image(&form_id, &path) {
                 // Read and encoded by a worker: up to 10 MB a picture must not hold the engine.
                 Ok((dir, path)) => {

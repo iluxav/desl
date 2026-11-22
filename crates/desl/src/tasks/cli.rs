@@ -229,6 +229,8 @@ pub fn set(paths: &Paths, out: &Out, project: Option<&str>, s: Set) -> Result<()
         priority: s.priority.as_deref().map(priority_arg).transpose()?,
         body: s.body.map(text_arg).transpose()?,
         note: s.note.map(text_arg).transpose()?,
+        thread: None,
+        branch: None,
     };
     if edit == Edit::default() {
         bail!("Nothing to change. Name what changes: --status, --priority, --type, --title, --body or --note");

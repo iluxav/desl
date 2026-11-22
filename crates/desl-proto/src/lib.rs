@@ -14,6 +14,7 @@ pub mod markdown;
 pub mod paths;
 pub mod reflow;
 pub mod replay;
+pub mod tasks;
 pub mod term;
 pub mod view;
 
@@ -284,6 +285,25 @@ pub enum Command {
         form_id: String,
         path: String,
     },
+    /// A project's task list, from its `.tasks.md`. Replied with `tasks`.
+    Tasks {
+        project_id: String,
+    },
+    /// Adds a task to a project's list. Replied with `task`.
+    TaskAdd {
+        project_id: String,
+        title: String,
+        kind: tasks::Kind,
+        status: tasks::Status,
+        priority: tasks::Priority,
+        body: String,
+    },
+    /// Changes a task of a project's list. Replied with `task`.
+    TaskSet {
+        project_id: String,
+        id: u32,
+        edit: tasks::Edit,
+    },
     /// The section a `document` widget of the form edits, as it is on disk now, read from inside
     /// its thread's directory. Replied with `section`.
     FormSection {
@@ -392,6 +412,16 @@ pub enum Reply {
     Image {
         mime: String,
         data: String,
+    },
+    /// A project's task list, in the file's order.
+    Tasks {
+        project_id: String,
+        tasks: Vec<tasks::Task>,
+    },
+    /// One task, as it is now.
+    Task {
+        project_id: String,
+        task: tasks::Task,
     },
     /// A document's section as it is on disk; None when its heading is gone from the file.
     Section {
@@ -530,6 +560,11 @@ pub enum Change {
     /// uncommitted paths changed.
     Project {
         project: Project,
+    },
+    /// A project's task list changed, in its file or through desl: the whole list as it is now.
+    Tasks {
+        project_id: String,
+        tasks: Vec<tasks::Task>,
     },
     /// The user moved a project: every project's id, in the order the sidebar lists them now.
     ProjectOrder {

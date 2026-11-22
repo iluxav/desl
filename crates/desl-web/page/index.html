@@ -34,10 +34,24 @@
       </div>
     </div>
   </main>
-  <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the waiting list" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
-  <aside id="wait" class="wait" aria-labelledby="wait-title">
+  <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the right column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
+  <aside id="wait" class="wait" aria-label="Waiting and tasks">
     <h2 id="wait-title" class="label">Waiting</h2>
     <div id="waitlist" class="waitlist"></div>
+    <section id="tasks" class="tasks" aria-labelledby="tasks-title" hidden>
+      <h2 id="tasks-title" class="label">Tasks</h2>
+      <div class="tfilters">
+        <div class="frow">
+          <select id="t-project" aria-label="Whose tasks"></select>
+          <input id="t-find" type="search" placeholder="Find a task" aria-label="Find a task">
+          <select id="t-more" aria-label="More views"></select>
+        </div>
+        <div class="frow">
+          <div id="t-seg" class="seg" role="group" aria-label="Tasks by status"></div>
+        </div>
+      </div>
+      <div id="tasklist" class="tasklist"></div>
+    </section>
   </aside>
 </div>
 

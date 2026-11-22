@@ -39,11 +39,16 @@ fn status_mark(s: Status, nerd: bool) -> &'static str {
         (Status::Issue, true) => "\u{f0028}",
         (Status::Done, true) => "\u{f05e0}",
         (Status::Ignored, true) => "\u{f073a}",
+        // A merge arrow, and a pause.
+        (Status::Ready, true) => "\u{f062c}",
+        (Status::Parked, true) => "\u{f03e4}",
         (Status::Todo, false) => "○",
         (Status::InProgress, false) => "◐",
         (Status::Issue, false) => "▲",
         (Status::Done, false) => "✓",
         (Status::Ignored, false) => "⊘",
+        (Status::Ready, false) => "⇡",
+        (Status::Parked, false) => "‖",
     }
 }
 
@@ -54,6 +59,8 @@ fn status_style(s: Status) -> Style {
         Status::Issue => theme::warning(),
         Status::Done => theme::added(),
         Status::Ignored => theme::muted(),
+        Status::Ready => theme::added(),
+        Status::Parked => theme::muted(),
     }
 }
 
@@ -64,6 +71,8 @@ fn status_label(s: Status) -> &'static str {
         Status::Issue => "Issue",
         Status::Done => "Done",
         Status::Ignored => "Ignored",
+        Status::Ready => "Ready",
+        Status::Parked => "Parked",
     }
 }
 
@@ -1376,6 +1385,8 @@ fn opposite(before: &List, change: &Change, id: u32) -> Option<Change> {
                     priority: edit.priority.map(|_| t.priority),
                     body: (edit.body.is_some() || edit.note.is_some()).then(|| t.body.clone()),
                     note: None,
+                    thread: edit.thread.as_ref().map(|_| t.thread.clone().unwrap_or_default()),
+                    branch: edit.branch.as_ref().map(|_| t.branch.clone().unwrap_or_default()),
                 },
             })
         }
@@ -1609,7 +1620,7 @@ mod tests {
             assert_eq!(marks.iter().collect::<std::collections::HashSet<_>>().len(), marks.len(), "no two alike: {marks:?}");
         }
         assert!(pua(note_mark(true)));
-        assert_eq!(Status::ALL.map(|s| status_mark(s, false)), ["○", "◐", "▲", "✓", "⊘"], "without, plain Unicode");
+        assert_eq!(Status::ALL.map(|s| status_mark(s, false)), ["○", "◐", "▲", "⇡", "✓", "⊘", "‖"], "without, plain Unicode");
         assert_eq!(Priority::ALL.map(|p| priority_mark_in(p, false).0), ["!!!", "!!", "!"]);
     }
 

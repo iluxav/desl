@@ -5,6 +5,7 @@
 // in front of the user are drawn as cards in its conversation (forms.js).
 
 import { card } from '/forms.js';
+import { MORE, SEGMENTS, counts, drawList } from '/tasks.js';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -19,7 +20,21 @@ const state = {
   retry: 500,
   nextId: 1,
   pending: new Map(),
+  /** Each project's task list by its id, as the daemon last told it. */
+  tasks: new Map(),
+  /** The projects whose list was asked for on this connection. */
+  tasksAsked: new Set(),
+  /** The task column's filters: project (`auto` follows the selected thread), status, more, find. */
+  tf: Object.assign({ project: 'auto', status: 'open', more: '', find: '' }, readJson('desl-web-tasks')),
 };
+
+function readJson(name) {
+  try {
+    return JSON.parse(localStorage.getItem(name) || '{}');
+  } catch (e) {
+    return {};
+  }
+}
 
 function read(name) {
   try { return sessionStorage.getItem(name); } catch { return null; }
@@ -131,11 +146,14 @@ function handle(msg) {
       if (!state.view) performance.mark('desl-first-view');
       state.view = msg.view;
       state.retry = 500;
+      askTasks();
       if ($('link').dataset.state !== 'connected') setLink('connected');
       else render();
       break;
     case 'bridge':
       // desl web started again from a new install: this page is the old one.
+      // A new connection asks for every task list again.
+      if (msg.state === 'ready') state.tasksAsked.clear();
       if (msg.state === 'ready' && msg.build) {
         if (state.build && state.build !== msg.build) location.reload();
         state.build = msg.build;
@@ -158,6 +176,11 @@ function handle(msg) {
       conversationArrived(msg);
       break;
     case 'event':
+      if (msg.change && msg.change.what === 'tasks') {
+        state.tasks.set(msg.change.project_id, msg.change.tasks);
+        drawTasks();
+        break;
+      }
       // Something was added to the log of the conversation on screen: read it again.
       if (msg.change && msg.change.what === 'appended' && msg.change.event && msg.change.event.thread_id === conv.thread) {
         // A form shown or closed is read at once (web-forms design, "Budgets"); the rest in a batch.
@@ -212,6 +235,7 @@ function render() {
   drawSide(cur);
   drawHead(cur);
   drawWaiting();
+  drawTasks();
   drawChrome(cur);
   if (cur && $('link').dataset.state === 'connected' && cur.t.id !== conv.thread) readConversation(cur.t.id);
 }
@@ -611,6 +635,116 @@ function place(list, nodes) {
   }
 }
 
+// ---- tasks (docs/design/2026-11-22-tasks-first-class.md) ---------------------------------------
+
+/** Asks for the task list of each project that has one and was not asked for yet. */
+function askTasks() {
+  for (const p of (state.view && state.view.task_lists) || []) {
+    if (state.tasksAsked.has(p.id)) continue;
+    state.tasksAsked.add(p.id);
+    request('tasks', { project_id: p.id }).then((reply) => {
+      if (reply.ok && reply.ok.tasks) {
+        state.tasks.set(p.id, reply.ok.tasks);
+        drawTasks();
+      }
+    });
+  }
+}
+
+function saveFilters() {
+  try {
+    localStorage.setItem('desl-web-tasks', JSON.stringify(state.tf));
+  } catch (e) {
+    /* A private window keeps no filters; the column works the same. */
+  }
+}
+
+/** The projects the column shows: the selected thread's, one picked, or all. */
+function shownLists() {
+  const lists = (state.view && state.view.task_lists) || [];
+  let pick = lists;
+  if (state.tf.project === 'auto') {
+    const cur = current();
+    pick = lists.filter((p) => cur && p.id === cur.p.id);
+    if (!pick.length) pick = lists.slice(0, 1);
+  } else if (state.tf.project !== 'all') {
+    pick = lists.filter((p) => p.id === state.tf.project);
+  }
+  return pick.map((project) => ({ project, tasks: state.tasks.get(project.id) || [] }));
+}
+
+function drawTasks() {
+  if (!state.view) return;
+  const lists = (state.view.task_lists) || [];
+  $('tasks').hidden = !lists.length;
+  if (!lists.length) return;
+  // The project: the selected thread's, one by name, or all of them.
+  const sel = $('t-project');
+  const cur = current();
+  const here = cur ? lists.find((p) => p.id === cur.p.id) : null;
+  const options = [['auto', here ? `This thread's project: ${here.name}` : "This thread's project"], ...lists.map((p) => [p.id, p.name]), ['all', 'All projects']];
+  sel.replaceChildren(...options.map(([value, label]) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    return o;
+  }));
+  sel.value = options.some(([v]) => v === state.tf.project) ? state.tf.project : 'auto';
+  const shown = shownLists();
+  const n = counts(shown, state.tf.find);
+  // The status, one segment on unless a view under More is.
+  const seg = $('t-seg');
+  seg.replaceChildren(...SEGMENTS.map(([id, label]) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = !state.tf.more && state.tf.status === id ? 'on' : '';
+    b.setAttribute('aria-pressed', String(b.className === 'on'));
+    b.append(document.createTextNode(label), Object.assign(document.createElement('b'), { textContent: String(n[id]) }));
+    b.addEventListener('click', () => {
+      state.tf.status = id;
+      state.tf.more = '';
+      saveFilters();
+      drawTasks();
+    });
+    return b;
+  }));
+  const more = $('t-more');
+  more.replaceChildren(...[['', 'More'], ...MORE.map(([id, label]) => [id, `${label} · ${n[id]}`])].map(([value, label]) => {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    return o;
+  }));
+  more.value = state.tf.more;
+  if ($('t-find').value !== state.tf.find && document.activeElement !== $('t-find')) $('t-find').value = state.tf.find;
+  drawList($('tasklist'), shown, state.tf, {
+    thread: (id) => {
+      const found = threads().find(({ t }) => t.id === id);
+      return found ? { title: found.t.title, agent: found.t.agent } : null;
+    },
+    select: (id) => select(id),
+    action: null,
+  });
+}
+
+function setupTasks() {
+  $('t-project').addEventListener('change', (e) => {
+    state.tf.project = e.target.value;
+    saveFilters();
+    drawTasks();
+  });
+  $('t-more').addEventListener('change', (e) => {
+    state.tf.more = e.target.value;
+    saveFilters();
+    drawTasks();
+  });
+  $('t-find').addEventListener('input', (e) => {
+    state.tf.find = e.target.value;
+    saveFilters();
+    drawTasks();
+  });
+}
+
 // ---- forms ------------------------------------------------------------------------------------
 
 /** Each form's card by its id, kept across redraws so what the user typed stays. */
@@ -767,7 +901,9 @@ const WIDTHS = 'desl-web-widths';
 // Each grip: the column it sizes, the custom property it sets, its usual width, its narrowest.
 const COLUMNS = {
   'grip-side': { column: 'projects', prop: '--side-w', usual: 280, least: 180, fromLeft: true },
-  'grip-wait': { column: 'wait', prop: '--wait-w', usual: 300, least: 220, fromLeft: false },
+  // Saved under a name of its own since the column holds the task list too: a width dragged for
+  // the waiting list alone starts over.
+  'grip-wait': { column: 'wait', prop: '--wait-w', usual: 460, least: 280, fromLeft: false, store: 'right-column' },
 };
 // What the middle column keeps whatever the outer ones take.
 const MIDDLE_LEAST = 360;
@@ -802,7 +938,8 @@ function resizable() {
   const saved = savedWidths();
   for (const [id, c] of Object.entries(COLUMNS)) {
     const grip = $(id);
-    setWidth(id, typeof saved[id] === 'number' ? saved[id] : null);
+    const key = c.store || id;
+    setWidth(id, typeof saved[key] === 'number' ? saved[key] : null);
     grip.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -820,7 +957,7 @@ function resizable() {
         grip.removeEventListener('pointermove', move);
         grip.removeEventListener('pointerup', up);
         grip.removeEventListener('pointercancel', up);
-        saveWidth(id, Number(grip.getAttribute('aria-valuenow')));
+        saveWidth(key, Number(grip.getAttribute('aria-valuenow')));
       };
       grip.addEventListener('pointermove', move);
       grip.addEventListener('pointerup', up);
@@ -828,14 +965,14 @@ function resizable() {
     });
     grip.addEventListener('dblclick', () => {
       setWidth(id, null);
-      saveWidth(id, null);
+      saveWidth(key, null);
     });
     // The keys, for whoever does not drag: the arrows by 16 pixels, with shift by 64.
     grip.addEventListener('keydown', (e) => {
       if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
       e.preventDefault();
       const step = (e.shiftKey ? 64 : 16) * (e.key === 'ArrowRight' ? 1 : -1) * (c.fromLeft ? 1 : -1);
-      saveWidth(id, setWidth(id, $(c.column).getBoundingClientRect().width + step));
+      saveWidth(key, setWidth(id, $(c.column).getBoundingClientRect().width + step));
     });
   }
 }
@@ -853,6 +990,7 @@ function main() {
   }
   resizable();
   setupConversation();
+  setupTasks();
   $('prompt-form').addEventListener('submit', sendPrompt);
   connect(key);
 }

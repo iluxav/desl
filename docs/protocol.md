@@ -80,6 +80,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `form_close` | `form_id`, `by` | `done` | Closes a form unanswered: `withdrawn` (the agent) or `dismissed` (the user). A dismissal is told to the agent in a line before its next prompt. |
 | `form_draft` | `form_id`, `draft` | `done` | The page's state of an open form, kept until it closes, so a reload or a restart finds it as it was. |
 | `form_get` | `form_id` | `form {form_id, thread_id, form, draft?, answer?, closed_by?}` | A form, with its draft while open and its answer once answered. |
+| `form_image` | `form_id`, `path` | `image {mime, data}` | A picture an `images` widget of the form names, read again from inside its thread's directory (links followed; PNG, JPEG, GIF, WebP or SVG; at most 10 MB), `data` in base64. A path the form does not name is refused, so a client cannot read other files through it. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
 | `handover` | `exe` | `handed_over {pid, kept}` | The daemon starts again from the desl binary at `exe` and hands it the terminal of every running agent and shell, so nothing ends. The reply comes from the daemon that leaves, once the new one serves on the same socket: `pid` is the new daemon's, `kept` how many terminals it took. An error means the daemon that was running stays as it was. A daemon from a build without this command closes the connection instead of answering. |
 

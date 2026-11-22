@@ -11,7 +11,12 @@ pub const MAX_WIDGETS: usize = 30;
 /// The most a form may weigh, as JSON. The daemon refuses a larger one before reading it.
 pub const MAX_BYTES: usize = 256 * 1024;
 
-const KINDS: [&str; 9] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table"];
+const KINDS: [&str; 10] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table", "images"];
+
+/// The most pictures one `images` widget shows.
+pub const MAX_IMAGES: usize = 12;
+/// The most one picture may weigh.
+pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// The most a preview's HTML, or its CSS, may weigh.
 const PREVIEW_BYTES: usize = 64 * 1024;
@@ -130,6 +135,41 @@ pub enum Widget {
         #[serde(default)]
         optional: bool,
     },
+    /// Pictures of the project to pick from, named by path. desl reads them, inside the thread's
+    /// directory only.
+    Images {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+        images: Vec<Pic>,
+        #[serde(default)]
+        multi: bool,
+        /// Where it starts: a path, or a list of them with `multi`.
+        #[serde(default)]
+        value: Option<Value>,
+        #[serde(default)]
+        optional: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Pic {
+    /// A file inside the thread's directory, relative to it or absolute.
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caption: Option<String>,
+}
+
+/// Every picture a form names, by its path as the agent gave it.
+pub fn image_paths(form: &Form) -> Vec<&str> {
+    form.widgets
+        .iter()
+        .flat_map(|w| match w {
+            Widget::Images { images, .. } => images.iter().map(|p| p.path.as_str()).collect(),
+            _ => Vec::new(),
+        })
+        .collect()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -253,7 +293,8 @@ impl Widget {
             | Widget::Toggle { id, .. }
             | Widget::Select { id, .. }
             | Widget::Preview { id, .. }
-            | Widget::Table { id, .. } => id,
+            | Widget::Table { id, .. }
+            | Widget::Images { id, .. } => id,
         }
     }
 
@@ -267,7 +308,8 @@ impl Widget {
             | Widget::Toggle { optional, .. }
             | Widget::Select { optional, .. }
             | Widget::Preview { optional, .. }
-            | Widget::Table { optional, .. } => *optional,
+            | Widget::Table { optional, .. }
+            | Widget::Images { optional, .. } => *optional,
         }
     }
 }
@@ -457,6 +499,26 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
                 }
             }
         }
+        Widget::Images { images, multi, value, .. } => {
+            if !(1..=MAX_IMAGES).contains(&images.len()) {
+                return Err(format!("Widget {n} (\"{id}\") has {} images; it shows 1 to 12 images.", images.len()));
+            }
+            if let Some(p) = twice(images.iter().map(|p| p.path.as_str()).collect()) {
+                return Err(format!("Widget {n} (\"{id}\") has \"{p}\" twice. The answer names an image by its path."));
+            }
+            if images.iter().any(|p| p.path.trim().is_empty() || p.path.chars().any(char::is_control)) {
+                return Err(format!("Widget {n} (\"{id}\") has an image with no path, or one with a control character."));
+            }
+            let starts: Vec<&Value> = match (value, multi) {
+                (None, _) => Vec::new(),
+                (Some(Value::Array(list)), true) => list.iter().collect(),
+                (Some(_), true) => return Err(format!("Widget {n} (\"{id}\") is multi, so its value is a list of paths.")),
+                (Some(v), false) => vec![v],
+            };
+            if let Some(v) = starts.iter().find(|v| !v.as_str().is_some_and(|s| images.iter().any(|p| p.path == s))) {
+                return Err(format!("Widget {n} (\"{id}\") starts at {v}, which is not one of its images."));
+            }
+        }
         Widget::Markdown { .. } | Widget::Toggle { .. } => {}
     }
     Ok(())
@@ -624,6 +686,22 @@ fn answers(w: &Widget, v: &Value) -> Result<(), String> {
             }
             Ok(())
         }
+        Widget::Images { images, multi, optional, .. } => {
+            let one = |s: &str| {
+                if images.iter().any(|p| p.path == s) { Ok(()) } else { Err(format!("\"{s}\" is not one of the images of \"{id}\".")) }
+            };
+            if !multi {
+                return v.as_str().map_or_else(|| Err(format!("The answer for \"{id}\" is one image's path.")), one);
+            }
+            let Some(list) = v.as_array() else { return Err(format!("The answer for \"{id}\" is a list of image paths.")) };
+            if list.is_empty() && !optional {
+                return Err(format!("The answer has nothing for \"{id}\", which is not optional."));
+            }
+            for item in list {
+                item.as_str().map_or_else(|| Err(format!("The answer for \"{id}\" is a list of image paths.")), one)?;
+            }
+            Ok(())
+        }
         Widget::Table { columns, rows, .. } => {
             let shape = || format!("The answer for \"{id}\" lists the changed rows, each as {{id, <column>: value}}.");
             let Some(list) = v.as_array() else { return Err(shape()) };
@@ -715,6 +793,8 @@ options[css values], value?}]}: your HTML and CSS drawn without scripts; control
 {var: value}.
 - table {label?, columns[{id, label?, edit?: text|select|check, options?}], rows[{id, <column id>: value}]}: the \
 changed rows as [{id, <column>: new value}], only the changed cells.
+- images {label?, images[{path, caption?}], multi?, value?}: pictures of the project (PNG, JPEG, GIF, WebP, SVG; \
+inside your working directory) to pick from. The path, or a list with multi.
 Every widget has an id, unique in the form, and may be optional. At most 30 widgets. Set value to what is true now \
 or what you recommend (choice takes a label, or a list with multi), so the user changes only what differs.";
 
@@ -765,6 +845,8 @@ pub fn input_schema() -> Value {
                     "css": s("preview: its CSS; var(--x) for each control."),
                     "controls": controls,
                     "columns": columns,
+                    "images": { "type": "array", "items": { "type": "object", "properties": {
+                        "path": { "type": "string" }, "caption": { "type": "string" } }, "required": ["path"] } },
                     "rows": { "type": "array", "items": { "type": "object", "description": "table: {id, <column id>: value}" } }
                 },
                 "required": ["kind", "id"]
@@ -922,6 +1004,26 @@ mod tests {
         assert!(answer(json!([{"id": "r1", "done": "yes"}])).unwrap_err().contains("true or false"));
         assert!(answer(json!([{"id": "r1", "prio": "mid"}])).unwrap_err().contains("not one of its options"));
         assert!(answer(json!([{"id": "r1", "note": 3}])).unwrap_err().contains("text"));
+    }
+
+    #[test]
+    fn images_are_checked_and_answered_by_path() {
+        let pics = |multi: bool, images: Value| json!({"title": "t", "widgets": [{"kind": "images", "id": "logo", "multi": multi, "images": images}]});
+        let two = json!([{"path": "art/a.png", "caption": "Round"}, {"path": "art/b.svg"}]);
+        let f = check(&pics(false, two.clone())).unwrap();
+        assert_eq!(image_paths(&f), ["art/a.png", "art/b.svg"]);
+        assert!(check(&pics(false, json!([]))).unwrap_err().contains("1 to 12 images"));
+        assert!(
+            check(&pics(false, Value::Array((0..13).map(|i| json!({"path": format!("{i}.png")})).collect())))
+                .unwrap_err()
+                .contains("1 to 12 images")
+        );
+        assert!(check(&pics(false, json!([{"path": "a.png"}, {"path": "a.png"}]))).unwrap_err().contains("\"a.png\" twice"));
+        assert!(check_answer(&f, &json!({"logo": "art/b.svg"})).is_ok());
+        assert!(check_answer(&f, &json!({"logo": "art/c.png"})).unwrap_err().contains("not one of the images"));
+        let many = check(&pics(true, two)).unwrap();
+        assert!(check_answer(&many, &json!({"logo": ["art/a.png", "art/b.svg"]})).is_ok());
+        assert!(check_answer(&many, &json!({"logo": "art/a.png"})).unwrap_err().contains("a list"));
     }
 
     #[test]

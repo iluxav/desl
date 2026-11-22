@@ -2010,6 +2010,7 @@ impl Engine {
             Command::FormClose { form_id, by } => self.form_close(&form_id, &by),
             Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
             Command::FormGet { form_id } => self.form_get(&form_id),
+            Command::FormImage { form_id, path } => self.form_image(&form_id, &path),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Exit { thread_id } => self.exit_agent(&thread_id),
             Command::Restart { thread_id } => self.restart_agent(&thread_id),
@@ -2397,6 +2398,10 @@ impl Engine {
             ));
         }
         let checked = form::check(form)?;
+        let dir = PathBuf::from(&self.threads[i].cwd);
+        for path in form::image_paths(&checked) {
+            crate::picture::check(&dir, path)?;
+        }
         let blob = self.store.blob_put(&json).map_err(|e| format!("desl could not keep the form ({e:#}). Try again."))?;
         let id = self.new_form_id();
         let at = now();
@@ -2511,6 +2516,25 @@ impl Engine {
             answer: json(row.answer_blob.as_deref()),
             closed_by: row.closed_by,
         })
+    }
+
+    /// A picture the form shows, read from its thread's directory for the page.
+    fn form_image(&self, form_id: &str, path: &str) -> Outcome {
+        let row = self
+            .store
+            .form(form_id)
+            .map_err(|e| format!("desl could not read {form_id} ({e:#})."))?
+            .ok_or_else(|| format!("There is no form {form_id}."))?;
+        let text = self.store.blob_get(&row.blob).ok().flatten().ok_or_else(|| format!("desl lost the form {form_id}."))?;
+        let form = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()).and_then(|v| form::check(&v))?;
+        // Only what the form names: the page cannot read other files through it.
+        if !form::image_paths(&form).contains(&path) {
+            return Err(format!("{form_id} shows no image \"{path}\"."));
+        }
+        let i = self.idx(&row.thread_id)?;
+        let (mime, bytes) = crate::picture::read(Path::new(&self.threads[i].cwd), path)?;
+        use base64::Engine as _;
+        Ok(Reply::Image { mime: mime.to_string(), data: base64::engine::general_purpose::STANDARD.encode(bytes) })
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Outcome {

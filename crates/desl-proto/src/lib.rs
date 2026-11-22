@@ -277,6 +277,12 @@ pub enum Command {
     FormGet {
         form_id: String,
     },
+    /// A picture an `images` widget of the form names, read again from inside its thread's
+    /// directory. Replied with `image`.
+    FormImage {
+        form_id: String,
+        path: String,
+    },
     /// Stops every agent and the daemon.
     Shutdown,
     /// The daemon starts again from the desl binary at `exe` and hands it the terminal of every
@@ -374,6 +380,11 @@ pub enum Reply {
     },
     FormShown {
         form_id: String,
+    },
+    /// A picture: its media type and its bytes in base64.
+    Image {
+        mime: String,
+        data: String,
     },
     Form {
         form_id: String,

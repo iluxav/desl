@@ -401,6 +401,16 @@ textarea.fw-text { resize: vertical; line-height: 1.45; }
 .fw-table tr:last-child td { border-bottom: 0; }
 .fw-table input[type="text"].fw-cell, .fw-table select.fw-cell { width: 100%; min-width: 90px; min-height: 28px; padding: 3px 6px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
 .fw-table input[type="checkbox"].fw-cell { accent-color: var(--accent); }
+/* Pictures to pick from: a grid of tiles, the picked one ringed. */
+.fw-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.fw-image { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line2); border-radius: 8px; cursor: pointer; min-width: 0; }
+.fw-image:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 2px var(--selected); }
+.fw-image input { position: absolute; top: 12px; left: 12px; margin: 0; accent-color: var(--accent); z-index: 1; }
+.fw-image-frame { display: grid; place-items: center; aspect-ratio: 4 / 3; border-radius: 6px; background: var(--raised); overflow: hidden; }
+.fw-image-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.fw-image-name { padding: 6px; color: var(--muted); font: 11.5px var(--mono); overflow-wrap: anywhere; text-align: center; }
+.fw-image-why { color: var(--crit); font-size: 11.5px; }
+.fw-image-words { display: flex; flex-direction: column; min-width: 0; font-size: 13px; }
 /* Wide: the preview takes the waiting list's place too. */
 body.wide .form-card { max-width: none; }
 body.wide .fw-preview-box { height: 62vh; }

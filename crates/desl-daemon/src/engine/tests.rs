@@ -1438,3 +1438,64 @@ fn a_thread_waiting_on_its_screen_after_a_handover_queues_a_prompt() {
     r.engine.threads[i].status = Status::Waiting;
     assert!(matches!(r.cmd(Command::Prompt { thread_id: t.clone(), text: "later".into() }), Ok(Reply::Sent { queued: true })));
 }
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR";
+
+fn pictures(paths: &[&str]) -> serde_json::Value {
+    let images: Vec<_> = paths.iter().map(|p| json!({ "path": p })).collect();
+    json!({"title": "Which logo?", "widgets": [{"kind": "images", "id": "logo", "images": images}]})
+}
+
+#[test]
+fn an_image_outside_the_thread_is_refused() {
+    let mut r = rig("form-images-out");
+    let t = r.t.clone();
+    let cwd = std::path::PathBuf::from(r.thread(&t).cwd);
+    std::fs::create_dir_all(cwd.join("art")).unwrap();
+    std::fs::write(cwd.join("art/logo.png"), PNG).unwrap();
+    std::fs::write(r.dir.join("secret.png"), PNG).unwrap();
+    std::os::unix::fs::symlink(r.dir.join("secret.png"), cwd.join("art/link.png")).unwrap();
+    std::fs::write(cwd.join("notes.txt"), "not a picture").unwrap();
+    std::fs::write(cwd.join("big.png"), [PNG, &vec![0u8; 10 * 1024 * 1024]].concat()).unwrap();
+    let secret = r.dir.join("secret.png").to_string_lossy().into_owned();
+    let inside = cwd.join("art/logo.png").to_string_lossy().into_owned();
+    let ok = r.cmd(Command::FormNew { thread_id: t.clone(), form: pictures(&["art/logo.png", &inside]) });
+    assert!(matches!(ok, Ok(Reply::FormShown { .. })), "{ok:?}");
+    for (path, says) in [
+        ("../secret.png", "outside"),
+        (secret.as_str(), "outside"),
+        ("art/link.png", "outside"),
+        ("art/none.png", "no file"),
+        ("notes.txt", "not a PNG, JPEG, GIF, WebP or SVG"),
+        ("big.png", "10 MB"),
+    ] {
+        let err = r.cmd(Command::FormNew { thread_id: t.clone(), form: pictures(&[path]) }).unwrap_err();
+        assert!(err.contains(path) && err.contains(says), "{path}: {err}");
+    }
+}
+
+#[test]
+fn the_page_reads_only_the_images_a_form_names() {
+    let mut r = rig("form-images-read");
+    let t = r.t.clone();
+    let cwd = std::path::PathBuf::from(r.thread(&t).cwd);
+    std::fs::write(cwd.join("a.png"), PNG).unwrap();
+    std::fs::write(cwd.join("b.png"), PNG).unwrap();
+    std::fs::write(cwd.join("other.png"), PNG).unwrap();
+    std::fs::write(r.dir.join("secret.png"), PNG).unwrap();
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t.clone(), form: pictures(&["a.png", "b.png"]) }) else {
+        panic!("shown")
+    };
+    let Ok(Reply::Image { mime, data }) = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "a.png".into() }) else {
+        panic!("an image")
+    };
+    use base64::Engine as _;
+    assert_eq!((mime.as_str(), base64::engine::general_purpose::STANDARD.decode(data).unwrap()), ("image/png", PNG.to_vec()));
+    let err = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "other.png".into() }).unwrap_err();
+    assert!(err.contains("other.png"), "{err}");
+    // Swapped for a link to outside after the form was shown.
+    std::fs::remove_file(cwd.join("b.png")).unwrap();
+    std::os::unix::fs::symlink(r.dir.join("secret.png"), cwd.join("b.png")).unwrap();
+    let err = r.cmd(Command::FormImage { form_id, path: "b.png".into() }).unwrap_err();
+    assert!(err.contains("outside"), "{err}");
+}

@@ -633,6 +633,11 @@ function formCard(got) {
   const elsewhere = got.thread_id !== conv.thread;
   return card(got, {
     markdown,
+    image: async (path) => {
+      const reply = await request('form_image', { form_id: got.form_id, path });
+      if (reply.error || !reply.ok) return { error: reply.error || 'desl web could not read the picture.' };
+      return { url: `data:${reply.ok.mime};base64,${reply.ok.data}` };
+    },
     readOnly: elsewhere,
     note: elsewhere ? `Asked in ${got.thread_id}, where it is answered.` : '',
     onDraft: (draft) => request('form_draft', { form_id: got.form_id, draft }),

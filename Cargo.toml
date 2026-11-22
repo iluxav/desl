@@ -27,13 +27,14 @@ adapter-codex = { path = "crates/adapters/codex" }
 adapter-copilot = { path = "crates/adapters/copilot" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+base64 = "0.22"
 anyhow = "1"
 ratatui = "0.30"
 unicode-width = "0.2"
 pulldown-cmark = { version = "0.13.6", default-features = false }
 portable-pty = "0.9"
 filedescriptor = "0.8"
-rustix = { version = "1", features = ["net", "process", "termios"] }
+rustix = { version = "1", features = ["fs", "net", "process", "termios"] }
 vt100 = "0.18"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 rusqlite = { version = "0.37", features = ["bundled"] }

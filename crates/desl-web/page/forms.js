@@ -365,6 +365,45 @@ const DRAW = {
     wrap.append(table);
     into.append(wrap);
   },
+
+  images(w, into, ctx, value) {
+    heading(w, into);
+    const name = uid();
+    const given = value === undefined || value === null ? w.value : value;
+    const picked = new Set(Array.isArray(given) ? given : given === undefined || given === null ? [] : [given]);
+    const grid = el('div', 'fw-images');
+    for (const p of w.images || []) {
+      const tile = el('label', 'fw-image');
+      const box = el('input');
+      box.type = w.multi ? 'checkbox' : 'radio';
+      box.name = name;
+      box.value = p.path;
+      box.checked = picked.has(p.path);
+      const frame = el('span', 'fw-image-frame');
+      // The file's name stands in until the picture comes, and for good if it cannot be read.
+      const stand = el('span', 'fw-image-name', p.path);
+      frame.append(stand);
+      const words = el('span', 'fw-image-words');
+      words.append(el('span', 'fw-option-label', p.caption || p.path.split('/').pop()));
+      if (p.caption) words.append(el('span', 'fw-option-detail', p.path));
+      tile.append(box, frame, words);
+      grid.append(tile);
+      if (ctx.image) {
+        ctx.image(p.path).then((got) => {
+          if (got.url) {
+            const img = el('img', 'fw-image-img');
+            img.alt = p.caption || p.path;
+            img.src = got.url;
+            frame.replaceChildren(img);
+          } else if (got.error) {
+            stand.title = got.error;
+            frame.append(el('span', 'fw-image-why', 'could not be read'));
+          }
+        });
+      }
+    }
+    into.append(grid);
+  },
 };
 
 /** What a control sets its variable to: a range's number with its unit. */
@@ -455,6 +494,11 @@ function read(w, box) {
       const v = box.querySelector('select').value;
       return v === '' ? undefined : v;
     }
+    case 'images': {
+      const chosen = [...box.querySelectorAll('.fw-image input')].filter((i) => i.checked).map((i) => i.value);
+      if (w.multi) return chosen.length ? chosen : undefined;
+      return chosen[0];
+    }
     case 'table': {
       const out = [];
       for (const tr of box.querySelectorAll('tr[data-row]')) {
@@ -512,7 +556,8 @@ const CLOSED = {
 
 /**
  * A form's card. `got` is the daemon's `form` reply: the form, its draft, its answer, how it
- * closed. `opts`: `markdown(text)` renders Markdown as nodes; `readOnly` and `note` for a card
+ * closed. `opts`: `markdown(text)` renders Markdown as nodes; `image(path)` resolves to `{url}` or
+ * `{error}` for a picture the form shows; `readOnly` and `note` for a card
  * that cannot be answered here; `onDraft(values)`, `onSend(answer)` (resolves to an error
  * sentence or null) and `onDismiss()` for a live one.
  */
@@ -528,7 +573,7 @@ export function card(got, opts) {
   top.append(el('span', 'form-id', got.form_id));
   root.append(top);
   const values = closed === 'user' ? got.answer || {} : got.draft || {};
-  const ctx = { markdown: opts.markdown };
+  const ctx = { markdown: opts.markdown, image: opts.image };
   for (const w of form.widgets || []) {
     const box = el('div', `fw fw-kind-${w.kind}`);
     box.dataset.widget = w.id;

@@ -135,6 +135,13 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- The TUI's history line for a form named the key as "prefix v" and said nothing of the answer;
+  it now names your prefix, shows the answer on one line, and says a form copied into a fork
+  was asked in the thread it was forked from. `desl send` names your prefix too.
+- Removing a thread broke the form cards of its forks: forms a fork still shows now stay,
+  closed, and an open one reads "closed: the thread that asked it was removed".
+- desl web's waiting column hid a dialog in an agent's own screen when that thread also had a
+  form open; it lists both now.
 - Forms: a field or list you emptied came back filled after a reload, and an answered card showed
   the agent's starting value for what you left empty. A comment with no note yet was lost on a
   reload. A table column named `constructor` broke its cells. A document's file that could no

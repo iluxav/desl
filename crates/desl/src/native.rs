@@ -1805,7 +1805,12 @@ impl Client {
         {
             sub.asked = None;
             match (ok, error) {
-                (Some(Reply::Events { events }), _) => sub.reading.load(events),
+                (Some(Reply::Events { events }), _) => {
+                    let open =
+                        self.threads.iter().find(|t| t.id == sub.thread_id).map(|t| t.open_forms.iter().map(|f| f.id.clone()).collect());
+                    sub.reading.set_forms(crate::history::Forms { prefix: self.prefix_label.clone(), open: open.unwrap_or_default() });
+                    sub.reading.load(events);
+                }
                 (_, Some(sentence)) => {
                     // Nothing came to read: back to the agent, with the reason.
                     self.close_sub();

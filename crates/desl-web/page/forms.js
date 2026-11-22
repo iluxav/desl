@@ -745,6 +745,7 @@ const CLOSED = {
   user: 'Answered',
   dismissed: 'Dismissed',
   withdrawn: 'Withdrawn by the agent',
+  removed: 'Closed: the thread that asked it was removed',
 };
 
 /**

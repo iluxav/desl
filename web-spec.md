@@ -300,9 +300,11 @@ in the background when none runs, in a session of its own. Over SSH, or with no 
 does the same; `desl web` while one runs says where it is; `desl web --stop` ends it.
 
 **The bridge's own messages.** Besides the daemon's frames, the bridge sends the page:
-- `{"type": "view", "view": {waiting, projects, forms}}`: the sidebar as `desl_proto::view::Sidebar`
-  words it, and every open form (`form_id`, `thread_id`, `title`, `project`, `age`), oldest
-  first. Sent when the workspace changes, and every 15 seconds when an age moved on; never twice
+- `{"type": "view", "view": {waiting, projects, forms, screen}}`: the sidebar as
+  `desl_proto::view::Sidebar` words it, every open form (`form_id`, `thread_id`, `title`,
+  `project`, `age`), oldest first, and `screen`, the waiting threads whose agent asks in its own
+  screen (none open form, or its screen asks beside one: the thread's `screen_asks`), which the
+  waiting column lists as answered in the terminal. Sent when the workspace changes, and every 15 seconds when an age moved on; never twice
   the same.
 - `{"type": "bridge", "state": "ready", "build"}` on connecting; `"no_daemon"` or
   `"daemon_gone"` when the daemon cannot be reached; the page connects again, with growing

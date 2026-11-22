@@ -19,6 +19,13 @@ impl Out {
     }
 }
 
+/// What `desl send` says when the agent put a form in front of the user, with the prefix as set.
+fn form_waiting(agent: &str, form: &str, title: &str, prefix: &str) -> String {
+    format!(
+        "{agent} put a form in front of you: {form} \"{title}\". Answer it in the browser ({prefix} v in desl, or `desl web --open`), or with `desl form answer {form} '<json>'`."
+    )
+}
+
 /// `desl web --open --thread <id>`: the browser on that thread, at its open form, with desl web
 /// started in the background when none runs. The daemon runs it when an agent pushes a form and
 /// no page is open.
@@ -59,7 +66,7 @@ pub fn web(paths: &Paths, out: &Out, port: Option<u16>, open: bool, stop: bool) 
     let exe = own_binary().ok();
     let ended = desl_web::run(&paths.socket, port, handed, exe.clone(), |url| {
         if let Err(e) = crate::web::record(paths, url) {
-            eprintln!("desl web could not note where it runs ({e}); `desl web --stop` and ctrl+space v will not find it.");
+            eprintln!("desl web could not note where it runs ({e}); `desl web --stop` and the TUI will not find it.");
         }
         if again {
             return;
@@ -512,10 +519,10 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
                         );
                     } else if let Some(f) = thread.open_forms.last() {
                         // It put a form in front of the user: that is answered on the page.
-                        eprintln!(
-                            "{} put a form in front of you: {} \"{}\". Answer it in the browser (ctrl+space v in desl, or `desl web --open`), or with `desl form answer {} '<json>'`.",
-                            thread.active_agent, f.id, f.title, f.id
-                        );
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        let prefix =
+                            desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref()).prefix.label();
+                        eprintln!("{}", form_waiting(&thread.active_agent, &f.id, &f.title, &prefix));
                     } else {
                         // The agent asks in its own interface: that is where it is answered.
                         eprintln!(
@@ -1043,6 +1050,13 @@ pub fn skill_install(out: &Out) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_form_waiting_names_the_prefix_as_set() {
+        let line = form_waiting("claude", "f-0001", "Which milestone?", "ctrl+a");
+        assert!(line.contains("ctrl+a v") && !line.contains("ctrl+space"), "{line}");
+        assert!(line.contains("desl form answer f-0001"), "{line}");
+    }
+
     use super::*;
 
     #[test]

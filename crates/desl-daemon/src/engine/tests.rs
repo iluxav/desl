@@ -1816,3 +1816,53 @@ fn opening_the_browser_for_forms_can_be_turned_off() {
     show(&mut r, &t);
     assert!(opened.lock().unwrap().is_empty());
 }
+
+#[test]
+fn a_fork_keeps_its_parents_forms_when_the_parent_is_removed() {
+    let mut r = rig("form-fork-removed");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    let answered = show(&mut r, &t);
+    r.cmd(Command::FormAnswer { form_id: answered.clone(), answer: json!({"next": "M5"}) }).unwrap();
+    let open = show(&mut r, &t);
+    let Reply::Created { thread_id: fork } = r.cmd(Command::Fork { thread_id: t.clone(), agent: None, at: None, worktree: false }).unwrap()
+    else {
+        panic!("a fork")
+    };
+    r.cmd(Command::RemoveThread { thread_id: t }).unwrap();
+    // The fork's conversation still shows both cards: their forms are kept.
+    let Ok(Reply::Form { closed_by, answer, .. }) = r.cmd(Command::FormGet { form_id: answered }) else { panic!("kept") };
+    assert_eq!((closed_by.as_deref(), answer), (Some("user"), Some(json!({"next": "M5"}))));
+    let Ok(Reply::Form { closed_by, .. }) = r.cmd(Command::FormGet { form_id: open }) else { panic!("kept") };
+    assert_eq!(closed_by.as_deref(), Some("removed"), "nobody can answer it any more");
+    assert!(r.thread(&fork).open_forms.is_empty());
+}
+
+#[test]
+fn a_removed_thread_with_no_fork_takes_its_forms_with_it() {
+    let mut r = rig("form-removed");
+    let t = r.t.clone();
+    let form_id = show(&mut r, &t);
+    let Ok(Reply::Created { thread_id: other }) =
+        r.cmd(Command::NewThread { cwd: r.thread(&t).cwd, agent: None, prompt: None, beside: Some(t.clone()), worktree: false })
+    else {
+        panic!("another thread")
+    };
+    assert_ne!(other, t);
+    r.cmd(Command::RemoveThread { thread_id: t }).unwrap();
+    assert!(r.cmd(Command::FormGet { form_id }).unwrap_err().contains("no form"));
+}
+
+#[test]
+fn a_dialog_on_the_screen_of_a_thread_with_a_form_is_told_to_the_clients() {
+    let mut r = rig("form-and-screen");
+    let t = r.t.clone();
+    show(&mut r, &t);
+    assert!(!r.thread(&t).screen_asks);
+    r.engine.asked_on_screen.insert(t.clone());
+    r.engine.persist(&t);
+    assert!(r.thread(&t).screen_asks, "the waiting column lists it beside its form");
+    r.engine.asked_on_screen.remove(&t);
+    r.engine.persist(&t);
+    assert!(!r.thread(&t).screen_asks);
+}

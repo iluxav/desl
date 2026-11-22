@@ -96,7 +96,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `what` | Carries | When |
 | --- | --- | --- |
 | `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
-| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval, branch or open forms changed. `thread.open_forms` lists its forms not answered yet, `{id, title, at}`, oldest first. |
+| `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval, branch or open forms changed. `thread.open_forms` lists its forms not answered yet, `{id, title, at}`, oldest first. `thread.screen_asks` is true while its agent asks something in its own screen, a form open beside it or not. |
 | `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |

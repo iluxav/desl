@@ -130,6 +130,9 @@ pub struct Sidebar {
     pub projects: Vec<ProjectRow>,
     /// Every open form, oldest first: desl web's waiting column (docs/design/2026-11-21-web-forms.md).
     pub forms: Vec<FormRow>,
+    /// The waiting threads whose agent asks in its own screen, answered in the terminal: those
+    /// with no form open, and those whose screen asks beside a form.
+    pub screen: Vec<String>,
 }
 
 /// An open form, as the waiting column names it.
@@ -241,6 +244,11 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
         };
         project.threads.push(row);
     }
+    let screen = waiting(projects, threads)
+        .into_iter()
+        .filter(|t| keep(t) && (t.screen_asks || t.open_forms.is_empty()))
+        .map(|t| t.id.clone())
+        .collect();
     let waiting = waiting(projects, threads).into_iter().filter(|t| keep(t)).map(|t| t.id.clone()).collect();
     let mut forms: Vec<(i64, FormRow)> = threads
         .iter()
@@ -260,7 +268,7 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
         })
         .collect();
     forms.sort_by_key(|(at, f)| (*at, f.form_id.clone()));
-    Sidebar { waiting, projects: rows, forms: forms.into_iter().map(|(_, f)| f).collect() }
+    Sidebar { waiting, projects: rows, forms: forms.into_iter().map(|(_, f)| f).collect(), screen }
 }
 
 #[cfg(test)]
@@ -372,6 +380,20 @@ mod tests {
         let seen: Vec<(&str, &str, &str, &str, &str)> =
             rows.iter().map(|f| (f.form_id.as_str(), f.thread_id.as_str(), f.title.as_str(), f.project.as_str(), f.age.as_str())).collect();
         assert_eq!(seen, [("f-2", "t-2", "Which logo?", "rebrand", "20m"), ("f-1", "t-1", "Next milestone?", "desl", "1m")]);
+    }
+
+    #[test]
+    fn a_thread_asking_in_its_screen_is_listed_even_with_a_form_open() {
+        let projects = [project("desl", Some("main"), 0)];
+        let form = || vec![OpenForm { id: "f-1".into(), title: "Next?".into(), at: 0 }];
+        let mut on_form = thread("t-1", "desl", 1, "claude", Status::Waiting);
+        on_form.open_forms = form();
+        let mut both = thread("t-2", "desl", 2, "claude", Status::Waiting);
+        both.open_forms = form();
+        both.screen_asks = true;
+        let on_screen = thread("t-3", "desl", 3, "codex", Status::Waiting);
+        let v = sidebar(&projects, &[on_form, both, on_screen], 0, |_| true);
+        assert_eq!(v.screen, ["t-2", "t-3"], "t-1 waits on its form alone, answered on its card");
     }
 
     #[test]

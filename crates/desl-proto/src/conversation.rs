@@ -60,6 +60,8 @@ pub enum Item {
         form_id: String,
         title: String,
         by: Option<String>,
+        /// The answer's JSON, as the prompt that took it to the agent had it.
+        answer: Option<String>,
     },
 }
 
@@ -132,6 +134,12 @@ impl Thread {
                 self.turns += 1;
                 // An answer desl typed is shown by its form's card; a dismissal note is not shown.
                 let text = crate::form::strip_notes(text);
+                if let Some((id, json)) = crate::form::answer_in(text) {
+                    let card = self.items.iter_mut().rev().find(|i| matches!(i, Item::Form { form_id, .. } if form_id == id));
+                    if let Some(Item::Form { answer, .. }) = card {
+                        *answer = Some(json.to_string());
+                    }
+                }
                 if crate::form::is_form_prompt(text) || text.is_empty() {
                     return;
                 }
@@ -243,7 +251,7 @@ impl Thread {
             }
             EventKind::Form { form_id, title, .. } => {
                 self.close_streaming();
-                self.items.push(Item::Form { form_id: form_id.clone(), title: title.clone(), by: None });
+                self.items.push(Item::Form { form_id: form_id.clone(), title: title.clone(), by: None, answer: None });
             }
             EventKind::FormAnswer { form_id, by, .. } => {
                 let card = self.items.iter_mut().rev().find(|i| matches!(i, Item::Form { form_id: f, .. } if f == form_id));

@@ -446,6 +446,10 @@ pub struct Thread {
     /// thread is `waiting`. From the store's `forms` table, not its row.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub open_forms: Vec<OpenForm>,
+    /// Its agent asks something in its own screen: a dialog answered in the terminal, beside any
+    /// form it has open.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub screen_asks: bool,
 }
 
 /// A form the thread's agent put in front of the user that is not answered yet.

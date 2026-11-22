@@ -286,6 +286,7 @@ impl Store {
                 pending_approval: None,
                 subagents: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
                 open_forms: Vec::new(),
+                screen_asks: false,
                 named: r.get(13)?,
                 git: GitState::default(),
                 id,
@@ -319,7 +320,16 @@ impl Store {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
-        for table in ["events", "bindings", "queue", "forms"] {
+        // A fork's conversation shows the forms it copied from this thread: those stay, closed,
+        // so their cards still read; nobody can answer an open one any more.
+        let copied = "EXISTS (SELECT 1 FROM events e WHERE e.thread_id != ?1 AND e.kind = 'form'
+                      AND instr(e.body, '\"form_id\":\"' || forms.id || '\"') > 0)";
+        self.conn.execute(
+            &format!("UPDATE forms SET closed_by = 'removed' WHERE thread_id = ?1 AND closed_by IS NULL AND {copied}"),
+            params![id],
+        )?;
+        self.conn.execute(&format!("DELETE FROM forms WHERE thread_id = ?1 AND NOT {copied}"), params![id])?;
+        for table in ["events", "bindings", "queue"] {
             self.conn.execute(&format!("DELETE FROM {table} WHERE thread_id = ?1"), params![id])?;
         }
         self.conn.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
@@ -592,6 +602,7 @@ mod tests {
             pending_approval: None,
             subagents: Vec::new(),
             open_forms: Vec::new(),
+            screen_asks: false,
             git: GitState::default(),
         }
     }

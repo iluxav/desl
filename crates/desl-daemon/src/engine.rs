@@ -382,6 +382,9 @@ impl Engine {
             }
         }
         let agents = detect(&adapters);
+        // A dialog its screen showed when the daemon before this one left still shows.
+        let asked_on_screen: HashSet<String> =
+            threads.iter().filter(|t| t.screen_asks && t.status == Status::Waiting).map(|t| t.id.clone()).collect();
         let mut engine = Engine {
             store,
             adapters,
@@ -402,7 +405,7 @@ impl Engine {
             typing: HashMap::new(),
             awaiting_turn: HashMap::new(),
             restarting: HashSet::new(),
-            asked_on_screen: HashSet::new(),
+            asked_on_screen,
             socket: None,
             git_busy: false,
             config_file: None,
@@ -649,6 +652,7 @@ impl Engine {
         if self.threads[i].status != Status::Waiting {
             self.asked_on_screen.remove(thread_id);
         }
+        self.threads[i].screen_asks = self.asked_on_screen.contains(thread_id);
         if let Err(e) = self.store.put_thread(&self.threads[i]) {
             tracing::error!(thread = thread_id, "could not write the thread: {e:#}");
         }
@@ -795,6 +799,7 @@ impl Engine {
             pending_approval: None,
             subagents: Vec::new(),
             open_forms: Vec::new(),
+            screen_asks: false,
         };
         let id = thread.id.clone();
         self.threads.push(thread);
@@ -1660,6 +1665,10 @@ impl Engine {
             if next == Status::Waiting {
                 self.asked_on_screen.insert(thread_id.to_string());
             }
+            self.persist(thread_id);
+        } else if status == Status::Waiting && asking && !self.asked_on_screen.contains(thread_id) {
+            // Waiting on a form already, and now its screen asks too: the waiting column says so.
+            self.asked_on_screen.insert(thread_id.to_string());
             self.persist(thread_id);
         }
     }
@@ -2966,6 +2975,7 @@ impl Engine {
             pending_approval: None,
             subagents: Vec::new(),
             open_forms: Vec::new(),
+            screen_asks: false,
             // The copy's agent may title it apart from the parent.
             named: false,
             // `yolo` is set per thread, by hand; a fork does not inherit it.

@@ -848,6 +848,15 @@ pub fn answer_prompt(form_id: &str, title: &str, answer: &Value) -> String {
     format!("desl: answer to {form_id} \"{title}\"\n```json\n{answer}\n```")
 }
 
+/// The form id and the answer's JSON in a prompt desl typed with an answer.
+pub fn answer_in(prompt: &str) -> Option<(&str, &str)> {
+    let rest = prompt.trim_start().strip_prefix("desl: answer to ")?;
+    let id = rest.split_whitespace().next()?;
+    let json = rest.split_once("```json\n")?.1;
+    let json = json.rsplit_once("\n```").map_or(json, |(j, _)| j);
+    Some((id, json.trim()))
+}
+
 /// Whether a prompt is an answer desl typed: the page shows the form's card in its place.
 pub fn is_form_prompt(text: &str) -> bool {
     text.trim_start().starts_with(ANSWER_HEAD)

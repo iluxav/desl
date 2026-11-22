@@ -81,8 +81,23 @@ pub struct Laid {
     pub starts: Vec<usize>,
 }
 
+/// What a form's line needs beyond the log: the prefix as set, and the forms open on this
+/// thread now. A form the log leaves open and this thread does not have was asked in the
+/// thread this one was forked from.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Forms {
+    pub prefix: String,
+    pub open: Vec<String>,
+}
+
+impl Default for Forms {
+    fn default() -> Forms {
+        Forms { prefix: "ctrl+space".into(), open: Vec::new() }
+    }
+}
+
 /// A conversation's items as lines at most `width` columns wide.
-pub fn layout(items: &[Item], width: usize) -> Laid {
+pub fn layout(items: &[Item], width: usize, forms: &Forms) -> Laid {
     let mut lines: Vec<Line<'static>> = Vec::new();
     let mut starts = Vec::with_capacity(items.len());
     let width = width.min(MAX_TEXT_WIDTH);
@@ -185,15 +200,28 @@ pub fn layout(items: &[Item], width: usize) -> Laid {
                 }
             }
             // A form is answered on desl web's page; the history says what it was and how it ended.
-            Item::Form { title, by, .. } => {
+            Item::Form { form_id, title, by, answer } => {
+                let open = by.is_none() && forms.open.contains(form_id);
                 let how = match by.as_deref() {
-                    None => "open: answer it in the browser, prefix v".to_string(),
-                    Some("user") => "answered".to_string(),
+                    None if open => format!("open: answer it in the browser, {} v", forms.prefix),
+                    None => "asked in the thread this one was forked from".to_string(),
+                    Some("user") => match answer {
+                        Some(a) => format!("answered: {a}"),
+                        None => "answered".to_string(),
+                    },
+                    Some("removed") => "closed: the thread that asked it was removed".to_string(),
                     Some(other) => other.to_string(),
+                };
+                // One line: a long answer is cut where the line ends.
+                let room = body.saturating_sub(title.chars().count() + 6);
+                let how = if how.chars().count() > room {
+                    format!("{}…", how.chars().take(room.saturating_sub(1)).collect::<String>())
+                } else {
+                    how
                 };
                 lines.push(Line::from(vec![
                     Span::raw(format!(" {INDENT}")),
-                    Span::styled("▣ ", if by.is_none() { theme::warning() } else { theme::muted() }),
+                    Span::styled("▣ ", if open { theme::warning() } else { theme::muted() }),
                     Span::styled(title.clone(), theme::dim()),
                     Span::styled(format!("  · {how}"), theme::muted()),
                 ]));

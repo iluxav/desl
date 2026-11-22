@@ -290,9 +290,9 @@ function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
   const forms = state.view ? state.view.forms || [] : [];
-  const asking = new Set(forms.map((f) => f.thread_id));
-  // A thread waiting on a form is answered on its card; the rest wait in their own screen.
-  const ids = (state.view ? state.view.waiting : []).filter((id) => !asking.has(id));
+  // Threads whose agent asks in its own screen, a form open beside it or not: answered in the
+  // terminal. A thread waiting on a form alone is answered on its card.
+  const ids = state.view ? state.view.screen || [] : [];
   const count = forms.length + ids.length;
   $('wait-title').textContent = count ? `Waiting · ${count}` : 'Waiting';
   if (!count) {

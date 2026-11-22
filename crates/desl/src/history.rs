@@ -6,6 +6,7 @@
 
 use crate::native::SKey;
 use crate::ui::transcript;
+pub use crate::ui::transcript::Forms;
 use chrono::{DateTime, Local};
 use desl_ir::Event;
 use ratatui::text::Line;
@@ -27,9 +28,9 @@ pub struct Page {
 impl Page {
     /// `events` as lines `width` wide, with a rule wherever a new day begins. Without `tools`
     /// only what was said is in it: the prompts and the replies.
-    pub fn of(events: &[Event], width: usize, tools: bool) -> Page {
+    pub fn of(events: &[Event], width: usize, tools: bool, forms: &Forms) -> Page {
         let (m, prompts) = crate::model::conversation(events, tools);
-        let laid = transcript::layout(&m.items, width);
+        let laid = transcript::layout(&m.items, width, forms);
         let prompts = prompts.into_iter().map(|(item, at)| (laid.starts.get(item).copied().unwrap_or(0), at)).collect();
         Page { lines: laid.lines, prompts, width }
     }
@@ -114,11 +115,31 @@ pub struct Reading {
     searched: Option<(String, bool)>,
     /// The line the last search stopped on.
     hit: Option<usize>,
+    /// What forms' lines say beyond the log.
+    forms: Forms,
 }
 
 impl Reading {
     pub fn new() -> Reading {
-        Reading { events: Vec::new(), loaded: false, page: None, scroll: 0, tools: true, typing: None, searched: None, hit: None }
+        Reading {
+            events: Vec::new(),
+            loaded: false,
+            page: None,
+            scroll: 0,
+            tools: true,
+            typing: None,
+            searched: None,
+            hit: None,
+            forms: Forms::default(),
+        }
+    }
+
+    /// The prefix as set and the thread's open forms, for the forms' lines.
+    pub fn set_forms(&mut self, forms: Forms) {
+        if self.forms != forms {
+            self.forms = forms;
+            self.page = None;
+        }
     }
 
     /// The daemon's answer. Where the reader is stays as it was, counted from the end.
@@ -131,7 +152,7 @@ impl Reading {
     /// The page at `width`, laid out again only when the width or the events changed.
     pub fn page(&mut self, width: usize) -> &Page {
         if self.page.as_ref().is_none_or(|p| p.width != width) {
-            self.page = Some(if self.loaded { Page::of(&self.events, width, self.tools) } else { Page::waiting(width) });
+            self.page = Some(if self.loaded { Page::of(&self.events, width, self.tools, &self.forms) } else { Page::waiting(width) });
         }
         self.page.get_or_insert_with(|| Page::waiting(width))
     }
@@ -381,8 +402,27 @@ mod tests {
     }
 
     #[test]
+    fn a_form_says_how_it_ended_and_where_to_answer_it() {
+        let a = noon(19);
+        let form = |i, id: &str, title: &str| ev(i, a, EventKind::Form { form_id: id.into(), title: title.into(), blob: "x".into() });
+        let events = vec![
+            form(1, "f-0001", "Which milestone?"),
+            ev(2, a, EventKind::FormAnswer { form_id: "f-0001".into(), by: "user".into(), blob: None }),
+            said(3, a, &desl_proto::form::answer_prompt("f-0001", "Which milestone?", &json!({"next": "M5"}))),
+            form(4, "f-0002", "Still open here"),
+            form(5, "f-0003", "Asked before the fork"),
+        ];
+        let forms = Forms { prefix: "ctrl+a".into(), open: vec!["f-0002".into()] };
+        let rows = texts(&Page::of(&events, 100, true, &forms));
+        assert!(rows.iter().any(|r| r.contains("Which milestone?") && r.contains(r#"answered: {"next":"M5"}"#)), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("Still open here") && r.contains("ctrl+a v")), "the prefix as set: {rows:?}");
+        assert!(rows.iter().any(|r| r.contains("Asked before the fork") && r.contains("thread this one was forked from")), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("prefix v")), "{rows:?}");
+    }
+
+    #[test]
     fn a_conversation_reads_from_its_first_prompt_with_a_rule_at_each_new_day() {
-        let page = Page::of(&two_days(), 60, true);
+        let page = Page::of(&two_days(), 60, true, &Forms::default());
         let rows = texts(&page);
         assert!(rows[0].starts_with("── Thursday 19 November 2026 ─"), "{rows:?}");
         assert_eq!(
@@ -398,7 +438,7 @@ mod tests {
 
     #[test]
     fn without_the_tool_calls_only_what_was_said_is_left() {
-        let rows = texts(&Page::of(&two_days(), 60, false));
+        let rows = texts(&Page::of(&two_days(), 60, false, &Forms::default()));
         assert!(!rows.iter().any(|r| r.contains("cargo test")), "{rows:?}");
         assert_eq!(rows.iter().filter(|r| r.starts_with('›')).count(), 3);
     }
@@ -406,13 +446,13 @@ mod tests {
     #[test]
     fn a_log_without_times_has_no_rules() {
         // A subagent's events carry no time.
-        let rows = texts(&Page::of(&[said(1, 0, "look into it"), replied(2, 0, "Looked.")], 60, true));
+        let rows = texts(&Page::of(&[said(1, 0, "look into it"), replied(2, 0, "Looked.")], 60, true, &Forms::default()));
         assert_eq!(rows, ["› look into it", "Looked."]);
     }
 
     #[test]
     fn a_search_goes_down_or_up_and_around_and_minds_capitals_only_when_asked() {
-        let page = Page::of(&two_days(), 60, true);
+        let page = Page::of(&two_days(), 60, true, &Forms::default());
         let line = |needle: &str| (0..page.lines.len()).find(|&i| page.text(i).contains(needle)).unwrap();
         let (asked, told) = (line("why is the sidebar"), line("The Sidebar read"));
         assert_eq!(page.find("sidebar", 0, true), Some(asked));

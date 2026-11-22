@@ -13,6 +13,9 @@
   --muted: #8a91a1;
   --accent: #6aa6ff;
   --accent-ink: #0b1220;
+  /* Form cards' own accent, tuned by the author in a preview form (2026-11-22). */
+  --form-accent: #a78bfa;
+  --form-selected: rgb(167 139 250 / 0.16);
   --warn: #e5b45a;
   --warn-bg: #16140f;
   --warn-line: #3a3326;
@@ -42,6 +45,8 @@
     --muted: #626a79;
     --accent: #2459d6;
     --accent-ink: #ffffff;
+    --form-accent: #7228e2;
+    --form-selected: rgb(114 40 226 / 0.1);
     --warn: #8a5a00;
     --warn-bg: #fff8ea;
     --warn-line: #ecd9b0;
@@ -327,17 +332,21 @@ body.resizing { cursor: col-resize; user-select: none; }
 /* A form an agent put in front of the user, in its conversation (forms.js). */
 .item-form { margin-left: 0; }
 .form-card {
+  --accent: var(--form-accent);
+  --selected: var(--form-selected);
   max-width: 720px;
   border: 1px solid var(--warn-line);
-  border-radius: 10px;
+  border-radius: 20px;
   background: var(--panel);
-  padding: 14px 16px;
+  padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   transition: box-shadow 0.3s;
 }
 .form-card.done { border-color: var(--line); }
+.form-actions .primary, .form-actions .secondary { border-radius: 14px; }
+.form-actions .secondary { border-color: var(--line2); background: transparent; }
 .form-card.flash { box-shadow: 0 0 0 3px var(--warn-line); }
 .form-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .form-mark { color: var(--warn); }

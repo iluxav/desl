@@ -1,7 +1,10 @@
 // desl web's page (web-spec.md). It speaks the daemon's protocol through desl web's bridge and
 // draws the `view` the bridge sends: the projects and their agent threads as desl itself words
 // them for the terminal, and the selected thread's conversation. The agent's own screen stays in
-// the terminal. Text from agents only ever goes into the page as text nodes.
+// the terminal. Text from agents only ever goes into the page as text nodes. Forms an agent puts
+// in front of the user are drawn as cards in its conversation (forms.js).
+
+import { card } from '/forms.js';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -282,13 +285,32 @@ function drawHead(cur) {
 function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
-  const ids = state.view ? state.view.waiting : [];
-  $('wait-title').textContent = ids.length ? `Waiting · ${ids.length}` : 'Waiting';
-  if (!ids.length) {
+  const forms = state.view ? state.view.forms || [] : [];
+  const asking = new Set(forms.map((f) => f.thread_id));
+  // A thread waiting on a form is answered on its card; the rest wait in their own screen.
+  const ids = (state.view ? state.view.waiting : []).filter((id) => !asking.has(id));
+  const count = forms.length + ids.length;
+  $('wait-title').textContent = count ? `Waiting · ${count}` : 'Waiting';
+  if (!count) {
     list.append(el('p', 'quiet', state.view ? 'Nothing is waiting for you.' : ''));
     return;
   }
   const all = threads();
+  for (const f of forms) {
+    const found = all.find(({ t }) => t.id === f.thread_id);
+    const line = el('button', 'wait-line wait-form');
+    line.type = 'button';
+    line.setAttribute('aria-label', `Form: ${f.title}`);
+    const top = el('span', 'wait-top');
+    top.append(el('span', 'form-mark', '▣'), el('span', 'title', f.title), el('span', 'age', f.age));
+    line.append(top, el('span', 'wait-where', `${found ? found.t.title : f.thread_id} · ${f.project}`));
+    line.addEventListener('click', () => {
+      state.toForm = f.form_id;
+      if (state.selected === f.thread_id) goToForm();
+      else select(f.thread_id);
+    });
+    list.append(line);
+  }
   for (const id of ids) {
     const found = all.find(({ t }) => t.id === id);
     if (!found) continue;
@@ -537,6 +559,9 @@ function drawConversation(toEnd) {
       case 'error':
         node = el('div', 'item item-error', `✕ ${item.text}`);
         break;
+      case 'form':
+        node = formNode(item);
+        break;
       default:
         node = el('div', 'item item-note', item.text);
         break;
@@ -545,6 +570,67 @@ function drawConversation(toEnd) {
   }
   findAgain(false);
   if (toEnd) list.scrollTop = list.scrollHeight;
+  goToForm();
+}
+
+// ---- forms ------------------------------------------------------------------------------------
+
+/** Each form's card by its id, kept across redraws so what the user typed stays. */
+const formCards = new Map();
+
+/** The card for a conversation's form item: kept while the form is as it was, else asked for. */
+function formNode(item) {
+  const kept = formCards.get(item.form_id);
+  if (kept && kept.by === item.by && kept.thread === conv.thread) return kept.node;
+  const node = el('div', 'item item-form');
+  node.append(el('p', 'more', `Reading the form ${item.form_id}…`));
+  formCards.set(item.form_id, { by: item.by, thread: conv.thread, node });
+  request('form_get', { form_id: item.form_id }).then((reply) => {
+    if (reply.error || !reply.ok) {
+      node.replaceChildren(el('p', 'item-error', reply.error || 'desl web could not read the form.'));
+      return;
+    }
+    node.replaceChildren(formCard(reply.ok));
+    goToForm();
+  });
+  return node;
+}
+
+function formCard(got) {
+  // A fork shows its parent's forms as they were; they are answered in the thread that asked.
+  const elsewhere = got.thread_id !== conv.thread;
+  return card(got, {
+    markdown,
+    readOnly: elsewhere,
+    note: elsewhere ? `Asked in ${got.thread_id}, where it is answered.` : '',
+    onDraft: (draft) => request('form_draft', { form_id: got.form_id, draft }),
+    onSend: async (answer) => {
+      const reply = await request('form_answer', { form_id: got.form_id, answer });
+      if (reply.error) return reply.error;
+      notice(`Sent your answer to ${got.form_id}; the agent gets it as its next prompt.`);
+      return null;
+    },
+    onDismiss: async () => {
+      const reply = await request('form_close', { form_id: got.form_id, by: 'dismissed' });
+      if (reply.error) return reply.error;
+      notice(`Dismissed ${got.form_id}; the agent hears so before its next prompt.`);
+      return null;
+    },
+  });
+}
+
+/** After `prefix v` or a click in the waiting column: the form on screen, its first field focused. */
+function goToForm() {
+  if (!state.toForm) return;
+  const cards = [...document.querySelectorAll('#conv .form-card')];
+  const target = typeof state.toForm === 'string' ? cards.find((c) => c.dataset.form === state.toForm) : cards.find((c) => !c.classList.contains('done'));
+  if (!target) return;
+  state.toForm = null;
+  target.scrollIntoView({ block: 'center' });
+  target.classList.add('flash');
+  setTimeout(() => target.classList.remove('flash'), 1600);
+  const first = target.querySelector('input:not([disabled]), textarea, select');
+  if (first) first.focus({ preventScroll: true });
 }
 
 /** The items that hold the search's text: letters in either case, unless it has a capital. */

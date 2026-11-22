@@ -128,6 +128,20 @@ pub struct Sidebar {
     /// The threads waiting for the user, in the sidebar's order.
     pub waiting: Vec<String>,
     pub projects: Vec<ProjectRow>,
+    /// Every open form, oldest first: desl web's waiting column (docs/design/2026-11-21-web-forms.md).
+    pub forms: Vec<FormRow>,
+}
+
+/// An open form, as the waiting column names it.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct FormRow {
+    pub form_id: String,
+    pub thread_id: String,
+    pub title: String,
+    /// The name of its thread's project.
+    pub project: String,
+    /// Since it was shown.
+    pub age: String,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -228,13 +242,31 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
         project.threads.push(row);
     }
     let waiting = waiting(projects, threads).into_iter().filter(|t| keep(t)).map(|t| t.id.clone()).collect();
-    Sidebar { waiting, projects: rows }
+    let mut forms: Vec<(i64, FormRow)> = threads
+        .iter()
+        .filter(|t| keep(t))
+        .flat_map(|t| {
+            let path = projects.iter().find(|p| p.id == t.project_id).map_or(t.project_id.as_str(), |p| p.path.as_str());
+            t.open_forms.iter().map(move |f| {
+                let row = FormRow {
+                    form_id: f.id.clone(),
+                    thread_id: t.id.clone(),
+                    title: f.title.clone(),
+                    project: project_name(path),
+                    age: age(now, f.at),
+                };
+                (f.at, row)
+            })
+        })
+        .collect();
+    forms.sort_by_key(|(at, f)| (*at, f.form_id.clone()));
+    Sidebar { waiting, projects: rows, forms: forms.into_iter().map(|(_, f)| f).collect() }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use desl_ir::GitState;
+    use desl_ir::{GitState, OpenForm};
 
     fn thread(id: &str, project: &str, created: i64, agent: &str, status: Status) -> Thread {
         serde_json::from_value(serde_json::json!({
@@ -327,6 +359,19 @@ mod tests {
         assert_eq!(model(Some(&b(None, Some("haiku"), None))), "haiku", "picked, and not started on yet");
         assert_eq!(model(Some(&b(None, None, Some("low")))), "low effort");
         assert_eq!(model(None), "");
+    }
+
+    #[test]
+    fn the_open_forms_are_listed_oldest_first_with_their_project() {
+        let projects = [project("desl", Some("main"), 0), project("rebrand", None, 0)];
+        let mut a = thread("t-1", "desl", 1, "claude", Status::Waiting);
+        let mut b = thread("t-2", "rebrand", 2, "codex", Status::Waiting);
+        b.open_forms = vec![OpenForm { id: "f-2".into(), title: "Which logo?".into(), at: 10 }];
+        a.open_forms = vec![OpenForm { id: "f-1".into(), title: "Next milestone?".into(), at: 20 * 60_000 }];
+        let rows = sidebar(&projects, &[a, b], 21 * 60_000, |_| true).forms;
+        let seen: Vec<(&str, &str, &str, &str, &str)> =
+            rows.iter().map(|f| (f.form_id.as_str(), f.thread_id.as_str(), f.title.as_str(), f.project.as_str(), f.age.as_str())).collect();
+        assert_eq!(seen, [("f-2", "t-2", "Which logo?", "rebrand", "20m"), ("f-1", "t-1", "Next milestone?", "desl", "1m")]);
     }
 
     #[test]

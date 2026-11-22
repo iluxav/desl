@@ -30,6 +30,7 @@ const TRIES: u16 = 20;
 const FILES: &[(&str, &str, &str)] = &[
     ("/", "text/html; charset=utf-8", include_str!("../page/index.html")),
     ("/app.js", "text/javascript; charset=utf-8", include_str!("../page/app.js")),
+    ("/forms.js", "text/javascript; charset=utf-8", include_str!("../page/forms.js")),
     ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
 ];
 

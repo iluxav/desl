@@ -4,7 +4,7 @@ Nov 21, 2026 · adopted Nov 21, 2026 · redirected to forms Nov 21, 2026
 
 `desl web` opens the workspace in a browser, beside the terminal. It is where an agent puts a
 **form** in front of the user: a few widgets described in JSON (choices, a checklist, a document
-to edit, a diff to review, a look to tune), drawn inside the thread's conversation. The user works
+to edit, a look to tune), drawn inside the thread's conversation. The user works
 in it and presses Send, and the agent receives the result as data in its next prompt. The page
 also shows every project and agent thread, and each thread's whole conversation.
 
@@ -48,7 +48,8 @@ agreed to, each a widget an agent can push:
    back, so the agent gets the exact edit.
 3. **Tuning a look:** a live preview with sliders; the value goes back.
 4. **Approving a plan in parts:** steps as a checklist to untick, reorder and annotate.
-5. **Reviewing a change:** each part of a diff accepted, rejected or commented on.
+5. **Reviewing a change:** each part of a diff accepted, rejected or commented on. Dropped by the
+   author on 2026-11-22 (milestone 4): changes are reviewed in the editor or in git.
 
 Quick choices stay where they are: Claude Code's `AskUserQuestion` and Copilot's `ask_user` keep
 asking in the agent's own screen, answered with the arrow keys in the same turn (the author's
@@ -66,7 +67,8 @@ call). Forms are for what the terminal does badly.
 3. **Forms:** desl's MCP tool for agents, `desl form` for scripts, cards in the conversation,
    and the waiting list (see "Forms").
 4. **Widgets, by milestone:** `markdown`, `choice`, `checklist`, `text`, `number`, `toggle`,
-   `select` (milestone 2); `document` (3); `diff` (4); `preview`, `table`, `images` (5).
+   `select` (milestone 2); `document` (3); `preview`, `table`, `images` (5). The `diff` widget
+   (4) was dropped.
 
 Shell and file-manager threads are left out of the page. The browser adds nothing to a
 terminal, and the TUI keeps them.
@@ -208,9 +210,6 @@ leads nowhere else. The file's real name must be Markdown too. A comment quotes 
 characters and its note at most 4,000. Dismiss asks once more when a document is edited and not
 sent.
 
-`diff` follows in milestone 4, as the design describes it: the agent names the change and desl
-reads it with git, so a form stays small and the user sees the change as it is.
-
 **Lifecycle.**
 1. `show_form` (or `desl form new`): the daemon checks the form, keeps its JSON as a blob, gives it
    an id, appends a `form` event, and opens it on the thread.
@@ -345,8 +344,7 @@ the agents. Every rule below follows from that.
    Pictures reach the page as `data:` URLs, never as files it can name.
 5. **The MCP server acts on its own thread only:** `desl mcp` is started with the thread's id and
    can push and withdraw that thread's forms, nothing else.
-6. **Files stay in the project.** The `images` and `document` widgets, and the `diff` widget
-   (milestone 4), read only files inside the thread's directory once links are resolved, of the kinds and sizes
+6. **Files stay in the project.** The `images` and `document` widgets read only files inside the thread's directory once links are resolved, of the kinds and sizes
    the design lists; a document save writes only the section the card opened, and only if it is
    unchanged on disk.
 7. **Secrets.** The environment denylist and the key scan in `SPEC.md` apply unchanged. The
@@ -359,7 +357,7 @@ the agents. Every rule below follows from that.
 | 1 | The page reshaped | Done 2026-11-21: the screen, xterm.js and the page's size rule removed; the left column as projects and threads; the conversation as the middle; the right column ready for forms |
 | 2 | Forms | Done 2026-11-22: `desl mcp`, the launch flags for Claude Code 2.1.330, Codex 0.171.0 and Copilot 1.0.114, the events, the protocol, `desl form`, and the seven widgets of milestone 2 in the conversation and the right column. Each of the three agents called `show_form` without a dialog of its own and ended its turn; answers sent from the page and the shell reached Claude, Codex and Copilot as their next prompt; open forms and drafts survived daemon restarts. Two defects found on the way are fixed with tests: a migrating upgrade lost the new daemon's writes (`VACUUM INTO` for the backup), and a thread waiting on a form queued every prompt |
 | 3 | Document | Done 2026-11-22: a section of a Markdown file edited in place with a preview and comments, saved in one write only over what the user started from, and the conflict shown with both versions. Checked live: Claude Code (Haiku) pushed a document on a section, the page edited, commented and sent, the file changed in that section alone, and the agent read the diff and the comment; a file changed behind an open card was refused, shown, and saved over once the user chose so, with the choice surviving a reload |
-| 4 | Diff review | Each hunk accepted, rejected or commented on |
+| 4 | Diff review | Dropped by the author on 2026-11-22: changes are reviewed in the editor or in git |
 | 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
 | 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |
 

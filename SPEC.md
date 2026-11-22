@@ -101,7 +101,7 @@ All user-facing words are fixed here. Code, docs, help text and error messages u
 | switch | Continue this thread with a different agent | new |
 | fork | Copy a thread up to a point into a new thread | git, Claude Code |
 | task | One item of a project's task list: a title, a type, a status, a priority and a description | Jira, GitHub issues |
-| form | What a thread's agent puts in front of the user on `desl web`'s page, made of widgets (choices, a checklist, fields, a preview to tune, a table to edit, pictures to pick, a section of a Markdown file to edit, later a diff), answered with Send; the answer is the agent's next prompt | Claude Code (`AskUserQuestion`), A2UI |
+| form | What a thread's agent puts in front of the user on `desl web`'s page, made of widgets (choices, a checklist, fields, a preview to tune, a table to edit, pictures to pick, a section of a Markdown file to edit), answered with Send; the answer is the agent's next prompt | Claude Code (`AskUserQuestion`), A2UI |
 | comment | A note the user attaches to a passage of a project's document and sends to a thread | GitHub reviews, Google Docs |
 | waiting list | Every open form and every agent dialog in the workspace, in one place | Herdr's attention queue |
 | detach / attach | Leave or rejoin the workspace, agents keep running | tmux |

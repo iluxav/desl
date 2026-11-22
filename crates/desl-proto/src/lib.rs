@@ -301,8 +301,19 @@ pub enum Command {
     /// Changes a task of a project's list. Replied with `task`.
     TaskSet {
         project_id: String,
-        id: u32,
+        /// The task's number. Not `id`, which is the request's.
+        task: u32,
         edit: tasks::Edit,
+    },
+    /// Puts an agent on a task: `place` is `worktree` (a new thread in a worktree of its own),
+    /// `main` (a new thread in the project's checkout) or `thread:<id>` (that thread). `agent`
+    /// is the new thread's; None is the project's default. The task goes in progress, linked to
+    /// the thread, and the agent gets the task with a brief as its next prompt. Replied with `task`.
+    TaskStart {
+        project_id: String,
+        task: u32,
+        agent: Option<String>,
+        place: String,
     },
     /// The section a `document` widget of the form edits, as it is on disk now, read from inside
     /// its thread's directory. Replied with `section`.
@@ -604,6 +615,17 @@ pub enum StreamDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_has_no_field_named_id() {
+        // A request is its id and its command in one object: a command's own `id` would take the
+        // request's place, and the page's task_start once did just that.
+        let r = Request { id: 7, command: Command::TaskStart { project_id: "p".into(), task: 3, agent: None, place: "main".into() } };
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!((v["id"].as_u64(), v["task"].as_u64()), (Some(7), Some(3)));
+        let back: Request = serde_json::from_value(v).unwrap();
+        assert_eq!(back.id, 7);
+    }
 
     #[test]
     fn frames_round_trip_and_end_cleanly() {

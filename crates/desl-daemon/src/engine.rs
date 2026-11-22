@@ -268,6 +268,29 @@ fn tilde(path: &str) -> String {
 }
 
 /// The user's own shell, with their whole environment: it is theirs, not an agent's.
+/// The first prompt of an agent put on a task: the task, and how its work ends. On a branch of
+/// its own the user merges it, so the agent rebases and marks it ready; elsewhere it commits and
+/// marks it done.
+fn task_brief(task: &desl_proto::tasks::Task, branch: Option<&str>, main: &str) -> String {
+    let n = task.id;
+    let mut s = format!("desl: you are on task #{n} of this project's task list (.tasks.md): {}\n", task.title);
+    if !task.body.trim().is_empty() {
+        s.push_str(&format!("\n{}\n", task.body.trim()));
+    }
+    match branch {
+        Some(branch) => s.push_str(&format!(
+            "\nYou work in a git worktree of your own, on the branch {branch}. Commit your work on it and run the project's tests. \
+When it is done, rebase {branch} onto {main} and mark the task ready: `desl task set {n} --status ready`. If you get stuck, \
+mark it issue with a note saying why: `desl task set {n} --status issue --note \"…\"`. Then stop: the user merges the branch."
+        )),
+        None => s.push_str(&format!(
+            "\nWhen it is done, commit it and mark the task done: `desl task set {n} --status done`. If you get stuck, mark it issue \
+with a note saying why: `desl task set {n} --status issue --note \"…\"`."
+        )),
+    }
+    s
+}
+
 fn shell_launch() -> Launch {
     Launch {
         program: std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "bash".into()),
@@ -1955,6 +1978,47 @@ impl Engine {
         Ok(Reply::Task { project_id: project_id.to_string(), task })
     }
 
+    /// Puts an agent on task `task_id` (docs/design/2026-11-22-tasks-first-class.md, Goals).
+    fn task_start(&mut self, project_id: &str, task_id: u32, agent: Option<&str>, place: &str) -> Outcome {
+        let store = self.task_store(project_id)?;
+        let list = store.read().map_err(|e| format!("desl could not read the task list ({e})."))?;
+        let task = list.get(task_id).cloned().ok_or_else(|| format!("There is no task #{task_id} in this project's list."))?;
+        if task.status == desl_proto::tasks::Status::Done {
+            return Err(format!("#{task_id} is done already. Set it back to todo first if there is more to it."));
+        }
+        let root = self.projects.iter().find(|p| p.id == project_id).map(|p| p.path.clone()).ok_or("The project is gone.")?;
+        let main = git::current_branch(Path::new(&root)).unwrap_or_else(|| "main".to_string());
+        let (thread_id, branch) = match place {
+            "worktree" | "main" => {
+                let Reply::Created { thread_id } = self.new_thread(&root, agent, None, None, place == "worktree")? else {
+                    return Err("desl could not open a thread for the task.".to_string());
+                };
+                let i = self.idx(&thread_id)?;
+                self.threads[i].name = format!("#{} {}", task.id, task.title).chars().take(MAX_NAME).collect();
+                self.threads[i].named = true;
+                let branch = if place == "worktree" { self.threads[i].git.branch.clone() } else { None };
+                self.persist(&thread_id);
+                (thread_id, branch)
+            }
+            p if p.starts_with("thread:") => {
+                let id = &p["thread:".len()..];
+                let i = self.idx(id)?;
+                let branch = self.threads[i].worktree.as_ref().and_then(|_| self.threads[i].git.branch.clone());
+                (id.to_string(), branch)
+            }
+            other => return Err(format!("A task starts in a worktree, main or thread:<id>, not \"{other}\".")),
+        };
+        let brief = task_brief(&task, branch.as_deref(), &main);
+        self.prompt(&thread_id, &brief)?;
+        let edit = desl_proto::tasks::Edit {
+            status: Some(desl_proto::tasks::Status::InProgress),
+            thread: Some(thread_id),
+            branch: Some(branch.unwrap_or_default()),
+            ..Default::default()
+        };
+        self.task_change(project_id, &desl_proto::tasks::Change::Set { id: task_id, edit })
+    }
+
     fn task_lists(&mut self) {
         let missing: Vec<String> = self
             .projects
@@ -2150,7 +2214,10 @@ impl Engine {
                 let add = desl_proto::tasks::Change::Add { title, kind, status, priority, body };
                 self.task_change(&project_id, &add)
             }
-            Command::TaskSet { project_id, id, edit } => self.task_change(&project_id, &desl_proto::tasks::Change::Set { id, edit }),
+            Command::TaskSet { project_id, task, edit } => {
+                self.task_change(&project_id, &desl_proto::tasks::Change::Set { id: task, edit })
+            }
+            Command::TaskStart { project_id, task, agent, place } => self.task_start(&project_id, task, agent.as_deref(), &place),
             Command::FormImage { form_id, path } => match self.form_image(&form_id, &path) {
                 // Read and encoded by a worker: up to 10 MB a picture must not hold the engine.
                 Ok((dir, path)) => {

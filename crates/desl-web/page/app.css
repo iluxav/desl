@@ -473,6 +473,21 @@ body.wide .fw-doc-text { min-height: 60vh; }
 .trow.status-in-progress .tid { color: var(--accent); }
 .trow.status-ready .tid { color: var(--ok); }
 .trow.status-issue .tid { color: var(--warn); }
+.trow { position: relative; }
+.split { display: inline-flex; }
+.split .primary { min-height: 30px; font-size: 12.5px; padding: 0 12px; border-radius: 8px 0 0 8px; }
+.split .caret { border-radius: 0 8px 8px 0; padding: 0 8px; border-left: 1px solid rgb(0 0 0 / 0.18); }
+.tstate { font-size: 12px; white-space: nowrap; }
+.tstate.working { color: var(--accent); }
+.tstate.ready { color: var(--ok); }
+.tpanel { position: absolute; right: 4px; top: 100%; z-index: 5; width: 300px; padding: 12px; border: 1px solid var(--line2); border-radius: 10px; background: var(--raised); box-shadow: 0 10px 30px rgb(0 0 0 / 0.35); display: flex; flex-direction: column; gap: 6px; }
+.tp-title { font-weight: 600; font-size: 13px; }
+.tp-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-top: 4px; }
+.tpanel select { min-height: 30px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 13px; padding: 2px 8px; }
+.tp-place { font-size: 13px; color: var(--text); display: flex; gap: 6px; align-items: center; cursor: pointer; overflow-wrap: anywhere; }
+.tp-place input { accent-color: var(--accent); }
+.tp-bar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.tp-bar .primary, .tp-bar .secondary { min-height: 32px; font-size: 13px; }
 .tfold summary { padding: 8px 4px; color: var(--muted); font-size: 12px; cursor: pointer; border-bottom: 1px solid var(--line); }
 .tfold[open] summary { color: var(--dim); }
 .tempty { padding: 8px 4px; }

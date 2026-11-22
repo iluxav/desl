@@ -24,6 +24,10 @@ const state = {
   tasks: new Map(),
   /** The projects whose list was asked for on this connection. */
   tasksAsked: new Set(),
+  /** The agents installed and logged in, for the task panel's Agent list. */
+  agents: [],
+  /** The last pick in the task panel: the agent ('' for the project's default) and the place. */
+  startWith: Object.assign({ agent: '', place: 'worktree' }, readJson('desl-web-start')),
   /** The task column's filters: project (`auto` follows the selected thread), status, more, find. */
   tf: Object.assign({ project: 'auto', status: 'open', more: '', find: '' }, readJson('desl-web-tasks')),
 };
@@ -152,8 +156,11 @@ function handle(msg) {
       break;
     case 'bridge':
       // desl web started again from a new install: this page is the old one.
-      // A new connection asks for every task list again.
-      if (msg.state === 'ready') state.tasksAsked.clear();
+      // A new connection asks for every task list again, and which agents there are.
+      if (msg.state === 'ready') {
+        state.tasksAsked.clear();
+        askAgents();
+      }
       if (msg.state === 'ready' && msg.build) {
         if (state.build && state.build !== msg.build) location.reload();
         state.build = msg.build;
@@ -723,8 +730,123 @@ function drawTasks() {
       return found ? { title: found.t.title, agent: found.t.agent } : null;
     },
     select: (id) => select(id),
-    action: null,
+    action: taskAction,
   });
+}
+
+function askAgents() {
+  request('agents', { refresh: false }).then((reply) => {
+    const all = (reply.ok && reply.ok.agents) || [];
+    state.agents = all.filter((a) => a.detection && a.detection.installed && a.detection.logged_in !== false).map((a) => a.id);
+  });
+}
+
+const AGENT_NAME = { claude: 'Claude', codex: 'Codex', copilot: 'Copilot' };
+const agentName = (id) => AGENT_NAME[id] || id;
+
+/** Puts an agent on a task, as `with` says; a sentence under the page says how it went. */
+async function startTask(t, project, withPick) {
+  const reply = await request('task_start', { project_id: project.id, task: t.id, agent: withPick.agent || null, place: withPick.place });
+  if (reply.error) {
+    notice(reply.error, true);
+    return;
+  }
+  const task = reply.ok.task;
+  const where = task.branch ? `, in its own worktree on ${task.branch}` : '';
+  notice(`Started #${t.id} in ${task.thread}${where}. Its row links to the thread.`);
+}
+
+/** The place the panel offers for the selected thread, when it is an agent's. */
+function selectedPlace() {
+  const cur = current();
+  return cur ? { value: `thread:${cur.t.id}`, label: `The selected thread: ${cur.t.title}` } : null;
+}
+
+/** The panel under ▾: the agent and the place, picked apart, remembered for next time. */
+function openStartPanel(t, project, anchor) {
+  for (const old of document.querySelectorAll('.tpanel')) old.remove();
+  const panel = document.createElement('div');
+  panel.className = 'tpanel';
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-label', `Start #${t.id}`);
+  panel.append(el('div', 'tp-title', `Start #${t.id} with`));
+  panel.append(el('div', 'tp-label', 'Agent'));
+  const agent = document.createElement('select');
+  agent.setAttribute('aria-label', 'Agent');
+  for (const [value, label] of [['', "The project's default"], ...state.agents.map((a) => [a, agentName(a)])]) {
+    const o = document.createElement('option');
+    o.value = value;
+    o.textContent = label;
+    agent.append(o);
+  }
+  agent.value = state.agents.includes(state.startWith.agent) ? state.startWith.agent : '';
+  panel.append(agent);
+  panel.append(el('div', 'tp-label', 'Where'));
+  const here = selectedPlace();
+  const places = [
+    ['worktree', 'A new thread, in its own worktree'],
+    ['main', 'A new thread, in the main checkout'],
+    ...(here ? [[here.value, here.label]] : []),
+  ];
+  const name = `tp-${t.id}`;
+  const chosen = places.some(([v]) => v === state.startWith.place) ? state.startWith.place : 'worktree';
+  for (const [value, label] of places) {
+    const row = el('label', 'tp-place');
+    const r = document.createElement('input');
+    r.type = 'radio';
+    r.name = name;
+    r.value = value;
+    r.checked = value === chosen || (value.startsWith('thread:') && state.startWith.place === 'thread');
+    row.append(r, document.createTextNode(` ${label}`));
+    panel.append(row);
+  }
+  const bar = el('div', 'tp-bar');
+  const go = el('button', 'primary', 'Start');
+  go.type = 'button';
+  go.addEventListener('click', () => {
+    const place = panel.querySelector(`input[name="${name}"]:checked`).value;
+    // A thread is remembered as "the selected one", whichever that is next time.
+    state.startWith = { agent: agent.value, place: place.startsWith('thread:') ? 'thread' : place };
+    try {
+      localStorage.setItem('desl-web-start', JSON.stringify(state.startWith));
+    } catch (e) {
+      /* remembered until the tab closes */
+    }
+    panel.remove();
+    startTask(t, project, { agent: agent.value, place });
+  });
+  const cancel = el('button', 'secondary', 'Cancel');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => panel.remove());
+  bar.append(cancel, go);
+  panel.append(bar);
+  panel.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') panel.remove();
+  });
+  anchor.closest('.trow').append(panel);
+  agent.focus();
+}
+
+/** The action on a task's row: start work, or what its status says. */
+function taskAction(t, project) {
+  if (['todo', 'issue', 'parked'].includes(t.status)) {
+    const split = el('span', 'split');
+    const main = el('button', 'primary', t.type === 'bug' ? 'Fix now' : 'Work on it');
+    main.type = 'button';
+    const place = state.startWith.place === 'thread' ? (selectedPlace() || { value: 'worktree' }).value : state.startWith.place;
+    const who = state.startWith.agent ? agentName(state.startWith.agent) : "the project's default agent";
+    main.title = `Start #${t.id} on ${who}, ${place === 'main' ? 'in the main checkout' : place === 'worktree' ? 'in its own worktree' : 'in the selected thread'}`;
+    main.addEventListener('click', () => startTask(t, project, { agent: state.startWith.agent, place }));
+    const caret = el('button', 'primary caret', '▾');
+    caret.type = 'button';
+    caret.setAttribute('aria-label', `Pick the agent and the place for #${t.id}`);
+    caret.addEventListener('click', () => openStartPanel(t, project, caret));
+    split.append(main, caret);
+    return split;
+  }
+  if (t.status === 'in-progress') return el('span', 'tstate working', '✻ in progress');
+  if (t.status === 'ready') return el('span', 'tstate ready', 'ready');
+  return null;
 }
 
 function setupTasks() {

@@ -1930,13 +1930,85 @@ fn a_task_added_through_the_daemon_is_in_the_file_and_told() {
     assert_eq!((task.id, task.status), (1, desl_proto::tasks::Status::Parked));
     assert!(std::fs::read_to_string(root.join(".tasks.md")).unwrap().contains("- status: parked"));
     let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::Todo), ..Default::default() };
-    let set = Command::TaskSet { project_id: project.clone(), id: 1, edit };
+    let set = Command::TaskSet { project_id: project.clone(), task: 1, edit };
     r.engine.handle(Msg::Request { client: 1, request: Request { id: 500, command: set } });
     let told = r.changes().into_iter().find_map(|c| match c {
         Change::Tasks { project_id, tasks } if project_id == project => Some(tasks),
         _ => None,
     });
     assert_eq!(told.map(|t| t[0].status), Some(desl_proto::tasks::Status::Todo), "told at once");
-    let missing = r.cmd(Command::TaskSet { project_id: project, id: 9, edit: Default::default() }).unwrap_err();
+    let missing = r.cmd(Command::TaskSet { project_id: project, task: 9, edit: Default::default() }).unwrap_err();
     assert!(missing.contains("#9"), "{missing}");
+}
+
+/// A git repository at the project's root with one commit, and a task list of one bug.
+fn task_repo(r: &mut Rig) -> (String, PathBuf) {
+    let t = r.t.clone();
+    let (project, root) = r.project_of(&t);
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "main"]);
+    std::fs::write(root.join("README.md"), "# api\n").unwrap();
+    git(&["add", "README.md"]);
+    git(&["commit", "-q", "-m", "first"]);
+    std::fs::write(
+        root.join(".tasks.md"),
+        "# Tasks\n\n## Fix the wheel\n- id: 1\n- type: bug\n- status: todo\n- priority: high\n\nA wheel report is typed as text.\n",
+    )
+    .unwrap();
+    (project, root)
+}
+
+fn started(r: &mut Rig, project: &str, place: &str) -> desl_proto::tasks::Task {
+    let start = Command::TaskStart { project_id: project.to_string(), task: 1, agent: Some("claude".into()), place: place.into() };
+    match r.cmd(start) {
+        Ok(Reply::Task { task, .. }) => task,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_task_started_in_its_own_worktree_gets_a_thread_a_branch_and_the_brief() {
+    let mut r = rig("task-start-wt");
+    let (project, _) = task_repo(&mut r);
+    let task = started(&mut r, &project, "worktree");
+    assert_eq!(task.status, desl_proto::tasks::Status::InProgress);
+    let thread = task.thread.clone().expect("linked to its thread");
+    let branch = task.branch.clone().expect("on a branch of its own");
+    let t = r.thread(&thread);
+    assert_eq!(t.name, "#1 Fix the wheel");
+    assert!(t.worktree.is_some(), "in a worktree");
+    assert_eq!(t.git.branch.as_deref(), Some(branch.as_str()));
+    let brief = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(brief.contains("task #1") && brief.contains("Fix the wheel") && brief.contains("A wheel report is typed as text."), "{brief}");
+    assert!(brief.contains(&branch) && brief.contains("rebase") && brief.contains("main") && brief.contains("ready"), "{brief}");
+}
+
+#[test]
+fn a_task_started_in_the_main_checkout_or_a_thread_is_marked_done_by_its_agent() {
+    let mut r = rig("task-start-main");
+    let (project, _) = task_repo(&mut r);
+    let task = started(&mut r, &project, "main");
+    assert_eq!((task.status, task.branch.as_deref()), (desl_proto::tasks::Status::InProgress, None));
+    let brief = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(brief.contains("--status done") && !brief.contains("rebase"), "{brief}");
+    // The selected thread: the brief goes to it, and the task names it.
+    let here = r.t.clone();
+    let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::Todo), thread: Some(String::new()), ..Default::default() };
+    r.cmd(Command::TaskSet { project_id: project.clone(), task: 1, edit }).unwrap();
+    let task = started(&mut r, &project, &format!("thread:{here}"));
+    assert_eq!(task.thread.as_deref(), Some(here.as_str()));
+    let refused = r.cmd(Command::TaskStart { project_id: project, task: 1, agent: None, place: "nowhere".into() }).unwrap_err();
+    assert!(refused.contains("worktree, main"), "{refused}");
 }

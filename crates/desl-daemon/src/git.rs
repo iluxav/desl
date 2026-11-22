@@ -58,6 +58,11 @@ pub fn worktree_remove(path: &Path) -> Result<(), String> {
 }
 
 /// The repository a directory belongs to, or the directory itself when it is not in one.
+/// The branch checked out in `cwd`; None on a detached head or outside a repository.
+pub fn current_branch(cwd: &Path) -> Option<String> {
+    git(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|b| b.trim().to_string()).filter(|b| !b.is_empty())
+}
+
 pub fn toplevel(cwd: &Path) -> PathBuf {
     git(cwd, &["rev-parse", "--show-toplevel"]).filter(|s| !s.is_empty()).map(PathBuf::from).unwrap_or_else(|| cwd.to_path_buf())
 }

@@ -190,7 +190,173 @@ const DRAW = {
     sel.value = typeof value === 'string' ? value : w.value || '';
     into.append(label, sel);
   },
+
+  preview(w, into, ctx, value) {
+    const top = el('div', 'fw-preview-top');
+    heading(w, top);
+    const wide = el('button', 'fw-wide', 'Wide');
+    wide.type = 'button';
+    wide.title = 'Give the preview the width of the waiting list too';
+    wide.addEventListener('click', () => {
+      const on = document.body.classList.toggle('wide');
+      for (const b of document.querySelectorAll('.fw-wide')) b.textContent = on ? 'Narrow' : 'Wide';
+    });
+    top.append(wide);
+    into.append(top);
+    const controls = w.controls || [];
+    const start = (c) => {
+      const given = value && typeof value === 'object' ? value[c.var] : undefined;
+      if (given !== undefined && given !== null) return given;
+      if (c.value !== undefined && c.value !== null) return c.value;
+      if (c.kind === 'range') return c.min;
+      if (c.kind === 'select') return (c.options || [])[0] || '';
+      return '#000000';
+    };
+    const vars = new Map(controls.map((c) => [c.var, start(c)]));
+    const box = el('div', 'fw-preview-box');
+    const frame = el('iframe', 'fw-preview-frame');
+    // Its own document, same origin so the page can fill it, and no scripts: nothing the agent
+    // wrote runs, and the page's CSP holds inside it too.
+    frame.setAttribute('sandbox', 'allow-same-origin');
+    frame.title = w.label ? `Preview: ${w.label}` : 'Preview';
+    frame.srcdoc = '<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>';
+    const paint = () => {
+      const root = frame.contentDocument && frame.contentDocument.documentElement;
+      if (!root) return;
+      for (const c of controls) root.style.setProperty(c.var, cssValue(c, vars.get(c.var)));
+    };
+    // Each load, as after the card is put back on the page, draws the agent's page again.
+    frame.addEventListener('load', () => {
+      fill(frame, w);
+      paint();
+    });
+    box.append(frame);
+    into.append(box);
+    if (!controls.length) return;
+    const list = el('div', 'fw-controls');
+    for (const c of controls) {
+      const id = uid();
+      const row = el('div', 'fw-control');
+      row.dataset.var = c.var;
+      row.dataset.kind = c.kind === 'color' ? 'colour' : c.kind;
+      const label = el('label', 'fw-control-label', c.label || c.var);
+      label.htmlFor = id;
+      row.append(label);
+      const set = (v) => {
+        vars.set(c.var, v);
+        paint();
+      };
+      if (row.dataset.kind === 'range') {
+        const range = el('input', 'fw-range');
+        range.type = 'range';
+        const num = el('input', 'fw-number-box');
+        num.type = 'number';
+        num.id = id;
+        for (const i of [range, num]) {
+          i.min = String(c.min);
+          i.max = String(c.max);
+          i.step = c.step ? String(c.step) : 'any';
+          i.value = String(vars.get(c.var));
+        }
+        range.addEventListener('input', () => {
+          num.value = range.value;
+          set(Number(range.value));
+        });
+        num.addEventListener('input', () => {
+          if (num.value === '') return;
+          range.value = num.value;
+          set(Number(num.value));
+        });
+        const line = el('div', 'fw-number');
+        line.append(range, num);
+        if (c.unit) line.append(el('span', 'fw-unit', c.unit));
+        row.append(line);
+      } else if (row.dataset.kind === 'colour') {
+        const pick = el('input', 'fw-colour');
+        pick.type = 'color';
+        pick.id = id;
+        pick.value = String(vars.get(c.var)).toLowerCase();
+        const code = el('span', 'fw-unit', pick.value);
+        pick.addEventListener('input', () => {
+          code.textContent = pick.value;
+          set(pick.value);
+        });
+        const line = el('div', 'fw-number');
+        line.append(pick, code);
+        row.append(line);
+      } else {
+        const sel = el('select', 'fw-select');
+        sel.id = id;
+        for (const o of c.options || []) {
+          const opt = el('option', '', o);
+          opt.value = o;
+          sel.append(opt);
+        }
+        sel.value = String(vars.get(c.var));
+        sel.addEventListener('change', () => set(sel.value));
+        row.append(sel);
+      }
+      list.append(row);
+    }
+    into.append(list);
+  },
 };
+
+/** What a control sets its variable to: a range's number with its unit. */
+function cssValue(c, v) {
+  return c.kind === 'range' && c.unit ? `${v}${c.unit}` : String(v);
+}
+
+// What a preview never keeps: it would load, run or go somewhere. The frame runs no script
+// anyway (no `allow-scripts`, and no `'unsafe-inline'` in the CSP); this is the second lock.
+const DROP = 'script, iframe, frame, frameset, object, embed, applet, base, meta, link, noscript, portal';
+
+/**
+ * Draws the agent's HTML in the preview's frame. Its `<style>` elements and `style` attributes
+ * become a constructed stylesheet and CSSOM, since the page's CSP refuses inline style.
+ */
+function fill(frame, w) {
+  const doc = frame.contentDocument;
+  if (!doc || !doc.body) return;
+  const parsed = new DOMParser().parseFromString(w.html || '', 'text/html');
+  for (const bad of parsed.querySelectorAll(DROP)) bad.remove();
+  let css = w.css || '';
+  for (const s of parsed.querySelectorAll('style')) {
+    css += `\n${s.textContent}`;
+    s.remove();
+  }
+  const inline = [];
+  for (const e of parsed.querySelectorAll('*')) {
+    for (const a of [...e.attributes]) {
+      const name = a.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc' || /^[\s\u0000-\u001f]*(javascript|vbscript):/i.test(a.value)) {
+        e.removeAttribute(a.name);
+      } else if (name === 'style') {
+        e.removeAttribute(a.name);
+        e.setAttribute('data-desl-s', String(inline.length));
+        inline.push(a.value);
+      }
+    }
+  }
+  for (const a of [...parsed.body.attributes]) doc.body.setAttribute(a.name, a.value);
+  for (const a of [...parsed.documentElement.attributes]) if (a.name !== 'style') doc.documentElement.setAttribute(a.name, a.value);
+  doc.body.replaceChildren(...[...parsed.body.childNodes].map((n) => doc.importNode(n, true)));
+  for (const e of doc.querySelectorAll('[data-desl-s]')) {
+    e.style.cssText = inline[Number(e.getAttribute('data-desl-s'))] || '';
+    e.removeAttribute('data-desl-s');
+  }
+  try {
+    const sheet = new frame.contentWindow.CSSStyleSheet();
+    sheet.replaceSync(css);
+    doc.adoptedStyleSheets = [sheet];
+  } catch (e) {
+    doc.adoptedStyleSheets = [];
+  }
+  // A link would take the frame away from the preview; it stays where it is.
+  doc.addEventListener('click', (e) => {
+    if (e.target instanceof doc.defaultView.Element && e.target.closest('a, area')) e.preventDefault();
+  });
+}
 
 /** What a widget holds now: undefined when nothing is given. */
 function read(w, box) {
@@ -223,6 +389,15 @@ function read(w, box) {
     case 'select': {
       const v = box.querySelector('select').value;
       return v === '' ? undefined : v;
+    }
+    case 'preview': {
+      const out = {};
+      for (const row of box.querySelectorAll('.fw-control')) {
+        if (row.dataset.kind === 'range') out[row.dataset.var] = Number(row.querySelector('.fw-range').value);
+        else if (row.dataset.kind === 'colour') out[row.dataset.var] = row.querySelector('.fw-colour').value;
+        else out[row.dataset.var] = row.querySelector('select').value;
+      }
+      return out;
     }
     default:
       return undefined;
@@ -286,7 +461,7 @@ export function card(got, opts) {
     root.append(box);
   }
   if (!live) {
-    for (const i of root.querySelectorAll('input, textarea, select, button')) i.disabled = true;
+    for (const i of root.querySelectorAll('input, textarea, select, button:not(.fw-wide)')) i.disabled = true;
     const said = closed ? CLOSED[closed] || closed : opts.note || '';
     if (said) root.append(el('p', 'form-state', said));
     return root;

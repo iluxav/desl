@@ -381,6 +381,21 @@ textarea.fw-text { resize: vertical; line-height: 1.45; }
 .form-error:empty { display: none; }
 .form-state { margin: 0; color: var(--muted); font-size: 12.5px; }
 .wait-form .form-mark { color: var(--warn); }
+/* A preview: the agent's page in a frame of its own, the controls under it. */
+.fw-preview-top { display: flex; align-items: baseline; gap: 8px; }
+.fw-preview-top .fw-label { flex: 1; min-width: 0; }
+.fw-wide { margin-left: auto; min-height: 28px; padding: 2px 10px; border: 1px solid var(--line2); border-radius: 6px; background: transparent; color: var(--dim); font-size: 12.5px; }
+.fw-wide:hover { color: var(--text); }
+.fw-preview-box { height: 320px; min-height: 120px; resize: vertical; overflow: hidden; border: 1px solid var(--line2); border-radius: 8px; background: #fff; }
+.fw-preview-frame { display: block; width: 100%; height: 100%; border: 0; }
+.fw-controls { display: grid; grid-template-columns: minmax(90px, max-content) 1fr; gap: 8px 12px; align-items: center; }
+.fw-control { display: contents; }
+.fw-control-label { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+.fw-colour { width: 44px; height: 28px; padding: 0; border: 1px solid var(--line2); border-radius: 6px; background: transparent; }
+/* Wide: the preview takes the waiting list's place too. */
+body.wide .form-card { max-width: none; }
+body.wide .fw-preview-box { height: 62vh; }
+@media (min-width: 900px) { body.wide .wait, body.wide #grip-wait { display: none; } }
 .quiet { margin: 0; color: var(--muted); font-size: 12.5px; }
 
 /* Buttons. */

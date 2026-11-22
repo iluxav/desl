@@ -11,7 +11,12 @@ pub const MAX_WIDGETS: usize = 30;
 /// The most a form may weigh, as JSON. The daemon refuses a larger one before reading it.
 pub const MAX_BYTES: usize = 256 * 1024;
 
-const KINDS: [&str; 7] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select"];
+const KINDS: [&str; 8] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview"];
+
+/// The most a preview's HTML, or its CSS, may weigh.
+const PREVIEW_BYTES: usize = 64 * 1024;
+/// The most controls one preview has.
+const MAX_CONTROLS: usize = 12;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -99,6 +104,71 @@ pub enum Widget {
         #[serde(default)]
         optional: bool,
     },
+    /// HTML and CSS the agent wrote, drawn in a frame where nothing runs, with controls that set
+    /// its CSS variables. The one widget whose look comes from the agent: the look is what is
+    /// being tuned.
+    Preview {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+        html: String,
+        #[serde(default)]
+        css: Option<String>,
+        #[serde(default)]
+        controls: Vec<Control>,
+        #[serde(default)]
+        optional: bool,
+    },
+}
+
+/// One of a preview's controls: it sets the CSS variable `var` on the frame's root.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Control {
+    /// A number; the variable gets it with its `unit`.
+    Range {
+        var: String,
+        #[serde(default)]
+        label: Option<String>,
+        min: f64,
+        max: f64,
+        #[serde(default)]
+        step: Option<f64>,
+        #[serde(default)]
+        unit: Option<String>,
+        #[serde(default)]
+        value: Option<f64>,
+    },
+    /// A colour as `#rrggbb`.
+    #[serde(alias = "color")]
+    Colour {
+        var: String,
+        #[serde(default)]
+        label: Option<String>,
+        #[serde(default)]
+        value: Option<String>,
+    },
+    /// One of a few CSS values.
+    Select {
+        var: String,
+        #[serde(default)]
+        label: Option<String>,
+        options: Vec<String>,
+        #[serde(default)]
+        value: Option<String>,
+    },
+}
+
+impl Control {
+    pub fn var(&self) -> &str {
+        match self {
+            Control::Range { var, .. } | Control::Colour { var, .. } | Control::Select { var, .. } => var,
+        }
+    }
+}
+
+fn is_colour(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].chars().all(|c| c.is_ascii_hexdigit())
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -133,7 +203,8 @@ impl Widget {
             | Widget::Text { id, .. }
             | Widget::Number { id, .. }
             | Widget::Toggle { id, .. }
-            | Widget::Select { id, .. } => id,
+            | Widget::Select { id, .. }
+            | Widget::Preview { id, .. } => id,
         }
     }
 
@@ -145,7 +216,8 @@ impl Widget {
             | Widget::Text { optional, .. }
             | Widget::Number { optional, .. }
             | Widget::Toggle { optional, .. }
-            | Widget::Select { optional, .. } => *optional,
+            | Widget::Select { optional, .. }
+            | Widget::Preview { optional, .. } => *optional,
         }
     }
 }
@@ -272,7 +344,70 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
                 return Err(format!("Widget {n} (\"{id}\") has lines outside 1 to 20."));
             }
         }
+        Widget::Preview { html, css, controls, .. } => {
+            if html.len() > PREVIEW_BYTES || css.as_ref().is_some_and(|c| c.len() > PREVIEW_BYTES) {
+                return Err(format!("Widget {n} (\"{id}\") has HTML or CSS over 64 KB. Show a smaller part of the page."));
+            }
+            if controls.len() > MAX_CONTROLS {
+                return Err(format!("Widget {n} (\"{id}\") has {} controls; a preview has at most 12 controls.", controls.len()));
+            }
+            if let Some(v) = twice(controls.iter().map(Control::var).collect()) {
+                return Err(format!("Widget {n} (\"{id}\") sets \"{v}\" twice. Give each control its own variable."));
+            }
+            for c in controls {
+                control_sound(c).map_err(|why| format!("Widget {n} (\"{id}\"), control \"{}\": {why}", c.var()))?;
+            }
+        }
         Widget::Markdown { .. } | Widget::Toggle { .. } => {}
+    }
+    Ok(())
+}
+
+fn control_sound(c: &Control) -> Result<(), String> {
+    let var = c.var();
+    if !var.starts_with("--") || var.len() < 3 {
+        return Err("a variable's name starts with --, as in --accent.".to_string());
+    }
+    if var.len() > 64 || !var[2..].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+        return Err("a variable's name holds only letters, digits, - and _, at most 64 of them.".to_string());
+    }
+    match c {
+        Control::Range { min, max, step, unit, value, .. } => {
+            if min > max {
+                return Err(format!("min {min} is above max {max}. Swap them."));
+            }
+            if let Some(v) = value
+                && (v < min || v > max)
+            {
+                return Err(format!("it starts at {v}, outside {min} to {max}."));
+            }
+            if step.is_some_and(|s| s <= 0.0) {
+                return Err("its step is not above 0.".to_string());
+            }
+            if unit.as_ref().is_some_and(|u| u.len() > 8 || !u.chars().all(|ch| ch.is_ascii_alphabetic() || ch == '%')) {
+                return Err("its unit is a CSS unit, such as px, rem or %.".to_string());
+            }
+        }
+        Control::Colour { value, .. } => {
+            if let Some(v) = value
+                && !is_colour(v)
+            {
+                return Err(format!("it starts at \"{v}\"; a colour is #rrggbb."));
+            }
+        }
+        Control::Select { options, value, .. } => {
+            if !(1..=20).contains(&options.len()) {
+                return Err(format!("it has {} options; a select has 1 to 20 options.", options.len()));
+            }
+            if options.iter().any(|o| o.len() > 200 || o.chars().any(char::is_control)) {
+                return Err("an option is a CSS value of at most 200 characters on one line.".to_string());
+            }
+            if let Some(v) = value
+                && !options.contains(v)
+            {
+                return Err(format!("it starts at \"{v}\", which is not one of its options."));
+            }
+        }
     }
     Ok(())
 }
@@ -360,6 +495,36 @@ fn answers(w: &Widget, v: &Value) -> Result<(), String> {
             Some(s) => picked(options, false, s),
             None => Err(format!("The answer for \"{id}\" is one option's label.")),
         },
+        Widget::Preview { controls, .. } => {
+            let Some(obj) = v.as_object() else {
+                return Err(format!("The answer for \"{id}\" is an object keyed by each control's variable."));
+            };
+            if let Some(k) = obj.keys().find(|k| !controls.iter().any(|c| c.var() == k.as_str())) {
+                return Err(format!("The answer for \"{id}\" has \"{k}\", which is no control of it."));
+            }
+            for c in controls {
+                let var = c.var();
+                let Some(given) = obj.get(var) else { return Err(format!("The answer for \"{id}\" has nothing for \"{var}\".")) };
+                match c {
+                    Control::Range { min, max, .. } => match given.as_f64() {
+                        Some(x) if x >= *min && x <= *max => {}
+                        Some(x) => return Err(format!("\"{var}\" of \"{id}\" is {x}, outside {min} to {max}.")),
+                        None => return Err(format!("\"{var}\" of \"{id}\" is a number.")),
+                    },
+                    Control::Colour { .. } => {
+                        if !given.as_str().is_some_and(is_colour) {
+                            return Err(format!("\"{var}\" of \"{id}\" is a colour as #rrggbb."));
+                        }
+                    }
+                    Control::Select { options, .. } => {
+                        if !given.as_str().is_some_and(|s| options.iter().any(|o| o == s)) {
+                            return Err(format!("\"{var}\" of \"{id}\" is not one of the options it has."));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -417,6 +582,9 @@ Widgets by kind, with the answer for each:
 - number {label, min, max, step?, unit?, value?}: the number.
 - toggle {label, value?}: true or false.
 - select {label, options[{label, detail?}], value?}: the label.
+- preview {label?, html, css?, controls[{kind: range|colour|select, var --x, label?, min, max, step?, unit?, \
+options[css values], value?}]}: your HTML and CSS drawn without scripts; controls set CSS variables on its root. \
+{var: value}.
 Every widget has an id, unique in the form, and may be optional. At most 30 widgets. Set value to what is true now \
 or what you recommend (choice takes a label, or a list with multi), so the user changes only what differs.";
 
@@ -428,6 +596,11 @@ pub const CLOSE_DESCRIPTION: &str =
 pub fn input_schema() -> Value {
     let s = |d: &str| json!({ "type": "string", "description": d });
     let options = json!({ "type": "array", "items": { "type": "object", "properties": { "label": { "type": "string" }, "detail": { "type": "string" } }, "required": ["label"] } });
+    let controls = json!({ "type": "array", "items": { "type": "object", "properties": {
+        "kind": { "type": "string", "enum": ["range", "colour", "select"] }, "var": { "type": "string" }, "label": { "type": "string" },
+        "min": { "type": "number" }, "max": { "type": "number" }, "step": { "type": "number" }, "unit": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } }, "value": {} },
+        "required": ["kind", "var"] } });
     json!({
         "type": "object",
         "properties": {
@@ -454,7 +627,10 @@ pub fn input_schema() -> Value {
                     "max": { "type": "number" },
                     "step": { "type": "number" },
                     "unit": { "type": "string" },
-                    "value": { "description": "Where it starts: what is true now or what you recommend." }
+                    "value": { "description": "Where it starts: what is true now or what you recommend." },
+                    "html": s("preview: the HTML to show; no scripts run."),
+                    "css": s("preview: its CSS; var(--x) for each control."),
+                    "controls": controls
                 },
                 "required": ["kind", "id"]
             } }
@@ -486,7 +662,7 @@ mod tests {
         assert!(
             check(&unknown)
                 .unwrap_err()
-                .starts_with("Widget 1 has the kind \"slider\", which desl does not know. Use one of: markdown, choice, checklist, text, number, toggle, select."),
+                .starts_with("Widget 1 has the kind \"slider\", which desl does not know. Use one of: markdown, choice, checklist, text, number, toggle, select, "),
             "{}",
             check(&unknown).unwrap_err()
         );
@@ -509,6 +685,55 @@ mod tests {
         assert!(err.contains("a list"), "{err}");
         // The author's note on the first live form: what is true now comes pre-set.
         assert!(TOOL_DESCRIPTION.contains("Set value to what is true now"), "{TOOL_DESCRIPTION}");
+    }
+
+    fn preview(controls: Value) -> Value {
+        json!({"title": "t", "widgets": [{"kind": "preview", "id": "look", "html": "<button>Go</button>", "css": "button { background: var(--accent); }", "controls": controls}]})
+    }
+
+    #[test]
+    fn a_preview_is_checked_control_by_control() {
+        let all = preview(json!([
+            {"kind": "range", "var": "--radius", "label": "Corners", "min": 0, "max": 24, "unit": "px", "value": 8},
+            {"kind": "colour", "var": "--accent", "value": "#3355ff"},
+            {"kind": "color", "var": "--ink", "value": "#000000"},
+            {"kind": "select", "var": "--font", "options": ["system-ui", "Georgia, serif"], "value": "system-ui"}
+        ]));
+        let f = check(&all).unwrap();
+        assert!(matches!(&f.widgets[0], Widget::Preview { controls, .. } if controls.len() == 4));
+        let refused = |c: Value, says: &str| {
+            let err = check(&preview(json!([c]))).unwrap_err();
+            assert!(err.contains(says), "{err}");
+        };
+        refused(json!({"kind": "colour", "var": "accent"}), "starts with --");
+        refused(json!({"kind": "colour", "var": "--a;b"}), "letters, digits");
+        refused(json!({"kind": "range", "var": "--r", "min": 0, "max": 10, "value": 11}), "outside 0 to 10");
+        refused(json!({"kind": "colour", "var": "--c", "value": "blue"}), "#rrggbb");
+        refused(json!({"kind": "select", "var": "--f", "options": ["a", "b"], "value": "c"}), "not one of its options");
+        refused(json!({"kind": "select", "var": "--f", "options": []}), "1 to 20 options");
+        let twice = preview(json!([{"kind": "colour", "var": "--c"}, {"kind": "colour", "var": "--c"}]));
+        assert!(check(&twice).unwrap_err().contains("--c\" twice"));
+        let many = preview(Value::Array((0..13).map(|i| json!({"kind": "colour", "var": format!("--c{i}")})).collect()));
+        assert!(check(&many).unwrap_err().contains("at most 12 controls"));
+        let big = json!({"title": "t", "widgets": [{"kind": "preview", "id": "look", "html": "x".repeat(70_000)}]});
+        assert!(check(&big).unwrap_err().contains("64 KB"));
+    }
+
+    #[test]
+    fn a_preview_answer_holds_each_control() {
+        let f = check(&preview(json!([
+            {"kind": "range", "var": "--radius", "min": 0, "max": 24, "unit": "px"},
+            {"kind": "colour", "var": "--accent"},
+            {"kind": "select", "var": "--font", "options": ["serif", "sans-serif"]}
+        ])))
+        .unwrap();
+        let answer = |v: Value| check_answer(&f, &json!({ "look": v }));
+        assert!(answer(json!({"--radius": 8, "--accent": "#3355FF", "--font": "serif"})).is_ok());
+        assert!(answer(json!({"--radius": 8, "--accent": "#3355ff", "--font": "serif", "--x": 1})).unwrap_err().contains("--x"));
+        assert!(answer(json!({"--radius": 30, "--accent": "#3355ff", "--font": "serif"})).unwrap_err().contains("outside 0 to 24"));
+        assert!(answer(json!({"--radius": 8, "--accent": "red", "--font": "serif"})).unwrap_err().contains("#rrggbb"));
+        assert!(answer(json!({"--radius": 8, "--accent": "#3355ff", "--font": "mono"})).unwrap_err().contains("not one of the options"));
+        assert!(answer(json!({"--radius": 8, "--accent": "#3355ff"})).unwrap_err().contains("--font"));
     }
 
     #[test]

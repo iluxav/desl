@@ -528,11 +528,11 @@ function drawConversation(toEnd) {
   const active = list.contains(document.activeElement) ? document.activeElement : null;
   const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   const top = list.scrollTop;
-  list.replaceChildren();
   if (!conv.items.length) {
-    list.append(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet.'));
+    list.replaceChildren(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet.'));
     return;
   }
+  const nodes = [];
   for (const item of conv.items) {
     let node;
     switch (item.kind) {
@@ -575,8 +575,9 @@ function drawConversation(toEnd) {
         node = el('div', 'item item-note', item.text);
         break;
     }
-    list.append(node);
+    nodes.push(node);
   }
+  place(list, nodes);
   findAgain(false);
   if (toEnd) list.scrollTop = list.scrollHeight;
   else list.scrollTop = top;
@@ -585,6 +586,23 @@ function drawConversation(toEnd) {
     if (caret) active.setSelectionRange(caret[0], caret[1]);
   }
   goToForm();
+}
+
+/**
+ * Puts `nodes` in `list` in order, leaving each one already there where it is: a form card is
+ * never taken off the page, so a preview's frame does not load again and a drag in it goes on.
+ */
+function place(list, nodes) {
+  const keep = new Set(nodes);
+  for (const child of [...list.childNodes]) if (!keep.has(child)) child.remove();
+  let at = list.firstChild;
+  for (const n of nodes) {
+    if (n === at) {
+      at = at.nextSibling;
+      continue;
+    }
+    list.insertBefore(n, at);
+  }
 }
 
 // ---- forms ------------------------------------------------------------------------------------

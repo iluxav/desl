@@ -59,6 +59,10 @@ enum Cmd {
         /// Open the browser on it too
         #[arg(long)]
         open: bool,
+        /// With --open: on this thread, at its open form, starting desl web in the background when
+        /// none runs
+        #[arg(long, requires = "open", value_name = "THREAD")]
+        thread: Option<String>,
         /// Stop the desl web that serves this workspace, wherever it was started
         #[arg(long, conflicts_with_all = ["port", "open"])]
         stop: bool,
@@ -336,7 +340,10 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
     match cli.command.unwrap_or(Cmd::Attach) {
         Cmd::Attach => attach(paths),
         Cmd::Status => cli::status(paths, &out),
-        Cmd::Web { port, open, stop } => cli::web(paths, &out, port, open, stop),
+        Cmd::Web { port, open, thread, stop } => match thread {
+            Some(thread) => cli::web_open_on(paths, &out, &thread),
+            None => cli::web(paths, &out, port, open, stop),
+        },
         Cmd::Mcp { thread, socket } => mcp::run(&socket, &thread),
         Cmd::Form { command } => match command {
             FormCmd::New => cli::form_new(paths, &out),

@@ -127,7 +127,8 @@ plan should be approved step by step or a look tuned, the agent calls desl's `sh
 and ends its turn, and the form appears as a card in its conversation: options, a checklist to
 untick and reorder, fields and sliders, a live preview, a table to edit, pictures to pick from,
 or a section of a Markdown file to edit in place. Press Send and your answer is the agent's
-next prompt; an edited file is saved first. The right column lists every open form, and
+next prompt; an edited file is saved first. When no desl web page is open, a form an agent
+pushes opens your browser on it. The right column lists every open form, and
 `ctrl+space v` on a waiting thread goes straight to it. desl gives the tool to Claude Code,
 Codex and Copilot when it starts them; nothing to configure.
 
@@ -192,6 +193,9 @@ default_mode = "edits"     # ask, edits or yolo
 [worktrees]
 dir = ".worktrees"
 branch_prefix = "desl/"
+
+[web]
+open_on_form = true        # open the browser on a form when no desl web page is open
 ```
 
 `NO_COLOR` is honoured; the colours come from your terminal's own palette. `DESL_ICONS=nerd`

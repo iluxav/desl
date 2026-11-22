@@ -19,6 +19,18 @@ impl Out {
     }
 }
 
+/// `desl web --open --thread <id>`: the browser on that thread, at its open form, with desl web
+/// started in the background when none runs. The daemon runs it when an agent pushes a form and
+/// no page is open.
+pub fn web_open_on(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
+    let url = crate::web::url_for(&crate::web::ensure(paths)?, thread);
+    match crate::web::open(&url) {
+        Ok(()) => done(out, json!({ "url": url, "opened": true }), format!("Opened desl web on {thread}.")),
+        Err(why) => done(out, json!({ "url": url, "opened": false }), format!("{why} Open it yourself: {url}")),
+    }
+    Ok(())
+}
+
 /// `desl web` (web-spec.md): starts the daemon when it is not running, prints the address to
 /// open, key included, and serves the page until ctrl+c. The agents keep working without it.
 /// One serves each workspace: when one already does, this says where, and `--stop` ends it.

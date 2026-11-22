@@ -84,8 +84,13 @@ pub enum Msg {
     Tick,
 }
 
+/// What opens the browser on a thread's form.
+pub type PageOpener = Box<dyn Fn(&str)>;
+
 struct Client {
     out: Outbox,
+    /// What it said it is in `hello`: `tui`, `cli`, `web`.
+    name: String,
     subscribed: bool,
     /// The thread whose token stream this client receives.
     viewing: Option<String>,
@@ -230,6 +235,10 @@ pub struct Engine {
     /// What a tasks thread runs, before `--project <root>`: this desl's own `task ui`. Tests
     /// name a program every machine has.
     tasks_program: Vec<String>,
+    /// Opens the browser on a thread's form; tests watch it instead. None: `desl web --open`.
+    page_opener: Option<PageOpener>,
+    /// When the browser was last opened for a form: once in a while, while the page loads.
+    page_opened: Option<Instant>,
     ticks: u64,
     pub stopping: bool,
     /// A handover asked for and not yet made.
@@ -399,6 +408,8 @@ impl Engine {
             config_file: None,
             file_manager: desl_ir::FILE_MANAGER.to_string(),
             tasks_program: task_list_program(),
+            page_opener: None,
+            page_opened: None,
             ticks: 0,
             stopping: false,
             handover: None,
@@ -513,6 +524,44 @@ impl Engine {
         let command = self.tasks_program.first()?.clone();
         let args = ["mcp", "--thread", thread_id, "--socket", &socket.to_string_lossy()].map(String::from).to_vec();
         Some(McpServer { command, args })
+    }
+
+    /// Instead of opening the browser, calls `open` with the thread (tests).
+    pub fn set_page_opener(&mut self, open: PageOpener) {
+        self.page_opener = Some(open);
+    }
+
+    /// A form was pushed on `thread_id`: when no desl web page is open, the browser opens on
+    /// it, unless the user turned that off. Once in 30 seconds, while the page it opened loads.
+    fn bring_page(&mut self, thread_id: &str, project: Option<&Path>) {
+        if self.clients.values().any(|c| c.name == "web") || !self.settings(project).open_on_form {
+            return;
+        }
+        if self.page_opened.is_some_and(|at| at.elapsed() < Duration::from_secs(30)) {
+            return;
+        }
+        self.page_opened = Some(Instant::now());
+        if let Some(open) = &self.page_opener {
+            open(thread_id);
+            return;
+        }
+        // `desl web --open` starts desl web when none runs, and opens the browser; over SSH it
+        // opens nothing.
+        let (Some(socket), Some(exe)) = (self.socket.clone(), self.tasks_program.first().cloned()) else { return };
+        let mut cmd = std::process::Command::new(exe);
+        cmd.args(["web", "--open", "--thread", thread_id])
+            .env("DESL_SOCKET", socket)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+        match cmd.spawn() {
+            Ok(mut child) => {
+                std::thread::spawn(move || child.wait());
+            }
+            Err(e) => tracing::warn!("could not open desl web for a form: {e}"),
+        }
     }
 
     pub fn set_config_file(&mut self, file: PathBuf) {
@@ -1028,7 +1077,7 @@ impl Engine {
     pub fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Connected { client, out } => {
-                self.clients.insert(client, Client { out, subscribed: false, viewing: None, shows: HashSet::new() });
+                self.clients.insert(client, Client { out, name: String::new(), subscribed: false, viewing: None, shows: HashSet::new() });
                 self.refresh_git();
             }
             Msg::Disconnected { client } => {
@@ -2000,6 +2049,9 @@ impl Engine {
                     ))
                 } else {
                     tracing::debug!(client, name, "hello");
+                    if let Some(c) = self.clients.get_mut(&client) {
+                        c.name = name;
+                    }
                     Ok(Reply::Hello { protocol: PROTOCOL, version: env!("CARGO_PKG_VERSION").to_string(), pid: std::process::id() })
                 }
             }
@@ -2472,6 +2524,8 @@ impl Engine {
         self.append(thread_id, EventKind::Form { form_id: id.clone(), title: checked.title.clone(), blob });
         self.threads[i].open_forms.push(OpenForm { id: id.clone(), title: checked.title, at });
         self.persist(thread_id);
+        let project = self.projects.iter().find(|p| p.id == self.threads[i].project_id).map(|p| PathBuf::from(&p.path));
+        self.bring_page(thread_id, project.as_deref());
         Ok(Reply::FormShown { form_id: id })
     }
 

@@ -18,6 +18,9 @@ All notable changes to desl are recorded here. The format follows
   open goes straight to it. A thread with a form open shows waiting, and talking to its agent
   meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
   from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
+- A form an agent pushes while no desl web page is open opens your browser on it, starting desl
+  web if it must; `[web] open_on_form = false` turns that off. `desl web --open --thread <id>`
+  does it by hand.
 - `desl` starts desl web in the background when it attaches, if none is running, without
   opening a browser. `ctrl+space v` then only opens the page.
 - A **document** form widget: an agent names a Markdown file of the project, or one section of

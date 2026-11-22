@@ -289,7 +289,11 @@ without it, 9.8 MB.
 and address in `<socket>.web`, beside the daemon's socket and readable by the user alone. `desl`
 starts it in the background as it attaches when none runs, without opening a browser, so a form
 an agent pushes is on the page before any key is pressed; it runs on when desl closes, and after
-an install it starts again from the new binary on the same address. `prefix
+an install it starts again from the new binary on the same address. When an agent pushes a form
+and no desl web page is connected to the daemon, the daemon runs `desl web --open --thread <id>`:
+desl web starts if it must, and the browser opens on that thread at its form. At most once in 30
+seconds, while the page it opened loads; never over SSH; off with `web.open_on_form = false`. A tab
+left open in the background counts as open. `prefix
 v` in the TUI opens the browser on it, on the thread's open form when it has one, and starts it
 in the background when none runs, in a session of its own. Over SSH, or with no `xdg-open`
 (`open` on macOS), the address goes to the clipboard instead. From a shell, `desl web --open`

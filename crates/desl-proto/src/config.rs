@@ -15,6 +15,8 @@ pub struct Config {
     pub default_mode: Option<String>,
     pub worktree_dir: String,
     pub branch_prefix: String,
+    /// Open the browser on a form an agent pushes when no desl web page is open.
+    pub open_on_form: bool,
     /// `section.key = value  # source` for every key set by a file.
     pub set: Vec<(String, String, String)>,
     /// Lines that were not understood, as sentences.
@@ -57,6 +59,7 @@ impl Default for Config {
             default_mode: None,
             worktree_dir: ".worktrees".into(),
             branch_prefix: "desl/".into(),
+            open_on_form: true,
             set: Vec::new(),
             problems: Vec::new(),
         }
@@ -131,6 +134,16 @@ pub fn apply(into: &mut Config, text: &str, source: &str) {
                 into.default_mode = Some(v.clone());
                 true
             }
+            "web.open_on_form" => match v.as_str() {
+                "true" | "false" => {
+                    into.open_on_form = v == "true";
+                    true
+                }
+                _ => {
+                    into.problems.push(format!("{source} line {}: open_on_form is true or false, not {v}.", n + 1));
+                    continue;
+                }
+            },
             "worktrees.dir" => {
                 into.worktree_dir = v.clone();
                 true

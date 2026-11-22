@@ -1769,3 +1769,50 @@ fn an_answer_over_1_mb_is_refused() {
     let err = r.cmd(Command::FormAnswer { form_id, answer: json!({"a": "x".repeat(1024 * 1024 + 1)}) }).unwrap_err();
     assert!(err.contains("1 MB"), "{err}");
 }
+
+/// What the engine asked to open in the browser, instead of a browser.
+fn watch_opens(r: &mut Rig) -> Arc<Mutex<Vec<String>>> {
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let seen = opened.clone();
+    r.engine.set_page_opener(Box::new(move |thread: &str| seen.lock().unwrap().push(thread.to_string())));
+    opened
+}
+
+#[test]
+fn a_form_pushed_with_no_page_open_opens_the_browser_on_it() {
+    let mut r = rig("form-opens");
+    let t = r.t.clone();
+    let opened = watch_opens(&mut r);
+    show(&mut r, &t);
+    assert_eq!(*opened.lock().unwrap(), std::slice::from_ref(&t), "on the thread, at its form");
+    show(&mut r, &t);
+    assert_eq!(opened.lock().unwrap().len(), 1, "once: the page it opened is still on its way");
+}
+
+#[test]
+fn a_form_pushed_while_a_page_is_open_opens_nothing() {
+    let mut r = rig("form-page-open");
+    let t = r.t.clone();
+    let opened = watch_opens(&mut r);
+    let (out, _keep) = channel();
+    r.engine.handle(Msg::Connected { client: 2, out });
+    let hello = Command::Hello { protocol: PROTOCOL, client: "web".into() };
+    r.engine.handle(Msg::Request { client: 2, request: Request { id: 1, command: hello } });
+    show(&mut r, &t);
+    assert!(opened.lock().unwrap().is_empty(), "the page shows it already");
+    r.engine.handle(Msg::Disconnected { client: 2 });
+    show(&mut r, &t);
+    assert_eq!(*opened.lock().unwrap(), [t], "the tab was closed");
+}
+
+#[test]
+fn opening_the_browser_for_forms_can_be_turned_off() {
+    let mut r = rig("form-opens-off");
+    let t = r.t.clone();
+    let file = r.dir.join("config.toml");
+    std::fs::write(&file, "[web]\nopen_on_form = false\n").unwrap();
+    r.engine.set_config_file(file);
+    let opened = watch_opens(&mut r);
+    show(&mut r, &t);
+    assert!(opened.lock().unwrap().is_empty());
+}

@@ -519,7 +519,7 @@ The install script never needs sudo, prints what it will do before doing it, and
 | `$XDG_RUNTIME_DIR/desl.sock` | Daemon socket |
 | `<repo>/.desl/config.toml` | Per-project settings, safe to commit |
 
-**Configuration.** TOML, every key optional, every default sane. Read today: `general.prefix`, `general.default_agent`, `permissions.default_mode`, `worktrees.dir` and `worktrees.branch_prefix`; the other keys below are accepted and reported by `desl config show` as not used yet, and an unknown key or a line desl cannot read is reported there and in the key line at start, never guessed at. `keys.toml` remaps come later. Project config overrides user config. `desl config show` prints the effective configuration with the source of each value.
+**Configuration.** TOML, every key optional, every default sane. Read today: `general.prefix`, `general.default_agent`, `permissions.default_mode`, `worktrees.dir`, `worktrees.branch_prefix` and `web.open_on_form`; the other keys below are accepted and reported by `desl config show` as not used yet, and an unknown key or a line desl cannot read is reported there and in the key line at start, never guessed at. `keys.toml` remaps come later. Project config overrides user config. `desl config show` prints the effective configuration with the source of each value.
 
 ```
 [general]
@@ -545,6 +545,9 @@ agent_summary = false
 [worktrees]
 dir = ".worktrees"
 branch_prefix = "desl/"
+
+[web]
+open_on_form = true       # a form pushed while no desl web page is open opens the browser on it
 ```
 
 **Environment.** `DESL_HOME` overrides all paths at once (for CI and tests). `NO_COLOR`, `TERM`, `COLORTERM` and `$EDITOR` are honoured. `DESL_SOCKET` points a client at a non-default daemon. `DESL_THREAD` is set by the daemon, not the user: the thread a terminal belongs to ("Agents drive desl").

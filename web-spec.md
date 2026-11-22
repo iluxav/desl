@@ -332,7 +332,7 @@ the agents. Every rule below follows from that.
 | 3 | Document | A section of a Markdown file edited in place with comments; the conflict on save |
 | 4 | Diff review | Each hunk accepted, rejected or commented on |
 | 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
-| 6 | Security review | Someone who didn't write it tries to run script from a form, read a file outside the project through a document, image or diff, and drive an agent from another site, and fails each time |
+| 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |
 
 Each milestone follows the definition of done in `SPEC.md`: spec match, tests, help text, error
 paths tried by hand, and budgets.

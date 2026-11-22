@@ -21,6 +21,9 @@
   --branch: #d58bd8;
   --sel-bg: #1c2638;
   --sel-line: #2f4a75;
+  /* A row under the pointer, and the thread on screen: a tint, no outline. */
+  --hover: rgb(255 255 255 / 0.045);
+  --selected: rgb(106 166 255 / 0.14);
   --claude: rgb(217 119 87);
   --codex: #e6e8ee;
   --copilot: rgb(163 113 247);
@@ -47,6 +50,8 @@
     --branch: #9d2aa6;
     --sel-bg: #e7eefc;
     --sel-line: #b7c9f2;
+    --hover: rgb(0 0 0 / 0.04);
+    --selected: rgb(36 89 214 / 0.1);
     --claude: rgb(185 84 50);
     --codex: #1b1e24;
     --copilot: rgb(117 70 214);
@@ -162,8 +167,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--dim);
 }
 
-/* The thread list. */
-.project { display: flex; flex-direction: column; gap: 1px; }
+/* The thread list. A project's threads sit under its name, indented to where the name starts
+   (8 px of padding, the 8 px dot, an 8 px gap), and a thread's subagents hang from its mark. */
+.project { display: flex; flex-direction: column; gap: 2px; }
 .project-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 8px 6px; min-width: 0; }
 .project-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--hue, var(--muted)); flex: none; align-self: center; }
 @media (prefers-color-scheme: light) {
@@ -178,23 +184,26 @@ body.resizing { cursor: col-resize; user-select: none; }
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  min-height: 34px;
+  width: calc(100% - 16px);
+  margin-left: 16px;
+  min-height: 32px;
   padding: 4px 8px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   text-align: left;
   font-size: 13.5px;
+  transition: background-color 80ms ease;
 }
-.row:hover { background: var(--raised); }
-.row[aria-current="true"] { background: var(--sel-bg); box-shadow: inset 0 0 0 1px var(--sel-line); }
+.row:hover { background: var(--hover); }
+.row[aria-current="true"] { background: var(--selected); }
 .row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row[aria-current="true"] .title { font-weight: 600; }
+.row[aria-current="true"] .title { font-weight: 500; }
+.row[aria-current="true"] .age { color: var(--dim); }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
 .wt { color: var(--branch); }
 
-.sub { display: flex; gap: 6px; align-items: center; padding: 1px 8px 1px 26px; color: var(--dim); font-size: 12.5px; min-width: 0; }
+.sub { display: flex; gap: 6px; align-items: center; padding: 1px 8px 1px 28px; color: var(--dim); font-size: 12.5px; min-width: 0; }
 .sub .tree { color: var(--muted); font-family: var(--mono); }
 .sub .label-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sub[data-state="running"] .glyph { color: var(--accent); }

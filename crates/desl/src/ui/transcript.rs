@@ -184,6 +184,20 @@ pub fn layout(items: &[Item], width: usize) -> Laid {
                     detail_lines(text, body, &mut lines);
                 }
             }
+            // A form is answered on desl web's page; the history says what it was and how it ended.
+            Item::Form { title, by, .. } => {
+                let how = match by.as_deref() {
+                    None => "open: answer it in the browser, prefix v".to_string(),
+                    Some("user") => "answered".to_string(),
+                    Some(other) => other.to_string(),
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(format!(" {INDENT}")),
+                    Span::styled("▣ ", if by.is_none() { theme::warning() } else { theme::muted() }),
+                    Span::styled(title.clone(), theme::dim()),
+                    Span::styled(format!("  · {how}"), theme::muted()),
+                ]));
+            }
             Item::Note(text) => {
                 for l in wrap(text, body) {
                     lines.push(Line::from(vec![

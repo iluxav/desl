@@ -261,6 +261,19 @@ fn a_conversation_reaches_the_page_as_the_history_projects_it() {
     assert_eq!(items[2]["text"], "All **50** pass.", "the page renders the Markdown itself, as text");
 }
 
+#[test]
+fn a_form_reaches_the_page_as_one_item_with_how_it_closed() {
+    use desl_ir::{Event, EventKind};
+    let ev = |index, kind| Event { index, thread_id: "t-1".into(), timestamp: 0, agent: "claude".into(), kind };
+    let open = crate::bridge::items(&[ev(1, EventKind::Form { form_id: "f-4b1e".into(), title: "Pick".into(), blob: "ab".into() })]);
+    assert_eq!(open, [json!({ "kind": "form", "form_id": "f-4b1e", "title": "Pick", "by": null })]);
+    let closed = crate::bridge::items(&[
+        ev(1, EventKind::Form { form_id: "f-4b1e".into(), title: "Pick".into(), blob: "ab".into() }),
+        ev(2, EventKind::FormAnswer { form_id: "f-4b1e".into(), by: "dismissed".into(), blob: None }),
+    ]);
+    assert_eq!(closed[0]["by"], "dismissed");
+}
+
 #[tokio::test]
 async fn a_tab_without_the_key_is_turned_away() {
     let mut rig = rig().await;

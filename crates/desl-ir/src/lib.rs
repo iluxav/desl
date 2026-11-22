@@ -279,6 +279,17 @@ pub enum EventKind {
     Error { message: String, recoverable: bool },
     /// The user stopped the turn.
     Interrupt,
+    /// The agent put a form in front of the user (docs/design/2026-11-21-web-forms.md). The form's
+    /// JSON is the content-addressed blob `blob`, so the event stays small.
+    Form { form_id: String, title: String, blob: String },
+    /// A form closed: `by` is `user` (answered; `blob` holds the answer's JSON), `withdrawn` by
+    /// the agent or `dismissed` by the user.
+    FormAnswer {
+        form_id: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blob: Option<String>,
+    },
 }
 
 impl EventKind {
@@ -298,6 +309,8 @@ impl EventKind {
             EventKind::Usage { .. } => "usage",
             EventKind::Error { .. } => "error",
             EventKind::Interrupt => "interrupt",
+            EventKind::Form { .. } => "form",
+            EventKind::FormAnswer { .. } => "form_answer",
         }
     }
 

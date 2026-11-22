@@ -53,6 +53,14 @@ pub enum Item {
     },
     Note(String),
     Error(String),
+    /// A form the agent put in front of the user, and how it closed: `user` (answered),
+    /// `withdrawn` or `dismissed`; None while it is open. Its tool call and the answer desl typed
+    /// fold into it.
+    Form {
+        form_id: String,
+        title: String,
+        by: Option<String>,
+    },
 }
 
 pub struct Thread {
@@ -121,14 +129,21 @@ impl Thread {
         match &e.kind {
             EventKind::UserMessage { text, .. } => {
                 self.close_streaming();
-                self.items.push(Item::User { text: text.clone() });
-                self.messages.push(e.index);
                 self.turns += 1;
+                // An answer desl typed is shown by its form's card; a dismissal note is not shown.
+                let text = crate::form::strip_notes(text);
+                if crate::form::is_form_prompt(text) || text.is_empty() {
+                    return;
+                }
+                self.items.push(Item::User { text: text.to_string() });
+                self.messages.push(e.index);
             }
             EventKind::AssistantMessage { text, .. } => {
                 self.finish_text(text);
                 self.messages.push(e.index);
             }
+            // desl's own form tools: the form's card stands for them, and their results find no line.
+            EventKind::ToolCall { name, .. } if name.ends_with("show_form") || name.ends_with("close_form") => {}
             EventKind::ToolCall { id, name, args } => {
                 if self.tool_mut(id).is_none() {
                     self.close_streaming();
@@ -226,6 +241,16 @@ impl Thread {
                 self.close_streaming();
                 self.items.push(Item::Note("interrupted".into()));
             }
+            EventKind::Form { form_id, title, .. } => {
+                self.close_streaming();
+                self.items.push(Item::Form { form_id: form_id.clone(), title: title.clone(), by: None });
+            }
+            EventKind::FormAnswer { form_id, by, .. } => {
+                let card = self.items.iter_mut().rev().find(|i| matches!(i, Item::Form { form_id: f, .. } if f == form_id));
+                if let Some(Item::Form { by: closed, .. }) = card {
+                    *closed = Some(by.clone());
+                }
+            }
         }
     }
 }
@@ -265,8 +290,9 @@ pub fn conversation(events: &[Event], tools: bool) -> (Thread, Vec<(usize, i64)>
             m.close_streaming();
             m.items.push(Item::Divider(at.format("%A %-d %B %Y").to_string()));
         }
+        let before = m.items.len();
         m.apply(e);
-        if matches!(e.kind, EventKind::UserMessage { .. }) {
+        if matches!(e.kind, EventKind::UserMessage { .. }) && m.items.len() > before {
             prompts.push((m.items.len() - 1, e.timestamp));
         }
     }
@@ -281,6 +307,50 @@ mod tests {
 
     fn ev(index: u64, agent: &str, kind: EventKind) -> Event {
         Event { index, thread_id: "t-7f3a".into(), timestamp: 0, agent: agent.into(), kind }
+    }
+
+    #[test]
+    fn a_form_is_one_card_and_its_tool_call_and_answer_prompt_fold_into_it() {
+        use crate::form::{answer_prompt, dismissed_note};
+        let events = [
+            ev(1, "claude", EventKind::UserMessage { text: "what next?".into(), attachments: vec![] }),
+            ev(2, "claude", EventKind::Form { form_id: "f-4b1e".into(), title: "Which milestone next?".into(), blob: "ab".into() }),
+            ev(3, "claude", EventKind::ToolCall { id: "c1".into(), name: "mcp__desl__show_form".into(), args: json!({}) }),
+            ev(
+                4,
+                "claude",
+                EventKind::ToolResult {
+                    call_id: "c1".into(),
+                    output: "Shown".into(),
+                    exit_code: None,
+                    is_error: false,
+                    truncated: false,
+                    blob: None,
+                },
+            ),
+            ev(5, "claude", EventKind::FormAnswer { form_id: "f-4b1e".into(), by: "user".into(), blob: Some("cd".into()) }),
+            ev(
+                6,
+                "claude",
+                EventKind::UserMessage { text: answer_prompt("f-4b1e", "Which milestone next?", &json!({})), attachments: vec![] },
+            ),
+            ev(7, "claude", EventKind::UserMessage { text: format!("{}\n\ngo on", dismissed_note("f-9", "Old")), attachments: vec![] }),
+        ];
+        let (t, prompts) = conversation(&events, true);
+        let kinds: Vec<&str> = t
+            .items
+            .iter()
+            .map(|i| match i {
+                Item::User { .. } => "user",
+                Item::Form { .. } => "form",
+                Item::Tool { .. } => "tool",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["user", "form", "user"]);
+        assert!(matches!(&t.items[1], Item::Form { form_id, by: Some(b), .. } if form_id == "f-4b1e" && b == "user"));
+        assert!(matches!(&t.items[2], Item::User { text } if text == "go on"), "the note before a prompt is not shown");
+        assert_eq!(prompts.iter().map(|(i, _)| *i).collect::<Vec<_>>(), [0, 2], "each prompt shown, by its item");
     }
 
     #[test]

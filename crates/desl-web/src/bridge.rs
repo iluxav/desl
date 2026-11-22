@@ -211,6 +211,8 @@ pub(crate) fn items(events: &[Event]) -> Vec<Value> {
             Item::Brief { label, text, tokens, .. } => json!({ "kind": "brief", "label": label, "text": text, "tokens": tokens }),
             Item::Note(text) => json!({ "kind": "note", "text": text }),
             Item::Error(text) => json!({ "kind": "error", "text": text }),
+            // The page asks for the form itself (`form_get`) to draw its card.
+            Item::Form { form_id, title, by } => json!({ "kind": "form", "form_id": form_id, "title": title, "by": by }),
         })
         .collect()
 }

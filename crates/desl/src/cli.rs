@@ -270,6 +270,11 @@ fn event_line(e: &Event) -> Option<String> {
         EventKind::ApprovalResponse { decision, by, .. } => format!("  {decision:?} by {by}").to_lowercase(),
         EventKind::Error { message, .. } => format!("✕ {message}"),
         EventKind::Interrupt => "interrupted".to_string(),
+        EventKind::Form { form_id, title, .. } => format!("▣ form {form_id}: {title}"),
+        EventKind::FormAnswer { form_id, by, .. } => match by.as_str() {
+            "user" => format!("  {form_id} answered"),
+            other => format!("  {form_id} {other}"),
+        },
         EventKind::ToolResult { .. } | EventKind::FileChange { .. } | EventKind::Usage { .. } => return None,
     })
 }

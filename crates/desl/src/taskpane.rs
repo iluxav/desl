@@ -9,8 +9,8 @@ use std::collections::{HashMap, HashSet};
 /// The terminal width at which the pane shows without being asked.
 pub const AUTO_COLS: u16 = 180;
 
-/// The filters `h`/`l` (and tab) cycle through, as desl web's segments and More.
-/// A filter: its name and which tasks it keeps.
+/// A filter: its name and which tasks it keeps. `h`/`l` (and tab) cycle through them: desl
+/// web's segments, then what its More holds.
 pub type Filter = (&'static str, fn(&Task) -> bool);
 
 pub const FILTERS: [Filter; 8] = [
@@ -85,6 +85,12 @@ impl TaskPane {
     pub fn rows<'a>(&'a self, project: &str) -> Vec<&'a Task> {
         let keep = FILTERS[self.filter % FILTERS.len()].1;
         self.lists.get(project).map(|l| l.iter().filter(|t| keep(t)).collect()).unwrap_or_default()
+    }
+
+    /// Every filter, each with how many of `project`'s tasks it keeps.
+    pub fn segments(&self, project: &str) -> Vec<(&'static str, usize)> {
+        let list = self.lists.get(project).map(Vec::as_slice).unwrap_or_default();
+        FILTERS.iter().map(|(name, keep)| (*name, list.iter().filter(|t| keep(t)).count())).collect()
     }
 
     /// How many tasks the filter keeps.

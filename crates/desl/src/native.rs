@@ -1793,8 +1793,7 @@ impl Client {
         let project = self.project().map(|p| p.id.clone()).unwrap_or_default();
         if self.taskpane.shown(self.cols) {
             let rows = self.taskpane.rows(&project);
-            let count = rows.len();
-            let cursor = self.taskpane.cursor.min(count.saturating_sub(1));
+            let cursor = self.taskpane.cursor.min(rows.len().saturating_sub(1));
             let picking = self.taskpane.picking.map(|p| {
                 let agents = self.task_agents();
                 let agent = p.agent.checked_sub(1).and_then(|i| agents.get(i)).cloned().unwrap_or_else(|| "the project's default".into());
@@ -1803,11 +1802,11 @@ impl Client {
             view.tasks = Some(layout::TasksView {
                 project: self.project().map(|p| desl_proto::view::project_name(&p.path)).unwrap_or_default(),
                 filter: crate::taskpane::FILTERS[self.taskpane.filter % crate::taskpane::FILTERS.len()].0,
-                count,
                 rows,
                 cursor,
                 focused: self.taskpane.focused,
                 picking,
+                segments: self.taskpane.segments(&project),
             });
         }
         let choices = self.choices();

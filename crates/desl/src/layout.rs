@@ -386,11 +386,12 @@ pub struct View<'a> {
 pub struct TasksView<'a> {
     pub project: String,
     pub filter: &'static str,
-    pub count: usize,
     pub rows: Vec<&'a desl_proto::tasks::Task>,
     pub cursor: usize,
     pub focused: bool,
     pub picking: Option<(String, String)>,
+    /// Every filter with its count: the page's five segments, then Issue, Parked and Bugs.
+    pub segments: Vec<(&'static str, usize)>,
 }
 
 fn glyph_style(s: Status) -> Style {
@@ -787,24 +788,21 @@ fn with_keys(mut spans: Vec<Span<'static>>, keys: &[(&'static str, &'static str)
     Line::from(spans)
 }
 
-/// The task pane: the filter, then each task on two lines (its kind and title; its number,
-/// priority, status and thread), the cursor's lit while the pane has the keys.
+/// The task pane, as desl web's right column: the filters with their counts, then each task on
+/// two lines between thin rules (its kind and title; its number, priority, status and thread),
+/// the cursor's both lines lit across the pane while it has the keys, with what `enter` does.
 fn tasks_pane(f: &mut Frame, tv: &TasksView, threads: &[Thread], area: Rect) {
     use crate::tasks::ui::{kind_icon, kind_short, kind_style, priority_mark};
+    use desl_proto::tasks::{Kind, Status as S};
     let block = panel(tv.focused).title(Line::from(Span::styled(format!(" Tasks · {} ", tv.project), theme::bold())));
     let inner = block.inner(area);
     f.render_widget(block, area);
     let body = Rect::new(inner.x + 1, inner.y, inner.width.saturating_sub(2), inner.height);
     let w = body.width as usize;
     let nerd = theme::nerd();
-    let mut lines: Vec<Line<'static>> = vec![
-        Line::from(vec![
-            Span::styled("‹ ", theme::dim()),
-            Span::styled(tv.filter.to_string(), theme::accent().add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {} ›", tv.count), theme::dim()),
-        ]),
-        Line::default(),
-    ];
+    let rule = || Line::from(Span::styled("─".repeat(w), theme::muted()));
+    let mut lines = segments(tv, w);
+    lines.push(rule());
     if tv.rows.is_empty() {
         lines.push(Line::from(Span::styled("No task here.", theme::muted())));
     }
@@ -814,46 +812,120 @@ fn tasks_pane(f: &mut Frame, tv: &TasksView, threads: &[Thread], area: Rect) {
         if lit {
             cursor_line = lines.len();
         }
-        let bg = |s: Style| if lit { s.patch(theme::focus_surface()) } else { s };
-        let (mark, mark_style) = if nerd { (kind_icon(t.kind), kind_style(t.kind)) } else { (kind_short(t.kind), kind_style(t.kind)) };
-        let title_w = w.saturating_sub(mark.chars().count() + 2);
-        lines.push(Line::from(vec![
-            Span::styled(format!("{mark} "), bg(mark_style)),
-            Span::styled(truncate_end(&t.title, title_w), bg(theme::normal())),
-        ]));
+        // On the light, the quietest grey would vanish: it reads as the secondary one.
+        let on = |s: Style| {
+            if !lit {
+                return s;
+            }
+            let s = if s.fg == Some(Color::DarkGray) { s.fg(Color::Gray) } else { s };
+            s.patch(theme::focus_surface())
+        };
+        // A line lit across the pane, with `right` at its end when it fits.
+        let full = |mut spans: Vec<Span<'static>>, right: Option<Span<'static>>| {
+            let used: usize = spans.iter().map(|s| s.content.width()).sum();
+            let tail = right.as_ref().map_or(0, |r| r.content.width());
+            if let Some(r) = right.filter(|_| used + tail < w) {
+                spans.push(Span::styled(" ".repeat(w - used - tail), on(Style::default())));
+                spans.push(r);
+            } else if lit && used < w {
+                spans.push(Span::styled(" ".repeat(w - used), on(Style::default())));
+            }
+            Line::from(spans)
+        };
+        let mark = if nerd { kind_icon(t.kind) } else { kind_short(t.kind) };
+        let title_w = w.saturating_sub(mark.width() + 1);
+        lines.push(full(
+            vec![
+                Span::styled(format!("{mark} "), on(kind_style(t.kind))),
+                Span::styled(truncate_end(&t.title, title_w), on(theme::normal())),
+            ],
+            None,
+        ));
         let (prio, prio_style) = priority_mark(t.priority);
+        let status_style = match t.status {
+            S::InProgress => theme::accent(),
+            S::Ready => theme::added(),
+            S::Issue => theme::warning(),
+            S::Done | S::Parked | S::Ignored => theme::muted(),
+            S::Todo => theme::normal(),
+        };
+        let status = if t.status == S::Todo { "to do" } else { t.status.word() };
         let mut meta = vec![
-            Span::styled("  ", bg(Style::default())),
-            Span::styled(format!("#{} ", t.id), bg(theme::dim())),
-            Span::styled(format!("{prio} "), bg(prio_style)),
-            Span::styled(t.status.word().to_string(), bg(theme::muted())),
+            Span::styled(" ".repeat(mark.width() + 1), on(Style::default())),
+            Span::styled(format!("#{} ", t.id), on(theme::muted())),
+            Span::styled(format!("{prio} "), on(prio_style)),
+            Span::styled(status.to_string(), on(status_style)),
         ];
         if let Some(th) = &t.thread {
             let name = threads.iter().find(|x| x.id == *th).map(|x| x.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| th.clone());
-            meta.push(Span::styled(format!(" · {}", truncate_end(&name, 24)), bg(theme::accent())));
+            meta.push(Span::styled(" · ", on(theme::muted())));
+            meta.push(Span::styled(truncate_end(&name, 22), on(theme::accent())));
         }
         if let Some(b) = &t.branch {
-            meta.push(Span::styled(format!(" · {b}"), bg(theme::muted())));
+            meta.push(Span::styled(format!(" · {b}"), on(theme::muted())));
         }
-        lines.push(Line::from(meta));
+        // What enter does, as the page's button says it.
+        let action = lit.then(|| match t.status {
+            S::Todo | S::Issue | S::Parked if t.kind == Kind::Bug => "⏎ fix now",
+            S::Todo | S::Issue | S::Parked => "⏎ work on it",
+            S::Ready => "⏎ diff  m merge",
+            S::InProgress if t.thread.is_some() => "⏎ go",
+            _ => "",
+        });
+        let right = action.filter(|a| !a.is_empty()).map(|a| Span::styled(a.to_string(), on(theme::accent().add_modifier(Modifier::BOLD))));
+        lines.push(full(meta, right));
         if lit && let Some((agent, place)) = &tv.picking {
+            let indent = " ".repeat(mark.width() + 1);
             lines.push(Line::from(vec![
-                Span::styled("  agent ", theme::dim()),
+                Span::styled(format!("{indent}agent "), theme::dim()),
                 Span::styled(format!("‹ {agent} ›"), theme::accent()),
                 Span::styled("  a", theme::bold()),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("  where ", theme::dim()),
+                Span::styled(format!("{indent}where "), theme::dim()),
                 Span::styled(format!("‹ {place} ›"), theme::accent()),
                 Span::styled("  p", theme::bold()),
             ]));
         }
-        lines.push(Line::default());
+        lines.push(rule());
+    }
+    // On Open, what it leaves out, as the page folds them at the bottom.
+    if tv.filter == "Open" {
+        let count = |name: &str| tv.segments.iter().find(|(s, _)| *s == name).map_or(0, |(_, n)| *n);
+        let folded: Vec<String> = ["Parked", "Done"].into_iter().filter(|s| count(s) > 0).map(|s| format!("{s} · {}", count(s))).collect();
+        if !folded.is_empty() {
+            lines.push(Line::from(Span::styled(format!("{}   h l to see them", folded.join("   ")), theme::muted())));
+        }
     }
     // The cursor stays in view.
     let h = body.height as usize;
     let skip = (cursor_line + 4).saturating_sub(h);
     f.render_widget(Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()), body);
+}
+
+/// The filters with their counts, the one on lit, flowing onto a second line when the pane is
+/// narrow: the page's five segments, then what its More holds.
+fn segments(tv: &TasksView, w: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![];
+    let mut spans: Vec<Span<'static>> = vec![];
+    let mut used = 0;
+    for (name, n) in &tv.segments {
+        let text_w = name.width() + n.to_string().len() + 3;
+        if used > 0 && used + text_w > w {
+            lines.push(Line::from(std::mem::take(&mut spans)));
+            used = 0;
+        }
+        if *name == tv.filter {
+            let style = theme::accent().add_modifier(Modifier::BOLD | Modifier::REVERSED);
+            spans.push(Span::styled(format!(" {name} {n} "), style));
+        } else {
+            spans.push(Span::styled(format!(" {name} "), theme::normal()));
+            spans.push(Span::styled(format!("{n} "), theme::muted()));
+        }
+        used += text_w;
+    }
+    lines.push(Line::from(spans));
+    lines
 }
 
 /// A task's change against main, over the panes: added lines green, removed ones red.
@@ -1472,13 +1544,42 @@ mod tests {
             info: None,
             pulse: 1.0,
             prefix: "ctrl+space",
-            tasks: Some(TasksView { project: "desl".into(), filter: "Open", count: 2, rows, cursor: 1, focused: true, picking: None }),
+            tasks: Some(TasksView {
+                project: "desl".into(),
+                filter: "Open",
+                rows,
+                cursor: 1,
+                focused: true,
+                picking: None,
+                segments: vec![
+                    ("Open", 2),
+                    ("To do", 1),
+                    ("In progress", 1),
+                    ("Ready", 0),
+                    ("Done", 3),
+                    ("Issue", 0),
+                    ("Parked", 1),
+                    ("Bugs", 1),
+                ],
+            }),
             diff: None,
         };
         let mut t = Terminal::new(TestBackend::new(160, 30)).unwrap();
         t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
         let s = screen(&t);
-        for said in ["Tasks · desl", "Open", "Wheel report typed as text", "#12", "in progress", "Release pipeline", "#13"] {
+        for said in [
+            "Tasks · desl",
+            " Open 2 ",
+            "Parked 1",
+            "Wheel report typed as text",
+            "#12",
+            "in progress",
+            "Release pipeline",
+            "#13",
+            "to do",
+            "⏎ work on it",
+            "Parked · 1   Done · 3",
+        ] {
             assert!(s.contains(said), "{said}: {s}");
         }
         assert!(s.contains("start") && s.contains("merge"), "the key line says what the keys do: {s}");

@@ -300,6 +300,71 @@ const DRAW = {
     }
     into.append(list);
   },
+
+  table(w, into, ctx, value) {
+    heading(w, into);
+    const columns = w.columns || [];
+    // A draft or an answer: the cells the user changed, by row.
+    const changed = new Map((Array.isArray(value) ? value : []).map((r) => [r.id, r]));
+    const wrap = el('div', 'fw-table-wrap');
+    const table = el('table', 'fw-table');
+    const head = el('tr');
+    for (const c of columns) head.append(el('th', c.edit ? 'fw-edit' : '', c.label || c.id));
+    const thead = el('thead');
+    thead.append(head);
+    const body = el('tbody');
+    for (const row of w.rows || []) {
+      const tr = el('tr');
+      tr.dataset.row = row.id;
+      const now = changed.get(row.id) || {};
+      for (const c of columns) {
+        const was = row[c.id];
+        const cur = c.id in now ? now[c.id] : was;
+        const td = el('td');
+        const name = `${c.label || c.id}, ${row.id}`;
+        if (c.edit === 'check') {
+          const box = el('input', 'fw-cell');
+          box.type = 'checkbox';
+          box.checked = cur === true;
+          box.setAttribute('aria-label', name);
+          box.dataset.col = c.id;
+          box.dataset.was = JSON.stringify(was === true);
+          td.append(box);
+        } else if (c.edit === 'select') {
+          const sel = el('select', 'fw-cell');
+          sel.setAttribute('aria-label', name);
+          const none = el('option', '', '—');
+          none.value = '';
+          sel.append(none);
+          for (const o of c.options || []) {
+            const opt = el('option', '', o);
+            opt.value = o;
+            sel.append(opt);
+          }
+          sel.value = typeof cur === 'string' ? cur : '';
+          sel.dataset.col = c.id;
+          sel.dataset.was = JSON.stringify(typeof was === 'string' ? was : '');
+          td.append(sel);
+        } else if (c.edit === 'text') {
+          const input = el('input', 'fw-cell');
+          input.type = 'text';
+          input.value = typeof cur === 'string' ? cur : '';
+          input.setAttribute('aria-label', name);
+          input.dataset.col = c.id;
+          input.dataset.was = JSON.stringify(typeof was === 'string' ? was : '');
+          td.append(input);
+        } else {
+          const shown = c.id === 'id' ? row.id : was;
+          td.textContent = shown === true ? '✓' : shown === false || shown === null || shown === undefined ? '' : String(shown);
+        }
+        tr.append(td);
+      }
+      body.append(tr);
+    }
+    table.append(thead, body);
+    wrap.append(table);
+    into.append(wrap);
+  },
 };
 
 /** What a control sets its variable to: a range's number with its unit. */
@@ -389,6 +454,18 @@ function read(w, box) {
     case 'select': {
       const v = box.querySelector('select').value;
       return v === '' ? undefined : v;
+    }
+    case 'table': {
+      const out = [];
+      for (const tr of box.querySelectorAll('tr[data-row]')) {
+        const row = { id: tr.dataset.row };
+        for (const cell of tr.querySelectorAll('[data-col]')) {
+          const now = cell.type === 'checkbox' ? cell.checked : cell.value;
+          if (now !== JSON.parse(cell.dataset.was)) row[cell.dataset.col] = now;
+        }
+        if (Object.keys(row).length > 1) out.push(row);
+      }
+      return out;
     }
     case 'preview': {
       const out = {};

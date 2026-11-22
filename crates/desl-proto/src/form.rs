@@ -11,7 +11,7 @@ pub const MAX_WIDGETS: usize = 30;
 /// The most a form may weigh, as JSON. The daemon refuses a larger one before reading it.
 pub const MAX_BYTES: usize = 256 * 1024;
 
-const KINDS: [&str; 8] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview"];
+const KINDS: [&str; 9] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table"];
 
 /// The most a preview's HTML, or its CSS, may weigh.
 const PREVIEW_BYTES: usize = 64 * 1024;
@@ -119,6 +119,54 @@ pub enum Widget {
         #[serde(default)]
         optional: bool,
     },
+    /// Rows to read, with cells to edit in the columns that say how.
+    Table {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+        columns: Vec<Column>,
+        /// Each row an object: its `id`, and a cell per column id.
+        rows: Vec<serde_json::Map<String, Value>>,
+        #[serde(default)]
+        optional: bool,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Column {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// How its cells are edited; read-only without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit: Option<Edit>,
+    /// A select column's choices.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Edit {
+    Text,
+    Select,
+    Check,
+}
+
+/// Whether `v` fits a cell of column `c`, as given or as edited. A sentence otherwise.
+fn cell_fits(c: &Column, v: &Value) -> Result<(), String> {
+    match c.edit {
+        _ if v.is_null() => Ok(()),
+        Some(Edit::Check) if !v.is_boolean() => Err(format!("a cell of \"{}\" is true or false.", c.id)),
+        Some(Edit::Select) => match v.as_str() {
+            Some(s) if s.is_empty() || c.options.iter().any(|o| o == s) => Ok(()),
+            _ => Err(format!("{v} is not one of its options, in column \"{}\".", c.id)),
+        },
+        Some(Edit::Text) if !v.is_string() => Err(format!("a cell of \"{}\" is text.", c.id)),
+        _ if v.is_object() || v.is_array() => Err(format!("a cell of \"{}\" is text, a number, true or false.", c.id)),
+        _ => Ok(()),
+    }
 }
 
 /// One of a preview's controls: it sets the CSS variable `var` on the frame's root.
@@ -204,7 +252,8 @@ impl Widget {
             | Widget::Number { id, .. }
             | Widget::Toggle { id, .. }
             | Widget::Select { id, .. }
-            | Widget::Preview { id, .. } => id,
+            | Widget::Preview { id, .. }
+            | Widget::Table { id, .. } => id,
         }
     }
 
@@ -217,7 +266,8 @@ impl Widget {
             | Widget::Number { optional, .. }
             | Widget::Toggle { optional, .. }
             | Widget::Select { optional, .. }
-            | Widget::Preview { optional, .. } => *optional,
+            | Widget::Preview { optional, .. }
+            | Widget::Table { optional, .. } => *optional,
         }
     }
 }
@@ -356,6 +406,55 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
             }
             for c in controls {
                 control_sound(c).map_err(|why| format!("Widget {n} (\"{id}\"), control \"{}\": {why}", c.var()))?;
+            }
+        }
+        Widget::Table { columns, rows, .. } => {
+            if !(1..=12).contains(&columns.len()) {
+                return Err(format!("Widget {n} (\"{id}\") has {} columns; a table has 1 to 12 columns.", columns.len()));
+            }
+            if let Some(c) = twice(columns.iter().map(|c| c.id.as_str()).collect()) {
+                return Err(format!("Widget {n} (\"{id}\") has the column \"{c}\" twice. Give each column its own id."));
+            }
+            for c in columns {
+                if c.id.trim().is_empty() {
+                    return Err(format!("Widget {n} (\"{id}\") has a column with no id."));
+                }
+                if c.id == "id" && c.edit.is_some() {
+                    return Err(format!("Widget {n} (\"{id}\"): the column \"id\" shows each row's id, which cannot be edited."));
+                }
+                match c.edit {
+                    Some(Edit::Select) if !(1..=50).contains(&c.options.len()) => {
+                        return Err(format!("Widget {n} (\"{id}\"): the select column \"{}\" has 1 to 50 options.", c.id));
+                    }
+                    Some(Edit::Select) => {}
+                    _ if !c.options.is_empty() => {
+                        return Err(format!("Widget {n} (\"{id}\"): only a select column has options, not \"{}\".", c.id));
+                    }
+                    _ => {}
+                }
+            }
+            if !(1..=200).contains(&rows.len()) {
+                return Err(format!("Widget {n} (\"{id}\") has {} rows; a table has 1 to 200 rows.", rows.len()));
+            }
+            let mut seen: Vec<&str> = Vec::new();
+            for (r, row) in rows.iter().enumerate() {
+                let r = r + 1;
+                let Some(rid) = row.get("id").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) else {
+                    return Err(format!("Widget {n} (\"{id}\"): row {r} has no id. Give each row one: the answer names rows by it."));
+                };
+                if seen.contains(&rid) {
+                    return Err(format!("Widget {n} (\"{id}\") has the row \"{rid}\" twice. Give each row its own id."));
+                }
+                seen.push(rid);
+                for (k, v) in row {
+                    if k == "id" {
+                        continue;
+                    }
+                    let Some(c) = columns.iter().find(|c| &c.id == k) else {
+                        return Err(format!("Widget {n} (\"{id}\"): row \"{rid}\" has \"{k}\", which is no column."));
+                    };
+                    cell_fits(c, v).map_err(|why| format!("Widget {n} (\"{id}\"), row \"{rid}\": {why}"))?;
+                }
             }
         }
         Widget::Markdown { .. } | Widget::Toggle { .. } => {}
@@ -525,6 +624,35 @@ fn answers(w: &Widget, v: &Value) -> Result<(), String> {
             }
             Ok(())
         }
+        Widget::Table { columns, rows, .. } => {
+            let shape = || format!("The answer for \"{id}\" lists the changed rows, each as {{id, <column>: value}}.");
+            let Some(list) = v.as_array() else { return Err(shape()) };
+            let mut seen: Vec<&str> = Vec::new();
+            for item in list {
+                let Some(obj) = item.as_object() else { return Err(shape()) };
+                let Some(rid) = obj.get("id").and_then(Value::as_str) else { return Err(shape()) };
+                if !rows.iter().any(|r| r.get("id").and_then(Value::as_str) == Some(rid)) {
+                    return Err(format!("The answer for \"{id}\" changes the row \"{rid}\", which the table does not have."));
+                }
+                if seen.contains(&rid) {
+                    return Err(format!("The answer for \"{id}\" has the row \"{rid}\" twice."));
+                }
+                seen.push(rid);
+                for (k, cell) in obj {
+                    if k == "id" {
+                        continue;
+                    }
+                    let Some(c) = columns.iter().find(|c| &c.id == k && c.edit.is_some()) else {
+                        return Err(format!("The answer for \"{id}\" sets \"{k}\" of row \"{rid}\", which cannot be edited."));
+                    };
+                    if cell.is_null() {
+                        return Err(format!("The answer for \"{id}\" sets \"{k}\" of row \"{rid}\" to nothing."));
+                    }
+                    cell_fits(c, cell).map_err(|why| format!("The answer for \"{id}\", row \"{rid}\": {why}"))?;
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -585,6 +713,8 @@ Widgets by kind, with the answer for each:
 - preview {label?, html, css?, controls[{kind: range|colour|select, var --x, label?, min, max, step?, unit?, \
 options[css values], value?}]}: your HTML and CSS drawn without scripts; controls set CSS variables on its root. \
 {var: value}.
+- table {label?, columns[{id, label?, edit?: text|select|check, options?}], rows[{id, <column id>: value}]}: the \
+changed rows as [{id, <column>: new value}], only the changed cells.
 Every widget has an id, unique in the form, and may be optional. At most 30 widgets. Set value to what is true now \
 or what you recommend (choice takes a label, or a list with multi), so the user changes only what differs.";
 
@@ -601,6 +731,9 @@ pub fn input_schema() -> Value {
         "min": { "type": "number" }, "max": { "type": "number" }, "step": { "type": "number" }, "unit": { "type": "string" },
         "options": { "type": "array", "items": { "type": "string" } }, "value": {} },
         "required": ["kind", "var"] } });
+    let columns = json!({ "type": "array", "items": { "type": "object", "properties": {
+        "id": { "type": "string" }, "label": { "type": "string" }, "edit": { "type": "string", "enum": ["text", "select", "check"] },
+        "options": { "type": "array", "items": { "type": "string" } } }, "required": ["id"] } });
     json!({
         "type": "object",
         "properties": {
@@ -630,7 +763,9 @@ pub fn input_schema() -> Value {
                     "value": { "description": "Where it starts: what is true now or what you recommend." },
                     "html": s("preview: the HTML to show; no scripts run."),
                     "css": s("preview: its CSS; var(--x) for each control."),
-                    "controls": controls
+                    "controls": controls,
+                    "columns": columns,
+                    "rows": { "type": "array", "items": { "type": "object", "description": "table: {id, <column id>: value}" } }
                 },
                 "required": ["kind", "id"]
             } }
@@ -734,6 +869,59 @@ mod tests {
         assert!(answer(json!({"--radius": 8, "--accent": "red", "--font": "serif"})).unwrap_err().contains("#rrggbb"));
         assert!(answer(json!({"--radius": 8, "--accent": "#3355ff", "--font": "mono"})).unwrap_err().contains("not one of the options"));
         assert!(answer(json!({"--radius": 8, "--accent": "#3355ff"})).unwrap_err().contains("--font"));
+    }
+
+    fn table(columns: Value, rows: Value) -> Value {
+        json!({"title": "t", "widgets": [{"kind": "table", "id": "tasks", "columns": columns, "rows": rows}]})
+    }
+
+    fn columns() -> Value {
+        json!([
+            {"id": "title", "label": "Task"},
+            {"id": "prio", "label": "Priority", "edit": "select", "options": ["high", "low"]},
+            {"id": "done", "label": "Done", "edit": "check"},
+            {"id": "note", "label": "Note", "edit": "text"}
+        ])
+    }
+
+    #[test]
+    fn a_table_is_checked_row_by_row() {
+        let rows =
+            json!([{"id": "r1", "title": "Fix login", "prio": "high", "done": false}, {"id": "r2", "title": "Docs", "note": "later"}]);
+        assert!(check(&table(columns(), rows)).is_ok());
+        let refused = |cols: Value, rows: Value, says: &str| {
+            let err = check(&table(cols, rows)).unwrap_err();
+            assert!(err.contains(says), "{err}");
+        };
+        let one = json!([{"id": "r1"}]);
+        refused(json!([]), one.clone(), "1 to 12 columns");
+        refused(Value::Array((0..13).map(|i| json!({"id": format!("c{i}")})).collect()), one.clone(), "1 to 12 columns");
+        refused(json!([{"id": "a"}, {"id": "a"}]), one.clone(), "column \"a\" twice");
+        refused(json!([{"id": "p", "edit": "select"}]), one.clone(), "1 to 50 options");
+        refused(json!([{"id": "id", "edit": "text"}]), one.clone(), "row's id");
+        refused(columns(), json!([]), "1 to 200 rows");
+        refused(columns(), Value::Array((0..201).map(|i| json!({"id": format!("r{i}")})).collect()), "1 to 200 rows");
+        refused(columns(), json!([{"title": "no id"}]), "has no id");
+        refused(columns(), json!([{"id": "r1"}, {"id": "r1"}]), "\"r1\" twice");
+        refused(columns(), json!([{"id": "r1", "owner": "me"}]), "\"owner\", which is no column");
+        refused(columns(), json!([{"id": "r1", "title": {"a": 1}}]), "text, a number, true or false");
+        refused(columns(), json!([{"id": "r1", "done": "yes"}]), "true or false");
+        refused(columns(), json!([{"id": "r1", "prio": "mid"}]), "not one of its options");
+    }
+
+    #[test]
+    fn a_table_answer_lists_the_changed_cells() {
+        let f =
+            check(&table(columns(), json!([{"id": "r1", "title": "Fix login", "prio": "high"}, {"id": "r2", "title": "Docs"}]))).unwrap();
+        let answer = |v: Value| check_answer(&f, &json!({ "tasks": v }));
+        assert!(answer(json!([{"id": "r1", "prio": "low", "done": true}, {"id": "r2", "note": "today"}])).is_ok());
+        assert!(answer(json!([])).is_ok(), "nothing changed");
+        assert!(answer(json!([{"id": "r9", "done": true}])).unwrap_err().contains("\"r9\""));
+        assert!(answer(json!([{"id": "r1", "done": true}, {"id": "r1", "done": false}])).unwrap_err().contains("twice"));
+        assert!(answer(json!([{"id": "r1", "title": "Renamed"}])).unwrap_err().contains("cannot be edited"));
+        assert!(answer(json!([{"id": "r1", "done": "yes"}])).unwrap_err().contains("true or false"));
+        assert!(answer(json!([{"id": "r1", "prio": "mid"}])).unwrap_err().contains("not one of its options"));
+        assert!(answer(json!([{"id": "r1", "note": 3}])).unwrap_err().contains("text"));
     }
 
     #[test]

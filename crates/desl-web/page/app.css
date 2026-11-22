@@ -392,6 +392,15 @@ textarea.fw-text { resize: vertical; line-height: 1.45; }
 .fw-control { display: contents; }
 .fw-control-label { font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
 .fw-colour { width: 44px; height: 28px; padding: 0; border: 1px solid var(--line2); border-radius: 6px; background: transparent; }
+/* A table: rows to read, cells to edit. Wider than the card scrolls on its own. */
+.fw-table-wrap { overflow-x: auto; max-height: 420px; overflow-y: auto; border: 1px solid var(--line2); border-radius: 8px; }
+.fw-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fw-table th, .fw-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; overflow-wrap: break-word; }
+.fw-table th { white-space: nowrap; }
+.fw-table th { position: sticky; top: 0; background: var(--raised); color: var(--dim); font-weight: 500; font-size: 12.5px; }
+.fw-table tr:last-child td { border-bottom: 0; }
+.fw-table input[type="text"].fw-cell, .fw-table select.fw-cell { width: 100%; min-width: 90px; min-height: 28px; padding: 3px 6px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.fw-table input[type="checkbox"].fw-cell { accent-color: var(--accent); }
 /* Wide: the preview takes the waiting list's place too. */
 body.wide .form-card { max-width: none; }
 body.wide .fw-preview-box { height: 62vh; }

@@ -284,6 +284,12 @@ pub enum Command {
         form_id: String,
         path: String,
     },
+    /// The section a `document` widget of the form edits, as it is on disk now, read from inside
+    /// its thread's directory. Replied with `section`.
+    FormSection {
+        form_id: String,
+        widget: String,
+    },
     /// Stops every agent and the daemon.
     Shutdown,
     /// The daemon starts again from the desl binary at `exe` and hands it the terminal of every
@@ -386,6 +392,10 @@ pub enum Reply {
     Image {
         mime: String,
         data: String,
+    },
+    /// A document's section as it is on disk; None when its heading is gone from the file.
+    Section {
+        text: Option<String>,
     },
     Form {
         form_id: String,

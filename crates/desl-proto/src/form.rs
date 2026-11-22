@@ -14,6 +14,8 @@ pub const MAX_BYTES: usize = 256 * 1024;
 const KINDS: [&str; 11] =
     ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table", "images", "document"];
 
+/// The most a form's draft may weigh: a document's edited text with its comments.
+pub const MAX_DRAFT_BYTES: usize = 1024 * 1024;
 /// The most a document's section may weigh, as the card edits it.
 pub const MAX_SECTION_BYTES: usize = 256 * 1024;
 /// The most comments one document takes.

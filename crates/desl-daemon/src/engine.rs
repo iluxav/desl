@@ -2026,6 +2026,7 @@ impl Engine {
             Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
             Command::FormGet { form_id } => self.form_get(&form_id),
             Command::FormImage { form_id, path } => self.form_image(&form_id, &path),
+            Command::FormSection { form_id, widget } => self.form_section(&form_id, &widget),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Exit { thread_id } => self.exit_agent(&thread_id),
             Command::Restart { thread_id } => self.restart_agent(&thread_id),
@@ -2417,6 +2418,15 @@ impl Engine {
         for path in form::image_paths(&checked) {
             crate::picture::check(&dir, path)?;
         }
+        // A document's section is read now and kept with the form: the card edits it, and the
+        // save checks the file still has it.
+        let mut form = form.clone();
+        for (n, w) in checked.widgets.iter().enumerate() {
+            if let form::Widget::Document { path, section, .. } = w {
+                form["widgets"][n]["original"] = Value::String(crate::document::read(&dir, path, section.as_deref())?);
+            }
+        }
+        let json = form.to_string();
         let blob = self.store.blob_put(&json).map_err(|e| format!("desl could not keep the form ({e:#}). Try again."))?;
         let id = self.new_form_id();
         let at = now();
@@ -2465,10 +2475,12 @@ impl Engine {
         let text = self.store.blob_get(&row.blob).ok().flatten().ok_or_else(|| format!("desl lost the form {form_id}."))?;
         let form = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()).and_then(|v| form::check(&v))?;
         form::check_answer(&form, answer)?;
+        let i = self.idx(&row.thread_id)?;
+        let answer = self.save_documents(&form, answer, Path::new(&self.threads[i].cwd))?;
         let blob =
             self.store.blob_put(&answer.to_string()).map_err(|e| format!("desl could not keep the answer ({e:#}). Send it again."))?;
         self.closed(&row, "user", Some(blob))?;
-        self.prompt(&row.thread_id, &form::answer_prompt(form_id, &row.title, answer))
+        self.prompt(&row.thread_id, &form::answer_prompt(form_id, &row.title, &answer))
             .map_err(|e| format!("{form_id} is answered and its answer kept, but desl could not send it to the agent: {e}"))?;
         Ok(Reply::Done)
     }
@@ -2500,10 +2512,59 @@ impl Engine {
         Ok(())
     }
 
+    /// The page's answer with each edited document saved: every one is checked against the file
+    /// first, then all are written, and the agent gets `{saved, diff, more?, comments}` for each.
+    fn save_documents(&self, form: &form::Form, answer: &Value, dir: &Path) -> Result<Value, String> {
+        let mut plans = Vec::new();
+        for w in &form.widgets {
+            let form::Widget::Document { id, path, section, original, .. } = w else { continue };
+            let Some(given) = answer.get(id).filter(|v| !v.is_null()) else { continue };
+            let text = given["text"].as_str().unwrap_or_default();
+            let base = given.get("base").and_then(Value::as_str).or(original.as_deref()).unwrap_or_default();
+            let plan = crate::document::plan(dir, path, section.as_deref(), base, text)?;
+            plans.push((id, path, plan, given.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]))));
+        }
+        let mut out = answer.clone();
+        for (id, path, plan, comments) in plans {
+            let mut said = serde_json::json!({ "saved": false, "diff": "", "comments": comments });
+            if let Some(plan) = plan {
+                crate::document::write(&plan, path)?;
+                let (diff, more) = crate::document::diff(&plan, path);
+                said["saved"] = serde_json::json!(true);
+                said["diff"] = serde_json::json!(diff);
+                if more > 0 {
+                    said["more"] = serde_json::json!(more);
+                }
+            }
+            out[id.as_str()] = said;
+        }
+        Ok(out)
+    }
+
+    /// A document's section as it is on disk now, for a card whose save found it changed.
+    fn form_section(&self, form_id: &str, widget: &str) -> Outcome {
+        let row = self
+            .store
+            .form(form_id)
+            .map_err(|e| format!("desl could not read {form_id} ({e:#})."))?
+            .ok_or_else(|| format!("There is no form {form_id}."))?;
+        let text = self.store.blob_get(&row.blob).ok().flatten().ok_or_else(|| format!("desl lost the form {form_id}."))?;
+        let form = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()).and_then(|v| form::check(&v))?;
+        let Some((path, section)) = form.widgets.iter().find_map(|w| match w {
+            form::Widget::Document { id, path, section, .. } if id == widget => Some((path.clone(), section.clone())),
+            _ => None,
+        }) else {
+            return Err(format!("{form_id} has no document \"{widget}\"."));
+        };
+        let i = self.idx(&row.thread_id)?;
+        let text = crate::document::current(Path::new(&self.threads[i].cwd), &path, section.as_deref())?;
+        Ok(Reply::Section { text })
+    }
+
     fn form_draft(&mut self, form_id: &str, draft: &Value) -> Outcome {
         let json = draft.to_string();
-        if json.len() > form::MAX_BYTES {
-            return Err("The draft is over 256 KB, so desl did not keep it.".to_string());
+        if json.len() > form::MAX_DRAFT_BYTES {
+            return Err("The draft is over 1 MB, so desl did not keep it.".to_string());
         }
         self.open_form(form_id)?;
         match self.store.form_draft(form_id, &json) {
@@ -2548,8 +2609,7 @@ impl Engine {
         }
         let i = self.idx(&row.thread_id)?;
         let (mime, bytes) = crate::picture::read(Path::new(&self.threads[i].cwd), path)?;
-        use base64::Engine as _;
-        Ok(Reply::Image { mime: mime.to_string(), data: base64::engine::general_purpose::STANDARD.encode(bytes) })
+        Ok(Reply::Image { mime: mime.to_string(), data: desl_proto::b64::encode(&bytes) })
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Outcome {

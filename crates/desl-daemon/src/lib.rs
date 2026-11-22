@@ -1,7 +1,9 @@
 //! The desl daemon (SPEC.md "Architecture"): owns the store, every agent process and all
 //! thread state, and serves clients over one Unix socket.
 
+pub mod document;
 pub mod engine;
+pub mod files;
 pub mod git;
 pub mod handover;
 pub mod picture;

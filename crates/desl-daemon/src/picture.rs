@@ -4,40 +4,15 @@
 //! one, since the file may have changed meanwhile.
 
 use desl_proto::form::MAX_IMAGE_BYTES;
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 /// How much of a file is read to tell its type.
 const SNIFF: usize = 4096;
 
-/// The file `path` names inside `dir`, opened: refused when it is outside, missing, not a
-/// file or too big. `path` is relative to `dir` or absolute.
 fn open(dir: &Path, path: &str) -> Result<(File, PathBuf), String> {
-    let root = dir.canonicalize().map_err(|e| format!("desl could not read the thread's directory {} ({e}).", dir.display()))?;
-    let given = Path::new(path);
-    let full = if given.is_absolute() { given.to_path_buf() } else { root.join(given) };
-    let real =
-        full.canonicalize().map_err(|_| format!("There is no file \"{path}\" in {}. Name a file of the project.", root.display()))?;
-    if !real.starts_with(&root) {
-        return Err(format!("The image \"{path}\" is outside the thread's directory, {}. Name a file inside it.", root.display()));
-    }
-    // The last part may not be swapped for a link between the check above and the read, and a
-    // FIFO or a device is refused below rather than waited on: a regular file ignores NONBLOCK.
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags((rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK).bits() as i32)
-        .open(&real)
-        .map_err(|e| format!("desl could not open the image \"{path}\" ({e})."))?;
-    let meta = file.metadata().map_err(|e| format!("desl could not read the image \"{path}\" ({e})."))?;
-    if !meta.is_file() {
-        return Err(format!("The image \"{path}\" is not a file."));
-    }
-    if meta.len() > MAX_IMAGE_BYTES {
-        return Err(format!("The image \"{path}\" is {} MB; desl shows pictures of at most 10 MB.", meta.len().div_ceil(1024 * 1024)));
-    }
-    Ok((file, real))
+    crate::files::open_inside(dir, path, "image", MAX_IMAGE_BYTES)
 }
 
 /// The media type of a picture, from its first bytes; an SVG also needs its name to say so.

@@ -1501,8 +1501,7 @@ fn the_page_reads_only_the_images_a_form_names() {
     let Ok(Reply::Image { mime, data }) = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "a.png".into() }) else {
         panic!("an image")
     };
-    use base64::Engine as _;
-    assert_eq!((mime.as_str(), base64::engine::general_purpose::STANDARD.decode(data).unwrap()), ("image/png", PNG.to_vec()));
+    assert_eq!((mime.as_str(), desl_proto::b64::decode(&data).unwrap()), ("image/png", PNG.to_vec()));
     let err = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "other.png".into() }).unwrap_err();
     assert!(err.contains("other.png"), "{err}");
     // Swapped for a link to outside after the form was shown.
@@ -1527,4 +1526,103 @@ fn a_thread_whose_only_history_is_forms_opens_a_new_session() {
     // With a conversation, as a fork has, it is copied.
     r.engine.append(&t, EventKind::UserMessage { text: "hello".into(), attachments: vec![] });
     assert_eq!(r.engine.open_for(i, &fake), Open::Resume { session_id: "copied".into() });
+}
+
+const GUIDE: &str = "# Guide\n\nIntro.\n\n## Install\n\nRun it.\n\n## Use\n\nThen go.\n";
+
+fn document_form(path: &str, section: Option<&str>) -> serde_json::Value {
+    let mut w = json!({"kind": "document", "id": "doc", "path": path});
+    if let Some(s) = section {
+        w["section"] = json!(s);
+    }
+    json!({"title": "Edit the install section", "widgets": [w]})
+}
+
+fn pushed_document(r: &mut Rig, name: &str) -> (String, PathBuf) {
+    let t = r.t.clone();
+    let file = PathBuf::from(r.thread(&t).cwd).join(name);
+    std::fs::write(&file, GUIDE).unwrap();
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t, form: document_form(name, Some("Install")) }) else {
+        panic!("shown")
+    };
+    (form_id, file)
+}
+
+#[test]
+fn a_document_section_is_read_when_pushed_and_saved_on_send() {
+    let mut r = rig("form-doc");
+    let (form_id, file) = pushed_document(&mut r, "guide.md");
+    let Ok(Reply::Form { form, .. }) = r.cmd(Command::FormGet { form_id: form_id.clone() }) else { panic!("the form") };
+    assert_eq!(form["widgets"][0]["original"], json!("## Install\n\nRun it.\n\n"), "read once, when pushed");
+    let answer =
+        json!({"doc": {"text": "## Install\n\nRun `make install`.\n\n", "comments": [{"quote": "make install", "note": "and then?"}]}});
+    r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer }).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "# Guide\n\nIntro.\n\n## Install\n\nRun `make install`.\n\n## Use\n\nThen go.\n");
+    let sent = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(sent.contains("\"saved\":true"), "{sent}");
+    assert!(sent.contains("-Run it.") && sent.contains("+Run `make install`.") && sent.contains("--- a/guide.md"), "{sent}");
+    assert!(sent.contains("\"note\":\"and then?\""), "{sent}");
+    let Ok(Reply::Form { answer, .. }) = r.cmd(Command::FormGet { form_id }) else { panic!("the form") };
+    assert_eq!(answer.unwrap()["doc"]["saved"], json!(true), "the answered card shows what the agent got");
+}
+
+#[test]
+fn an_unchanged_document_is_not_saved() {
+    let mut r = rig("form-doc-same");
+    let (form_id, file) = pushed_document(&mut r, "guide.md");
+    let before = std::fs::metadata(&file).unwrap().modified().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    r.cmd(Command::FormAnswer { form_id, answer: json!({"doc": {"text": "## Install\n\nRun it.\n\n"}}) }).unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().modified().unwrap(), before, "not written");
+    let sent = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(sent.contains("\"saved\":false") && sent.contains("\"diff\":\"\""), "{sent}");
+}
+
+#[test]
+fn a_document_changed_on_disk_is_saved_only_over_what_the_user_saw() {
+    let mut r = rig("form-doc-conflict");
+    let (form_id, file) = pushed_document(&mut r, "guide.md");
+    let theirs = GUIDE.replace("Run it.", "Run it now.");
+    std::fs::write(&file, &theirs).unwrap();
+    let mine = json!({"doc": {"text": "## Install\n\nMine.\n\n"}});
+    let err = r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: mine }).unwrap_err();
+    assert!(err.contains("changed") && err.contains("Nothing was saved"), "{err}");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), theirs, "untouched");
+    assert!(r.thread(&r.t.clone()).open_forms.iter().any(|f| f.id == form_id), "still open");
+    let Ok(Reply::Section { text }) = r.cmd(Command::FormSection { form_id: form_id.clone(), widget: "doc".into() }) else {
+        panic!("the section as it is now")
+    };
+    assert_eq!(text.as_deref(), Some("## Install\n\nRun it now.\n\n"));
+    // The user saw both and keeps theirs over the file's.
+    let over = json!({"doc": {"text": "## Install\n\nMine.\n\n", "base": "## Install\n\nRun it now.\n\n"}});
+    r.cmd(Command::FormAnswer { form_id, answer: over }).unwrap();
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), GUIDE.replace("Run it.", "Mine."));
+}
+
+#[test]
+fn a_document_outside_the_thread_or_not_markdown_is_refused() {
+    let mut r = rig("form-doc-refused");
+    let t = r.t.clone();
+    let cwd = PathBuf::from(r.thread(&t).cwd);
+    std::fs::write(r.dir.join("secret.md"), GUIDE).unwrap();
+    std::os::unix::fs::symlink(r.dir.join("secret.md"), cwd.join("link.md")).unwrap();
+    std::fs::write(cwd.join("crlf.md"), "# A\r\n\r\nx\r\n").unwrap();
+    std::fs::write(cwd.join("big.md"), "x".repeat(1024 * 1024 + 1)).unwrap();
+    std::fs::write(cwd.join("guide.md"), GUIDE).unwrap();
+    assert!(std::process::Command::new("mkfifo").arg(cwd.join("pipe.md")).status().unwrap().success());
+    let secret = r.dir.join("secret.md").to_string_lossy().into_owned();
+    for (path, section, says) in [
+        ("../secret.md", None, "outside"),
+        (secret.as_str(), None, "outside"),
+        ("link.md", None, "outside"),
+        ("none.md", None, "no file"),
+        ("pipe.md", None, "not a file"),
+        ("crlf.md", None, "line endings"),
+        ("big.md", None, "1 MB"),
+        ("guide.md", Some("Uninstall"), "no heading"),
+    ] {
+        let err = r.cmd(Command::FormNew { thread_id: t.clone(), form: document_form(path, section) }).unwrap_err();
+        assert!(err.contains(says), "{path}: {err}");
+    }
+    assert!(r.thread(&t).open_forms.is_empty());
 }

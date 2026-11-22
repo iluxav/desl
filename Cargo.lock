@@ -556,7 +556,6 @@ dependencies = [
  "adapter-codex",
  "adapter-copilot",
  "anyhow",
- "base64",
  "desl-ir",
  "desl-proto",
  "filedescriptor",

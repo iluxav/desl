@@ -232,6 +232,32 @@ impl Rig {
         found.expect("a reply")
     }
 
+    /// A command whose reply is worked out off the engine's thread: waits for it, a while.
+    fn cmd_waiting(&mut self, command: Command) -> Outcome {
+        self.next_id += 1;
+        let id = self.next_id;
+        self.engine.handle(Msg::Request { client: 1, request: Request { id, command } });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if let Ok(msg) = self.rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                self.engine.handle(msg);
+            }
+            while let Ok(bytes) = self.out.try_recv() {
+                let frame: ServerFrame = desl_proto::read_frame(&mut &bytes[..]).unwrap().unwrap();
+                if let ServerFrame::Reply { id: got, ok, error } = frame
+                    && got == id
+                {
+                    return match (ok, error) {
+                        (Some(r), _) => Ok(r),
+                        (None, Some(e)) => Err(e),
+                        (None, None) => panic!("an empty reply"),
+                    };
+                }
+            }
+        }
+        panic!("no reply in 5 seconds")
+    }
+
     fn prompt(&mut self, thread: &str, text: &str) {
         self.cmd(Command::Prompt { thread_id: thread.to_string(), text: text.to_string() }).unwrap();
     }
@@ -1498,16 +1524,16 @@ fn the_page_reads_only_the_images_a_form_names() {
     let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t.clone(), form: pictures(&["a.png", "b.png"]) }) else {
         panic!("shown")
     };
-    let Ok(Reply::Image { mime, data }) = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "a.png".into() }) else {
+    let Ok(Reply::Image { mime, data }) = r.cmd_waiting(Command::FormImage { form_id: form_id.clone(), path: "a.png".into() }) else {
         panic!("an image")
     };
     assert_eq!((mime.as_str(), desl_proto::b64::decode(&data).unwrap()), ("image/png", PNG.to_vec()));
-    let err = r.cmd(Command::FormImage { form_id: form_id.clone(), path: "other.png".into() }).unwrap_err();
+    let err = r.cmd_waiting(Command::FormImage { form_id: form_id.clone(), path: "other.png".into() }).unwrap_err();
     assert!(err.contains("other.png"), "{err}");
     // Swapped for a link to outside after the form was shown.
     std::fs::remove_file(cwd.join("b.png")).unwrap();
     std::os::unix::fs::symlink(r.dir.join("secret.png"), cwd.join("b.png")).unwrap();
-    let err = r.cmd(Command::FormImage { form_id, path: "b.png".into() }).unwrap_err();
+    let err = r.cmd_waiting(Command::FormImage { form_id, path: "b.png".into() }).unwrap_err();
     assert!(err.contains("outside"), "{err}");
 }
 
@@ -1669,4 +1695,77 @@ fn a_form_edits_at_most_256_kb_of_sections_in_all() {
         {"kind": "document", "id": "one", "path": "a.md"}, {"kind": "document", "id": "two", "path": "b.md"}]});
     let err = r.cmd(Command::FormNew { thread_id: t.clone(), form }).unwrap_err();
     assert!(err.contains("256 KB") && err.contains("in all"), "{err}");
+}
+
+#[test]
+fn a_picture_is_read_off_the_engines_thread() {
+    // Twelve pictures of 10 MB, read and encoded, would hold every key and every agent's screen.
+    let mut r = rig("form-images-async");
+    let t = r.t.clone();
+    let cwd = PathBuf::from(r.thread(&t).cwd);
+    std::fs::write(cwd.join("a.png"), PNG).unwrap();
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t, form: pictures(&["a.png"]) }) else { panic!("shown") };
+    r.engine
+        .handle(Msg::Request { client: 1, request: Request { id: 999, command: Command::FormImage { form_id, path: "a.png".into() } } });
+    let replied_at_once = std::iter::from_fn(|| r.out.try_recv().ok())
+        .any(|bytes| matches!(desl_proto::read_frame::<_, ServerFrame>(&mut &bytes[..]), Ok(Some(ServerFrame::Reply { id: 999, .. }))));
+    assert!(!replied_at_once, "the engine went on; a worker replies");
+}
+
+#[test]
+fn a_section_that_cannot_be_read_again_says_why() {
+    let mut r = rig("form-doc-why");
+    let (form_id, file) = pushed_document(&mut r, "guide.md");
+    std::fs::write(&file, format!("{GUIDE}\n## Install\n\nAgain.\n")).unwrap();
+    let err = r.cmd(Command::FormSection { form_id: form_id.clone(), widget: "doc".into() }).unwrap_err();
+    assert!(err.contains("twice"), "{err}");
+    std::fs::remove_file(&file).unwrap();
+    let err = r.cmd(Command::FormSection { form_id, widget: "doc".into() }).unwrap_err();
+    assert!(err.contains("no file"), "{err}");
+}
+
+#[test]
+fn a_save_that_fails_after_another_tells_the_agent_what_was_saved() {
+    let mut r = rig("form-doc-partial");
+    let t = r.t.clone();
+    let cwd = PathBuf::from(r.thread(&t).cwd);
+    std::fs::create_dir_all(cwd.join("locked")).unwrap();
+    std::fs::write(cwd.join("a.md"), GUIDE).unwrap();
+    std::fs::write(cwd.join("locked/b.md"), GUIDE).unwrap();
+    let form = json!({"title": "t", "widgets": [
+        {"kind": "document", "id": "one", "path": "a.md", "section": "Install"},
+        {"kind": "document", "id": "two", "path": "locked/b.md", "section": "Use"}]});
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t, form }) else { panic!("shown") };
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(cwd.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let answer = json!({"one": {"text": "## Install\n\nA.\n\n"}, "two": {"text": "## Use\n\nB.\n"}});
+    let sent = r.cmd(Command::FormAnswer { form_id, answer });
+    std::fs::set_permissions(cwd.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    sent.unwrap();
+    let prompt = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(std::fs::read_to_string(cwd.join("a.md")).unwrap().contains("A."), "the first was saved");
+    assert!(prompt.contains("\"saved\":true") && prompt.contains("could not save"), "{prompt}");
+    assert!(prompt.contains("## Use\\n\\nB."), "the text that was not saved reaches the agent: {prompt}");
+}
+
+#[test]
+fn a_thread_whose_only_messages_are_blank_opens_a_new_session() {
+    let mut r = rig("blank-only");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().copies = true;
+    r.engine.append(&t, EventKind::UserMessage { text: "  ".into(), attachments: vec![] });
+    let i = r.engine.idx(&t).unwrap();
+    let fake = Fake { id: "claude", state: r.claude.clone() };
+    assert!(matches!(r.engine.open_for(i, &fake), Open::New { .. }));
+    assert!(r.claude.lock().unwrap().copied.is_empty());
+}
+
+#[test]
+fn an_answer_over_1_mb_is_refused() {
+    let mut r = rig("form-answer-big");
+    let t = r.t.clone();
+    let form = json!({"title": "t", "widgets": [{"kind": "text", "id": "a", "label": "A"}]});
+    let Ok(Reply::FormShown { form_id }) = r.cmd(Command::FormNew { thread_id: t, form }) else { panic!("shown") };
+    let err = r.cmd(Command::FormAnswer { form_id, answer: json!({"a": "x".repeat(1024 * 1024 + 1)}) }).unwrap_err();
+    assert!(err.contains("1 MB"), "{err}");
 }

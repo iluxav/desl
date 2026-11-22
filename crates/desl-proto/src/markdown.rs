@@ -95,18 +95,29 @@ fn wanted(heading: &str) -> &str {
 pub fn section(text: &str, heading: Option<&str>) -> Result<Range<usize>, String> {
     let Some(heading) = heading else { return Ok(0..text.len()) };
     let want = wanted(heading);
-    let all = headings(text);
-    let found: Vec<usize> = all.iter().enumerate().filter(|(_, h)| h.text == want).map(|(i, _)| i).collect();
-    match found.as_slice() {
-        [i] => {
-            let h = &all[*i];
-            let end = all[i + 1..].iter().find(|n| n.level <= h.level).map_or(text.len(), |n| n.at);
-            Ok(h.at..end)
-        }
-        [] => {
+    match find(text, Some(heading))? {
+        Some(range) => Ok(range),
+        None => {
+            let all = headings(text);
             let names: Vec<String> = all.iter().take(12).map(|h| format!("\"{}\"", h.text)).collect();
             let there = if names.is_empty() { "It has no headings.".to_string() } else { format!("Its headings: {}.", names.join(", ")) };
             Err(format!("The file has no heading \"{want}\". {there}"))
+        }
+    }
+}
+
+/// As [`section`], with a missing heading as None, and a sentence only for one there twice.
+pub fn find(text: &str, heading: Option<&str>) -> Result<Option<Range<usize>>, String> {
+    let Some(heading) = heading else { return Ok(Some(0..text.len())) };
+    let want = wanted(heading);
+    let all = headings(text);
+    let found: Vec<usize> = all.iter().enumerate().filter(|(_, h)| h.text == want).map(|(i, _)| i).collect();
+    match found.as_slice() {
+        [] => Ok(None),
+        [i] => {
+            let h = &all[*i];
+            let end = all[i + 1..].iter().find(|n| n.level <= h.level).map_or(text.len(), |n| n.at);
+            Ok(Some(h.at..end))
         }
         _ => Err(format!("The heading \"{want}\" is in the file twice, so desl cannot tell which section you mean.")),
     }

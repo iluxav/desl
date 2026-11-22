@@ -55,9 +55,15 @@ pub fn read(dir: &Path, path: &str, heading: Option<&str>) -> Result<(String, Pa
 }
 
 /// The section as it is on disk now: None when its heading is gone from the file.
+/// A sentence when the file cannot be read, the heading is there twice, or the section grew
+/// past what the card edits.
 pub fn current(dir: &Path, path: &str, heading: Option<&str>) -> Result<Option<String>, String> {
     let (text, _, _) = load(dir, path)?;
-    Ok(markdown::section(&text, heading).ok().map(|r| text[r].to_string()))
+    let Some(range) = markdown::find(&text, heading).map_err(|e| format!("In \"{path}\": {e}"))? else { return Ok(None) };
+    if range.len() > MAX_SECTION_BYTES {
+        return Err(format!("The section of \"{path}\" is now {} KB; desl edits at most 256 KB at once.", range.len().div_ceil(1024)));
+    }
+    Ok(Some(text[range].to_string()))
 }
 
 /// A save worked out and checked, not yet written: the folder it was checked in stays open.
@@ -103,11 +109,20 @@ pub fn plan(dir: &Path, path: &str, heading: Option<&str>, base: &str, text: &st
 pub fn write(plan: &Plan, path: &str) -> Result<(), String> {
     let failed = |e: std::io::Error| format!("desl could not save \"{path}\" ({e}). The file is as it was.");
     let dir = &plan.at.dir;
-    let mut tmp = std::ffi::OsString::from(".");
-    tmp.push(&plan.at.name);
-    tmp.push(format!(".desl-{}-{}", std::process::id(), unique()));
     let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let fd = openat(dir, &tmp, flags, Mode::from_raw_mode(0o600)).map_err(|e| failed(e.into()))?;
+    // A name nobody can guess, and another one when something is there already.
+    let mut tries = 0;
+    let (tmp, fd) = loop {
+        let mut tmp = std::ffi::OsString::from(".");
+        tmp.push(&plan.at.name);
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+        tmp.push(format!(".desl-{}-{}-{nanos:08x}", std::process::id(), unique()));
+        match openat(dir, &tmp, flags, Mode::from_raw_mode(0o600)) {
+            Ok(fd) => break (tmp, fd),
+            Err(e) if e == rustix::io::Errno::EXIST && tries < 8 => tries += 1,
+            Err(e) => return Err(failed(e.into())),
+        }
+    };
     let mut f = std::fs::File::from(fd);
     let done = f
         .write_all(plan.after.as_bytes())
@@ -125,8 +140,16 @@ pub fn write(plan: &Plan, path: &str) -> Result<(), String> {
 /// and how many more there were. Empty when git cannot run.
 pub fn diff(plan: &Plan, path: &str) -> (String, usize) {
     let Some(full) = git_diff(&plan.before, &plan.after) else { return (String::new(), 0) };
+    shaped(&full, path)
+}
+
+/// git's diff of the two scratch files, named after `path`, and capped.
+fn shaped(full: &str, path: &str) -> (String, usize) {
     // git names the two scratch files; the agent knows the file by the path it gave.
     let body: Vec<&str> = full.lines().skip_while(|l| !l.starts_with("@@")).collect();
+    if body.is_empty() {
+        return (String::new(), 0);
+    }
     let mut lines = vec![format!("--- a/{path}"), format!("+++ b/{path}")];
     lines.extend(body.iter().map(|l| l.to_string()));
     let more = lines.len().saturating_sub(DIFF_LINES);
@@ -141,17 +164,42 @@ fn git_diff(before: &str, after: &str) -> Option<String> {
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(scratch.join(name)).ok()?;
         f.write_all(text.as_bytes()).ok()
     };
-    let out = put("a", before).and_then(|()| put("b", after)).and_then(|()| {
-        Command::new("git")
-            .args(["-c", "core.quotepath=false", "diff", "--no-index", "--no-color", "--no-ext-diff", "-U3", "--", "a", "b"])
-            .current_dir(&scratch)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-    });
+    let out = put("a", before).and_then(|()| put("b", after)).and_then(|()| run_git(&scratch));
     let _ = std::fs::remove_dir_all(&scratch);
-    out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    out
+}
+
+/// git's diff of `a` and `b` in `scratch`, given 3 seconds: it runs on the engine's thread, and a
+/// git that hangs (a wrapper, a stuck filesystem) must not stop desl. Its output is read on the
+/// side so a long diff cannot fill the pipe and stall it.
+fn run_git(scratch: &Path) -> Option<String> {
+    let mut child = Command::new("git")
+        .args(["-c", "core.quotepath=false", "diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv", "-U3", "--", "a", "b"])
+        .current_dir(scratch)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = stdout.read_to_end(&mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    reader.join().ok().map(|out| String::from_utf8_lossy(&out).into_owned())
 }
 
 fn unique() -> u64 {
@@ -209,5 +257,16 @@ mod tests {
         std::os::unix::fs::symlink(proj.join(".env"), proj.join("notes.md")).unwrap();
         let err = read(&proj, "notes.md", None).unwrap_err();
         assert!(err.contains("Markdown"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod shaping {
+    #[test]
+    fn git_output_with_no_hunk_is_no_diff() {
+        // git that failed, or printed only its header, says nothing of the change.
+        assert_eq!(super::shaped("diff --git a/a b/b\n--- a/a\n+++ b/b\n", "x.md"), (String::new(), 0));
+        let (d, more) = super::shaped("diff --git a/a b/b\n--- a/a\n+++ b/b\n@@ -1 +1 @@\n-a\n+b\n", "x.md");
+        assert_eq!((d.as_str(), more), ("--- a/x.md\n+++ b/x.md\n@@ -1 +1 @@\n-a\n+b\n", 0));
     }
 }

@@ -59,6 +59,12 @@ pub enum Msg {
         agent: String,
         result: Result<Vec<ModelInfo>, String>,
     },
+    /// A reply a worker worked out off the engine's thread, for `client`'s request `id`.
+    Answered {
+        client: ClientId,
+        id: u64,
+        outcome: Outcome,
+    },
     /// An agent's interface drew something. `generation` tells a restarted agent from the old one.
     PtyOutput {
         thread_id: String,
@@ -1043,6 +1049,7 @@ impl Engine {
                 });
                 self.reply(client, id, outcome);
             }
+            Msg::Answered { client, id, outcome } => self.reply(client, id, outcome),
             Msg::PtyOutput { thread_id, generation, data } => self.pty_output(&thread_id, generation, &data),
             Msg::PtyExit { thread_id, generation } => self.pty_exit(&thread_id, generation),
             Msg::Git { states } => self.git_states(states),
@@ -1081,7 +1088,7 @@ impl Engine {
     fn copy_conversation(&self, i: usize, adapter: &dyn Adapter) -> Result<Option<(String, u64)>, desl_ir::adapter::AdapterError> {
         let t = &self.threads[i];
         let kinds: Vec<EventKind> = self.store.all_events(&t.id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
-        if !kinds.iter().any(EventKind::conversational) {
+        if desl_ir::adapter::copy_items(&kinds).is_empty() {
             return Ok(None);
         }
         adapter.write_session(Path::new(&t.cwd), &kinds).map(|(session_id, _, len)| Some((session_id, len)))
@@ -2025,7 +2032,19 @@ impl Engine {
             Command::FormClose { form_id, by } => self.form_close(&form_id, &by),
             Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
             Command::FormGet { form_id } => self.form_get(&form_id),
-            Command::FormImage { form_id, path } => self.form_image(&form_id, &path),
+            Command::FormImage { form_id, path } => match self.form_image(&form_id, &path) {
+                // Read and encoded by a worker: up to 10 MB a picture must not hold the engine.
+                Ok((dir, path)) => {
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        let outcome = crate::picture::read(&dir, &path)
+                            .map(|(mime, bytes)| Reply::Image { mime: mime.to_string(), data: desl_proto::b64::encode(&bytes) });
+                        let _ = tx.send(Msg::Answered { client, id, outcome });
+                    });
+                    return None;
+                }
+                Err(e) => Err(e),
+            },
             Command::FormSection { form_id, widget } => self.form_section(&form_id, &widget),
             Command::Interrupt { thread_id } => self.interrupt(&thread_id),
             Command::Exit { thread_id } => self.exit_agent(&thread_id),
@@ -2491,6 +2510,9 @@ impl Engine {
         self.idx(&row.thread_id)?;
         let text = self.store.blob_get(&row.blob).ok().flatten().ok_or_else(|| format!("desl lost the form {form_id}."))?;
         let form = serde_json::from_str::<Value>(&text).map_err(|e| e.to_string()).and_then(|v| form::check(&v))?;
+        if answer.to_string().len() > form::MAX_DRAFT_BYTES {
+            return Err(format!("The answer to {form_id} is over 1 MB. Send less, or put the long part in a file."));
+        }
         form::check_answer(&form, answer)?;
         let i = self.idx(&row.thread_id)?;
         let answer = self.save_documents(&form, answer, Path::new(&self.threads[i].cwd))?;
@@ -2547,10 +2569,23 @@ impl Engine {
             plans.push((id, path, plan, given.get("comments").cloned().unwrap_or_else(|| serde_json::json!([]))));
         }
         let mut out = answer.clone();
+        let mut wrote = false;
         for (id, path, plan, comments) in plans {
             let mut said = serde_json::json!({ "saved": false, "diff": "", "comments": comments });
             if let Some(plan) = plan {
-                crate::document::write(&plan, path)?;
+                if let Err(e) = crate::document::write(&plan, path) {
+                    // Before any write, nothing happened: the form stays open to send again.
+                    // After one, the form closes, and the agent hears what was saved and what not,
+                    // with the text that was not, so nothing the user wrote is lost.
+                    if !wrote {
+                        return Err(e);
+                    }
+                    said["error"] = serde_json::json!(e);
+                    said["text"] = answer[id.as_str()]["text"].clone();
+                    out[id.as_str()] = said;
+                    continue;
+                }
+                wrote = true;
                 let (diff, more) = crate::document::diff(&plan, path);
                 said["saved"] = serde_json::json!(true);
                 said["diff"] = serde_json::json!(diff);
@@ -2616,8 +2651,9 @@ impl Engine {
         })
     }
 
-    /// A picture the form shows, read from its thread's directory for the page.
-    fn form_image(&self, form_id: &str, path: &str) -> Outcome {
+    /// Where a picture the form shows is: its thread's directory and the path, checked to be one
+    /// the form names. A worker reads it for the page.
+    fn form_image(&self, form_id: &str, path: &str) -> Result<(PathBuf, String), String> {
         let row = self
             .store
             .form(form_id)
@@ -2630,8 +2666,7 @@ impl Engine {
             return Err(format!("{form_id} shows no image \"{path}\"."));
         }
         let i = self.idx(&row.thread_id)?;
-        let (mime, bytes) = crate::picture::read(Path::new(&self.threads[i].cwd), path)?;
-        Ok(Reply::Image { mime: mime.to_string(), data: desl_proto::b64::encode(&bytes) })
+        Ok((PathBuf::from(&self.threads[i].cwd), path.to_string()))
     }
 
     fn interrupt(&mut self, thread_id: &str) -> Outcome {

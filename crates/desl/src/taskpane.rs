@@ -81,6 +81,12 @@ impl TaskPane {
         self.chosen.unwrap_or(cols >= AUTO_COLS)
     }
 
+    /// Whether to ask the daemon for `project`'s list now: the pane shows on a terminal `cols`
+    /// wide, and the list is neither here nor asked for. True once a project.
+    pub fn wants(&mut self, project: &str, cols: u16) -> bool {
+        self.shown(cols) && !self.lists.contains_key(project) && self.asked.insert(project.to_string())
+    }
+
     /// `project`'s tasks the filter keeps, in the file's order.
     pub fn rows<'a>(&'a self, project: &str) -> Vec<&'a Task> {
         let keep = FILTERS[self.filter % FILTERS.len()].1;
@@ -230,6 +236,17 @@ mod tests {
         assert!(p.shown(100), "prefix t shows it anywhere");
         p.chosen = Some(false);
         assert!(!p.shown(250));
+    }
+
+    #[test]
+    fn a_shown_pane_asks_once_for_each_project_it_shows() {
+        let mut p = TaskPane::default();
+        assert!(!p.wants("desl", 150), "hidden on a narrow terminal: nothing to ask");
+        assert!(p.wants("desl", AUTO_COLS), "shown by itself on a wide one: ask");
+        assert!(!p.wants("desl", AUTO_COLS), "once");
+        assert!(p.wants("osfeed", AUTO_COLS), "another project on screen: ask for its list");
+        let mut known = pane();
+        assert!(!known.wants("desl", AUTO_COLS), "a list the daemon already sent needs no asking");
     }
 
     #[test]

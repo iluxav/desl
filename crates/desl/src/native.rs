@@ -1324,10 +1324,11 @@ impl Client {
         self.agents.iter().filter(|a| a.usable()).map(|a| a.id.clone()).collect()
     }
 
-    /// Asks for the task list of the project on screen, once a connection.
+    /// Asks for the task list of the project on screen while the pane shows, once a project:
+    /// from the tick, so a pane that opened by itself, or a move to another project, fills it.
     fn ask_tasks(&mut self) {
         let Some(project) = self.project().map(|p| p.id.clone()) else { return };
-        if self.taskpane.asked.insert(project.clone()) {
+        if self.taskpane.wants(&project, self.cols) {
             self.link.request(Command::Tasks { project_id: project });
         }
     }
@@ -1585,6 +1586,7 @@ impl Client {
 
     /// A running subagent's view is read again every second; a working thread's logo pulses.
     fn tick(&mut self) {
+        self.ask_tasks();
         if self.finder.as_mut().is_some_and(Finder::poll) {
             self.dirty = true;
         }

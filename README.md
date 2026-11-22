@@ -120,13 +120,13 @@ Or press `ctrl+space v` in desl, which starts it in the background and opens you
 it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
 
 Open the address it prints. The page lists every project and agent thread with the same marks
-and words as the sidebar, shows who is waiting, and draws the agent's own screen for the thread
-you pick, keys and all, or its whole conversation with a search, with a prompt box under it
-(queued while the agent works). Stop in the thread's header ends its turn. A thread waiting on
-a dialog, an approval or a folder trust, has a card in the waiting list with the dialog's text
-and **Open its screen**, which shows the agent's screen to answer it in. It listens on 127.0.0.1
-only, and the key after `#t=` is new each time desl web starts. `ctrl+c` stops it; the agents
-keep working. Questions to click and the live document come next (see `web-spec.md`).
+and words as the sidebar, and shows the whole conversation of the thread you pick, with a
+search and a prompt box under it (queued while the agent works). Stop in the thread's header
+ends its turn, and the right column says which threads wait on you in their own screen. The
+agent's screen stays in the terminal. It listens on 127.0.0.1 only, and the key after `#t=` is
+new each time desl web starts. `ctrl+c` stops it; the agents keep working. Next: agents put
+forms in front of you on the page, to choose, edit, tune and review, and get your answer as
+their next prompt (see `docs/design/2026-11-21-web-forms.md`).
 
 ## From a script
 

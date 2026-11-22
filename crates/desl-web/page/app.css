@@ -203,11 +203,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
 .wt { color: var(--branch); }
 
-.sub { display: flex; gap: 6px; align-items: center; padding: 0 8px 0 28px; line-height: 1.35; color: var(--dim); font-size: 12.5px; min-width: 0; }
-.sub .tree { color: var(--muted); font-family: var(--mono); }
-.sub .label-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sub[data-state="running"] .glyph { color: var(--accent); }
-.sub[data-state="done"] .glyph, .sub[data-state="unfinished"] .glyph { color: var(--muted); }
 
 /* An agent's mark is its status: it breathes while working (one breath every 1.6 s, as in the
    terminal), turns the warning colour while waiting and critical when failed, fades while idle. */
@@ -250,46 +245,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .empty { color: var(--dim); }
 
-/* The agent's own screen, drawn by xterm.js. It is a terminal, so it stays dark on a light page,
-   as a terminal window would. When the terminal is larger than the pane (a TUI shows the thread
-   at its own size), the pane scrolls; when smaller, it sits at the top left. */
+/* The middle column is the conversation. */
 .pane { flex: 1; min-height: 0; position: relative; display: flex; }
-.screen-pane { flex: 1; min-width: 0; min-height: 0; display: flex; padding: 8px 10px; background: #0b0c10; }
-.screen { flex: 1; min-width: 0; min-height: 0; overflow: auto; }
-.screen .xterm { height: auto; }
-.screen-note {
-  position: absolute;
-  left: 50%;
-  top: 40%;
-  transform: translate(-50%, -50%);
-  max-width: 420px;
-  padding: 16px 18px;
-  border: 1px solid var(--line2);
-  border-radius: 10px;
-  background: var(--panel);
-  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  align-items: flex-start;
-}
-.screen-note p { margin: 0; }
-@media (max-width: 899px) { .pane { min-height: 70vh; } }
-
-/* Screen or conversation. */
-.tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); }
-.tab {
-  min-height: 34px;
-  padding: 0 12px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--dim);
-  font-size: 13px;
-  font-weight: 500;
-}
-.tab:hover { color: var(--text); }
-.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+/* At phone width the columns stack: the conversation scrolls in a box of its own, so the waiting
+   list below it is a short scroll away. */
+@media (max-width: 899px) { .pane { flex: none; height: 72vh; } }
 
 /* The whole conversation, as the terminal's history shows it. */
 .conv-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
@@ -345,33 +305,25 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* The waiting list. */
 .waitlist { display: flex; flex-direction: column; gap: 12px; }
-.card {
-  border: 1px solid var(--warn-line);
-  background: var(--warn-bg);
-  border-radius: 10px;
-  padding: 12px 14px;
+/* A thread whose agent asks in its own screen: one line, which selects it. */
+.wait-line {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-}
-.card-top { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--dim); min-width: 0; }
-.card-top .age { margin-left: auto; }
-.card h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.card p { margin: 0; font-size: 13px; color: var(--dim); }
-.card .actions { display: flex; justify-content: flex-end; }
-/* The dialog as the agent drew it: a terminal's text, so a terminal's colours. */
-.card pre.asking {
-  margin: 0;
+  gap: 4px;
+  width: 100%;
   padding: 8px 10px;
-  max-height: 240px;
-  overflow: auto;
-  border-radius: 6px;
-  background: #0b0c10;
-  color: #d6d9e0;
-  font: 11.5px/1.45 var(--mono);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  border: 1px solid var(--warn-line);
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--text);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
 }
+.wait-top { display: flex; align-items: center; gap: 8px; font-size: 13px; min-width: 0; }
+.wait-top .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wait-top .age { color: var(--muted); font-size: 12px; }
+.wait-where { color: var(--dim); font-size: 12.5px; }
 .quiet { margin: 0; color: var(--muted); font-size: 12.5px; }
 
 /* Buttons. */
@@ -405,7 +357,6 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .notice { margin: 6px 0 0; min-height: 18px; font-size: 12.5px; color: var(--dim); }
 .notice:empty { display: none; }
-#prompt-form[hidden] + .notice { margin-top: 0; }
 .notice.error { color: var(--crit); }
 
 /* No key in the address. */

@@ -31,10 +31,6 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/", "text/html; charset=utf-8", include_str!("../page/index.html")),
     ("/app.js", "text/javascript; charset=utf-8", include_str!("../page/app.js")),
     ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
-    // xterm.js draws an agent's screen (page/vendor/README.md says where each copy came from).
-    ("/vendor/xterm.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/xterm.mjs")),
-    ("/vendor/xterm.css", "text/css; charset=utf-8", include_str!("../page/vendor/xterm.css")),
-    ("/vendor/addon-fit.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/addon-fit.mjs")),
 ];
 
 /// What every connection is checked against.
@@ -183,19 +179,21 @@ fn refused() -> Response {
     (StatusCode::FORBIDDEN, "desl web answers only to its own page, at 127.0.0.1 or localhost.\n").into_response()
 }
 
+/// The page's Content-Security-Policy: everything from the page itself, nothing inline, the
+/// socket only to this desl web (web-spec.md "Security", rule 4). No agent text is ever HTML.
+pub(crate) fn csp(p: u16) -> String {
+    format!(
+        "default-src 'self'; connect-src 'self' ws://127.0.0.1:{p} ws://localhost:{p}; img-src 'self' data:; base-uri 'none'; \
+         form-action 'none'; frame-ancestors 'none'"
+    )
+}
+
 /// One of the page's files, with the headers that keep agent text from ever running as code.
 fn file(h: &HeaderMap, s: &Shared, kind: &'static str, body: &'static str) -> Response {
     if !host_ok(h, s.port) {
         return refused();
     }
-    let p = s.port;
-    // Styles may be inline, scripts never: xterm.js sizes and colours its screen through style
-    // elements it writes (web-spec.md "Security", rule 4). No agent text is ever HTML, and the
-    // other sources stay 'self', so no style can fetch from anywhere else.
-    let csp = format!(
-        "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:{p} ws://localhost:{p}; \
-         img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-    );
+    let csp = csp(s.port);
     let mut r = Response::new(Body::from(body));
     let hs = r.headers_mut();
     hs.insert(header::CONTENT_TYPE, HeaderValue::from_static(kind));

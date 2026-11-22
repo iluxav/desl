@@ -1,10 +1,7 @@
 // desl web's page (web-spec.md). It speaks the daemon's protocol through desl web's bridge and
-// draws the `view` the bridge sends: the sidebar as desl itself words it for the terminal, so
-// both clients say the same. Text from agents only ever goes into the page as text nodes, or
-// into xterm.js, which draws the agent's own screen.
-
-import { Terminal } from '/vendor/xterm.mjs';
-import { FitAddon } from '/vendor/addon-fit.mjs';
+// draws the `view` the bridge sends: the projects and their agent threads as desl itself words
+// them for the terminal, and the selected thread's conversation. The agent's own screen stays in
+// the terminal. Text from agents only ever goes into the page as text nodes.
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -14,7 +11,6 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   view: null,
-  tab: 'screen',
   selected: read(SELECTED),
   ws: null,
   retry: 500,
@@ -106,9 +102,6 @@ function connect(key) {
     state.ws = null;
     conv.thread = null;
     conv.asking = null;
-    // What this connection showed went with it: the next one attaches again.
-    screen.thread = null;
-    screen.ready = false;
     for (const [, done] of state.pending) done({ error: 'desl web lost the daemon before it answered. Send it again.' });
     state.pending.clear();
     if (e.code === 4401) {
@@ -148,21 +141,8 @@ function handle(msg) {
       }
       break;
     }
-    case 'pty':
-      if (msg.thread_id === screen.thread) drawn(fromB64(msg.data));
-      break;
-    case 'pty_size':
-      if (msg.thread_id === screen.thread) sized(msg.rows, msg.cols);
-      break;
-    case 'pty_replace':
-      // The thread moved to another agent: its screen is the new agent's.
-      if (msg.thread_id === screen.thread) replaced(fromB64(msg.data));
-      break;
-    case 'pty_ended':
-      if (msg.thread_id === screen.thread) ended();
-      break;
     case 'notice':
-      if (msg.thread_id === screen.thread) notice(msg.text);
+      if (msg.thread_id === conv.thread) notice(msg.text);
       break;
     case 'conversation':
       conversationArrived(msg);
@@ -173,13 +153,6 @@ function handle(msg) {
       break;
     default:
       break;
-  }
-}
-
-/** Sends a request the daemon never answers: keys, a size, leaving a thread. */
-function fire(command, fields) {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    state.ws.send(JSON.stringify({ id: state.nextId++, command, ...fields }));
   }
 }
 
@@ -226,8 +199,7 @@ function render() {
   drawHead(cur);
   drawWaiting();
   drawChrome(cur);
-  if (cur && $('link').dataset.state === 'connected' && screen.term && cur.t.id !== screen.thread) attach(cur.t.id);
-  if (cur && $('link').dataset.state === 'connected' && state.tab === 'conv' && cur.t.id !== conv.thread) readConversation(cur.t.id);
+  if (cur && $('link').dataset.state === 'connected' && cur.t.id !== conv.thread) readConversation(cur.t.id);
 }
 
 function drawSide(cur) {
@@ -263,15 +235,6 @@ function drawSide(cur) {
       if (t.age) b.append(el('span', 'age', t.age));
       b.addEventListener('click', () => select(t.id));
       section.append(b);
-      t.subagents.forEach((s, i) => {
-        const sub = el('div', 'sub');
-        sub.dataset.state = s.state;
-        const glyph = { running: '●', done: '✓', unfinished: '○' }[s.state] || '○';
-        const tree = el('span', 'tree', i === t.subagents.length - 1 ? '└─' : '├─');
-        tree.setAttribute('aria-hidden', 'true');
-        sub.append(tree, el('span', 'glyph', glyph), el('span', 'label-text', s.label));
-        section.append(sub);
-      });
     }
     nav.append(section);
   }
@@ -309,24 +272,6 @@ function drawHead(cur) {
   head.append(left, right);
 }
 
-/** A dialog as an agent drew it, for a card: without its boxes, a box in a box too, and its
-    rules, and without the margin its rows share. */
-function dialog(text) {
-  const rows = text
-    .split('\n')
-    .map((l) => l.replace(/^(?:\s*[│┃])+\s?/, '').replace(/\s?(?:[│┃]\s*)+$/, '').replace(/\s+$/, ''))
-    .filter((l) => !/^[\s─━═╌┄╭╮╰╯┌┐└┘-]*$/.test(l));
-  const margin = Math.min(...rows.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length));
-  return rows.map((l) => l.slice(Number.isFinite(margin) ? margin : 0)).join('\n');
-}
-
-/** The waiting thread's own screen, with the keys: it is answered there. */
-function openScreen(id) {
-  select(id);
-  showTab('screen');
-  if (screen.term) screen.term.focus();
-}
-
 function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
@@ -341,21 +286,16 @@ function drawWaiting() {
     const found = all.find(({ t }) => t.id === id);
     if (!found) continue;
     const { t, p } = found;
-    const card = el('section', 'card');
-    card.setAttribute('aria-label', `${t.title} is waiting`);
-    const top = el('div', 'card-top');
-    top.append(mark(t.agent, t.status, 13), el('span', '', `${t.title} · ${p.name}`));
+    // Its agent asks in its own screen, which stays in the terminal: this says where to go.
+    const line = el('button', 'wait-line');
+    line.type = 'button';
+    line.setAttribute('aria-label', `${t.title} is waiting in its own screen`);
+    const top = el('span', 'wait-top');
+    top.append(mark(t.agent, t.status, 13), el('span', 'title', `${t.title} · ${p.name}`));
     if (t.age) top.append(el('span', 'age', t.age));
-    const actions = el('div', 'actions');
-    const show = el('button', 'secondary', 'Open its screen');
-    show.type = 'button';
-    show.addEventListener('click', () => openScreen(t.id));
-    actions.append(show);
-    card.append(top);
-    if (t.asking) card.append(el('pre', 'asking', dialog(t.asking)));
-    else card.append(el('p', '', 'It asks you something on its screen.'));
-    card.append(actions);
-    list.append(card);
+    line.append(top, el('span', 'wait-where', 'Asks in its own screen: answer in the terminal.'));
+    line.addEventListener('click', () => select(t.id));
+    list.append(line);
   }
 }
 
@@ -375,17 +315,6 @@ function drawChrome(cur) {
   input.disabled = !ready;
   input.placeholder = cur ? `Prompt to ${cur.t.title} (${cur.t.agent}). Queued while it works.` : 'Pick a thread';
   $('send').disabled = !ready;
-  composer();
-}
-
-// On the Screen tab the agent's own input takes the keys: the page's prompt shows only where
-// there is none, the Conversation tab, and at phone width, where a terminal is hard to type in.
-const NARROW = window.matchMedia('(max-width: 899px)');
-
-function composer() {
-  const form = state.tab === 'conv' || NARROW.matches;
-  $('prompt-form').hidden = !form;
-  $('composer').hidden = !form && !$('notice').textContent;
 }
 
 let noticeTimer = null;
@@ -395,192 +324,8 @@ function notice(text, error = false) {
   const n = $('notice');
   n.textContent = text;
   n.classList.toggle('error', error);
-  composer();
   clearTimeout(noticeTimer);
   if (text) noticeTimer = setTimeout(() => notice(''), error ? 15000 : 8000);
-}
-
-// ---- the agent's screen ------------------------------------------------------------------------
-
-const screen = {
-  term: null,
-  fit: null,
-  /** The thread attached, whose screen this is. */
-  thread: null,
-  /** Its replay is drawn: what comes next is drawn as it comes. */
-  ready: false,
-  /** What came while the replay was being drawn. */
-  queue: [],
-  /** The size last asked for. */
-  asked: null,
-  timer: null,
-};
-
-function fromB64(s) {
-  const bin = atob(s);
-  const out = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
-  return out;
-}
-
-function toB64(bytes) {
-  let bin = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-
-const paint = (bytes) => new Promise((resolve) => screen.term.write(bytes, resolve));
-
-// What the daemon kept of a terminal marks each size it was given: `ESC _ desl;size;R;C ESC \`.
-// Each part is drawn at its size, as it was while it happened (docs/protocol.md, `attach`).
-const MARK = new TextEncoder().encode('\x1b_desl;size;');
-
-function marks(b) {
-  const out = [];
-  for (let i = 0; i + MARK.length <= b.length; i++) {
-    let same = true;
-    for (let k = 0; k < MARK.length && same; k++) same = b[i + k] === MARK[k];
-    if (!same) continue;
-    let j = i + MARK.length;
-    let text = '';
-    while (j < b.length && b[j] !== 0x1b && text.length < 12) text += String.fromCharCode(b[j++]);
-    if (b[j] !== 0x1b || b[j + 1] !== 0x5c) continue;
-    const [rows, cols] = text.split(';').map(Number);
-    if (rows > 0 && cols > 0) out.push({ at: i, end: j + 2, rows, cols });
-    i = j + 1;
-  }
-  return out;
-}
-
-async function play(bytes) {
-  let from = 0;
-  for (const m of marks(bytes)) {
-    await paint(bytes.subarray(from, m.at));
-    screen.term.resize(m.cols, m.rows);
-    from = m.end;
-  }
-  await paint(bytes.subarray(from));
-}
-
-/** The size that fits the pane. */
-function proposed() {
-  const d = screen.fit.proposeDimensions();
-  return d && d.cols > 1 && d.rows > 1 ? { cols: d.cols, rows: d.rows } : { cols: 100, rows: 30 };
-}
-
-function screenNote(text, again) {
-  $('screen-note').hidden = !text;
-  $('screen-note-text').textContent = text || '';
-  $('screen-again').hidden = !again;
-}
-
-/** Shows thread `id`'s screen: the agent's interface starts if it is not running. */
-async function attach(id) {
-  if (screen.thread && screen.thread !== id) fire('leave', { thread_id: screen.thread });
-  screen.thread = id;
-  screen.ready = false;
-  screen.queue = [];
-  screenNote('');
-  const want = proposed();
-  screen.asked = want;
-  const reply = await request('attach', { thread_id: id, rows: want.rows, cols: want.cols });
-  if (screen.thread !== id) return;
-  if (reply.error || !reply.ok) {
-    screenNote(reply.error || 'desl could not show this thread.', true);
-    return;
-  }
-  const { replay, rows, cols } = reply.ok;
-  screen.term.reset();
-  screen.term.resize(cols || want.cols, rows || want.rows);
-  await play(fromB64(replay || ''));
-  if (screen.thread !== id) return;
-  // The size the terminal has now: a TUI's, when one shows the thread too.
-  screen.term.resize(cols || want.cols, rows || want.rows);
-  for (const bytes of screen.queue.splice(0)) await paint(bytes);
-  screen.ready = true;
-}
-
-function drawn(bytes) {
-  if (screen.ready) screen.term.write(bytes);
-  else screen.queue.push(bytes);
-}
-
-function sized(rows, cols) {
-  if (rows > 0 && cols > 0) screen.term.resize(cols, rows);
-}
-
-async function replaced(bytes) {
-  screen.ready = false;
-  screen.term.reset();
-  await play(bytes);
-  screen.ready = true;
-}
-
-function ended() {
-  screen.ready = false;
-  const cur = current();
-  const who = cur ? cur.t.agent : 'The agent';
-  screenNote(`${who} ended. Start it again on the same conversation, or pick another thread.`, true);
-}
-
-// xterm.js answers the questions an agent asks its terminal by itself. The daemon answers them
-// for a page (docs/protocol.md, `hello`), so these never reach the agent from here, and it hears
-// each answer once.
-const REPLIES = [
-  /^\x1b\[\??\d+;\d+R$/, // the cursor's place
-  /^\x1b\[[?>=][\d;]*c$/, // what kind of terminal
-  /^\x1b\[\d*n$/, // its state
-  /^\x1b\[\??[\d;]+\$y$/, // a mode's state
-  /^\x1b\][\d;]+[^\x07\x1b]*(\x07|\x1b\\)$/, // a colour
-  /^\x1bP[\s\S]*\x1b\\$/, // its name and settings
-  /^\x1b\[\?\d+u$/, // its keyboard flags
-  /^\x1b\[\d+;\d+;\d+t$/, // its size
-];
-
-function typed(bytes, text) {
-  if (!screen.ready || !screen.thread) return;
-  if (REPLIES.some((r) => r.test(text))) return;
-  fire('input', { thread_id: screen.thread, data: toB64(bytes) });
-}
-
-/** The pane changed size: ask for the size that fits it, a moment after it settles. */
-function refit() {
-  clearTimeout(screen.timer);
-  screen.timer = setTimeout(() => {
-    if (!screen.thread || !screen.ready) return;
-    const want = proposed();
-    if (screen.asked && want.cols === screen.asked.cols && want.rows === screen.asked.rows) return;
-    screen.asked = want;
-    fire('resize', { thread_id: screen.thread, rows: want.rows, cols: want.cols });
-  }, 120);
-}
-
-function setupScreen() {
-  const term = new Terminal({
-    fontFamily: '"JetBrainsMono Nerd Font", "JetBrainsMono NF", "Symbols Nerd Font Mono", "JetBrains Mono", ui-monospace, Menlo, monospace',
-    fontSize: 13,
-    scrollback: 5000,
-    cursorBlink: false,
-    theme: {
-      background: '#0b0c10',
-      foreground: '#d6d9e0',
-      cursor: '#d6d9e0',
-      selectionBackground: 'rgba(106, 166, 255, 0.35)',
-    },
-  });
-  const fit = new FitAddon();
-  term.loadAddon(fit);
-  term.open($('screen'));
-  term.onData((text) => typed(new TextEncoder().encode(text), text));
-  term.onBinary((text) => typed(Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff), text));
-  screen.term = term;
-  screen.fit = fit;
-  new ResizeObserver(refit).observe($('screen-pane'));
-  $('screen-again').addEventListener('click', () => {
-    const id = screen.thread;
-    screen.thread = null;
-    if (id) attach(id);
-  });
 }
 
 // ---- the conversation --------------------------------------------------------------------------
@@ -596,18 +341,6 @@ const conv = {
   found: [],
   at: -1,
 };
-
-function showTab(tab) {
-  state.tab = tab;
-  write('desl-web-tab', tab);
-  const screenOn = tab === 'screen';
-  $('tab-screen').setAttribute('aria-selected', String(screenOn));
-  $('tab-conv').setAttribute('aria-selected', String(!screenOn));
-  $('screen-pane').hidden = !screenOn;
-  $('conv-pane').hidden = screenOn;
-  if (screenOn) refit();
-  render();
-}
 
 function readConversation(id) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
@@ -637,7 +370,7 @@ function conversationArrived(msg) {
 function conversationChanged() {
   clearTimeout(conv.timer);
   conv.timer = setTimeout(() => {
-    if (state.tab === 'conv' && conv.thread) readConversation(conv.thread);
+    if (conv.thread) readConversation(conv.thread);
   }, 600);
 }
 
@@ -837,8 +570,6 @@ function findAgain(move) {
 }
 
 function setupConversation() {
-  $('tab-screen').addEventListener('click', () => showTab('screen'));
-  $('tab-conv').addEventListener('click', () => showTab('conv'));
   $('conv-tools').addEventListener('change', (e) => {
     $('conv').classList.toggle('no-tools', !e.target.checked);
     findAgain(false);
@@ -976,11 +707,8 @@ function main() {
     return;
   }
   resizable();
-  setupScreen();
   setupConversation();
   $('prompt-form').addEventListener('submit', sendPrompt);
-  NARROW.addEventListener('change', composer);
-  showTab(read('desl-web-tab') === 'conv' ? 'conv' : 'screen');
   connect(key);
 }
 

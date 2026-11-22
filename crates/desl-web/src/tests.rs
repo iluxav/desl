@@ -305,3 +305,11 @@ async fn a_rebinding_host_name_gets_nothing() {
     assert!(evil.starts_with("HTTP/1.1 403"), "{evil}");
     assert!(!evil.contains("<title>"));
 }
+
+#[test]
+fn the_page_serves_no_terminal_and_allows_nothing_inline() {
+    assert!(FILES.iter().all(|(path, _, _)| !path.starts_with("/vendor/")), "xterm.js is gone");
+    let csp = csp(7428);
+    assert!(!csp.contains("unsafe-inline"), "{csp}");
+    assert!(csp.starts_with("default-src 'self';"), "{csp}");
+}

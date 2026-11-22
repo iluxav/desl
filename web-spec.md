@@ -14,6 +14,8 @@ It is a second client of the daemon, beside the TUI, and replaces nothing.
 
 **Revised 2026-11-21**, after a review against the code and a mockup of the page: the user edits documents from version 1 (the author's call); an approval card opens the agent's own screen, because desl sees an agent's dialog but not what is behind it; a thread shown in the TUI keeps the TUI's size; the page gains a Conversation tab and a list of documents; and "Indicators" says what each client shows today.
 
+**Redirected 2026-11-21 (forms)**, the author's call: the page is not a copy of the TUI. It shows the projects, their agent threads and each thread's conversation, and an agent puts **forms** in front of the user there (`docs/design/2026-11-21-web-forms.md`, approved, with its plan beside it). The agent's screen, the Screen tab and the waiting cards were removed. Questions with `desl ask`, approvals in the waiting list, the live document and the task list on the page, as written below, are superseded by that design, and this file is rewritten from it when forms are built (its milestone 2).
+
 ## Changes made to SPEC.md
 
 | Section | Before | Now |
@@ -46,10 +48,9 @@ The page serves feel-bar moments 5 (waiting is impossible to miss), 6 (the agent
 3. **Questions:** `desl ask` for agents, and option cards on the page.
 4. **The live document:** a project's Markdown file with the agents' changes marked as they happen, edited by the user a paragraph at a time, and comments sent to threads.
 5. **The task list:** a project's open tasks, their status and priority changed from the page, and a task started in a thread.
-6. **Any thread's screen:** the agent's own interface, drawn by xterm.js, with keys, paste and resize.
 7. **Any thread's conversation:** every prompt, reply and tool call since the thread began, from desl's log, as `prefix [` shows it in the TUI, with search.
 
-On the Screen tab the agent's own input takes the keys, so the page adds no prompt of its own there (the author's call on 2026-11-21). Under the Conversation tab, and at phone width, where a terminal is hard to type in, a prompt to the selected thread sits below the columns: it goes through the `prompt` path, so it waits while the agent works and while its screen asks something. While the thread works, a Stop button in its header ends the turn.
+The middle column is the selected thread's conversation, with a prompt to that thread below it: it goes through the `prompt` path, so it waits while the agent works and while its screen asks something. While the thread works, a Stop button in its header ends the turn. The agent's own screen stays in the terminal (removed from the page on 2026-11-21).
 
 Shell and file-manager threads are left out of the page. The browser adds nothing to a terminal, and the TUI keeps them.
 
@@ -88,11 +89,11 @@ Shell and file-manager threads are left out of the page. The browser adds nothin
 
 | Area | What it holds |
 | --- | --- |
-| Left | Projects, their agent threads and subagents, as the sidebar shows them, and under each project its open tasks and its documents: the ones opened on the page before and any Markdown file an agent changed in the last day, at most five, newest first |
+| Left | Projects and their agent threads, one line each, without subagents, and under each project its open tasks and its documents: the ones opened on the page before and any Markdown file an agent changed in the last day, at most five, newest first |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode |
-| Middle, tabs | The open document (named after its file), the thread's whole conversation (Conversation) and its own screen (Screen) |
-| Right | The waiting list: every pending approval and open question, oldest first |
-| Bottom | The prompt to the selected thread, under the Conversation tab and at phone width; a sentence from desl, for a few seconds |
+| Middle | The thread's whole conversation, with a search and a box that hides tool calls |
+| Right | Waiting: each thread whose agent asks in its own screen, one line saying to answer it in the terminal; open forms join it with forms |
+| Bottom | The prompt to the selected thread; a sentence from desl, for a few seconds |
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI does. The page has a light and a dark version, following the browser's setting.
 
@@ -243,10 +244,7 @@ desl comment resolve c-12 --note "Added the cost limit to 6.3."
 
 ## The agent's screen on the page
 
-- **Attach:** `attach` with the browser terminal's rows and columns, and the answers xterm.js gives to terminal queries. Then come `pty` frames, and `input` and `resize` going the other way. A tab that closes or shows another thread sends `leave`.
-- **Keys:** with the screen focused, every key goes to the agent except the prefix, as in the TUI.
-- **Known limit:** the browser keeps some keys for itself (`ctrl+w`, `ctrl+t`, `ctrl+n`) and the page can't take them.
-- **One thread on two screens:** while a TUI shows a thread, the terminal keeps the TUI's size, and the page draws that screen at that size, with blank space around it or scrolled. The daemon tells the clients apart by the name each gives in `hello`; it ignores the page's `attach` size and `resize` for such a thread, and sends the page the terminal's size in `attached` and in a `pty_size` frame when it changes. Today the client that attached or resized last sets the size and nothing tells the other, so a TUI would draw a screen of another size wrongly, against moment 4 (open question 2).
+Removed on 2026-11-21 (`docs/design/2026-11-21-web-forms.md`): the agent's screen stays in the terminal. The page draws no terminal, and the daemon sizes a thread's terminal for the TUI alone.
 
 ## Architecture
 
@@ -257,12 +255,12 @@ browser ──WebSocket, JSON frames──▶ desl web (tokio, axum) ──Unix 
 ```
 
 - **A client, not part of the daemon.** `desl web` connects to the daemon's socket the way the TUI does, speaks the documented protocol, and holds no state that matters. Killing it loses nothing (moment 9), and a fault in web code cannot end the daemon that holds the agents.
-- **A thin bridge.** Every WebSocket text message is one protocol frame's JSON, both ways, so the page speaks the protocol in `docs/protocol.md` directly: `hello`, `subscribe`, `attach`, `input`, `resize`, `leave`, `prompt`, `answer`. The bridge adds the token check, the origin check, one daemon connection per browser tab, and what the protocol doesn't carry: the open document's text and its saves, undos and restores, and the task list, read and written with desl's own code.
-- **One binary.** The page's files are compiled into the binary (`include_bytes!`, or `rust-embed` for a folder), pre-compressed, and served from memory. Version 1 has no frontend build step: plain JavaScript modules, plus vendored copies of xterm.js (MIT) and a Markdown renderer with raw HTML turned off. `cargo build` stays the only build.
-- **tokio stays in its own crate.** A new crate, `crates/desl-web`, holds the async code, and the runtime starts only when `desl web` runs. One WebSocket carries terminal output out and keys in at the same time, which tokio handles directly.
-- **Upgrades.** When the daemon restarts (`desl daemon restart`), its socket closes. `desl web` connects to the new daemon, sends `hello` and `subscribe` again, re-attaches the threads each tab shows, and the tabs carry on. When the binary changes, `desl web` starts again from the new binary, as an open TUI does, keeping its port and its token, so the page reconnects by itself without a new URL. It looks at its binary every 2 seconds; once the file is another one and has stayed the same for one more look, it closes everything and runs the new binary in the same process (`exec`), handing it the key in `DESL_WEB_KEY`. On connecting, the bridge says which build of the page it serves (a hash of the page's files), and a page loaded from another build loads itself again.
+- **A thin bridge.** Every WebSocket text message is one protocol frame's JSON, both ways, so the page speaks the protocol in `docs/protocol.md` directly: `hello`, `subscribe`, `prompt`, `interrupt`. The bridge adds the token check, the origin check, one daemon connection per browser tab, and what the protocol doesn't carry: the open document's text and its saves, undos and restores, and the task list, read and written with desl's own code.
+- **One binary.** The page's files are compiled into the binary (`include_bytes!`, or `rust-embed` for a folder), pre-compressed, and served from memory. Version 1 has no frontend build step and no vendored code: plain JavaScript modules, with the page's own Markdown renderer, which makes elements and text nodes, never HTML. `cargo build` stays the only build.
+- **tokio stays in its own crate.** A new crate, `crates/desl-web`, holds the async code, and the runtime starts only when `desl web` runs.
+- **Upgrades.** When the daemon restarts (`desl daemon restart`), its socket closes. `desl web` connects to the new daemon, sends `hello` and `subscribe` again, and the tabs carry on. When the binary changes, `desl web` starts again from the new binary, as an open TUI does, keeping its port and its token, so the page reconnects by itself without a new URL. It looks at its binary every 2 seconds; once the file is another one and has stayed the same for one more look, it closes everything and runs the new binary in the same process (`exec`), handing it the key in `DESL_WEB_KEY`. On connecting, the bridge says which build of the page it serves (a hash of the page's files), and a page loaded from another build loads itself again.
 
-**Cost, measured in milestone 1:** the stripped release binary grew from 8.2 MB to 10.1 MB, and a clean release build from 42 s to 44 s, on the author's machine.
+**Cost, measured in milestone 1:** the stripped release binary grew from 8.2 MB to 10.1 MB, and a clean release build from 42 s to 44 s, on the author's machine. Without xterm.js (2026-11-21), the binary is 9.8 MB.
 
 **Opening the page.** One `desl web` serves each workspace. While it runs it notes its process and address in `<socket>.web`, beside the daemon's socket and readable by the user alone, and takes the note away when it stops. `prefix v` in the TUI (the author's call on 2026-11-21) opens the browser on it, and starts it in the background when none runs: in a session of its own, so it runs on after the TUI and its terminal close. Over SSH, or with no `xdg-open` (`open` on macOS), the address goes to the clipboard instead, and the key line says why. From a shell, `desl web --open` does the same in the foreground; `desl web` while one runs says where it is instead of starting another; `desl web --stop` ends it, wherever it was started.
 
@@ -280,8 +278,6 @@ Proposed, to join `SPEC.md`'s table with milestone 1, measured on the reference 
 
 | Metric | Budget |
 | --- | --- |
-| A key typed on the page to the agent's terminal | < 10 ms p99 |
-| The agent's output to the page's screen | < 20 ms p99 |
 | Page load to a usable thread list, 20 threads | < 500 ms |
 | An agent's edit to its mark in the open document | < 1.5 s |
 | A save to the file on disk | < 100 ms |
@@ -294,7 +290,7 @@ The page has the same powers as the TUI. It can type into agents and approve the
 1. **Localhost only.** `desl web` binds to 127.0.0.1. `--host` waits for phase 3 and its remote-access rules: a token, localhost unless `--host`, and a pairing URL and QR code as `t3 serve` prints them.
 2. **A token per start.** `desl web` makes a random token of at least 128 bits and prints `http://127.0.0.1:<port>/#t=<token>`. The token is in the part after `#`, which the browser never sends in a request or writes to a server log. The page sends it as its first WebSocket message, and the bridge closes any connection that hasn't sent a valid token within 5 seconds.
 3. **Origin and Host checks.** A WebSocket is accepted only when `Origin` is the page's own address and `Host` is `127.0.0.1:<port>` or `localhost:<port>`. Browsers let any website open a WebSocket to localhost, and these checks are what stop another site from driving the agents, including through DNS rebinding.
-4. **Agent text is never HTML.** Agent output reaches the page only through xterm.js, as text nodes, or through the Markdown renderer with raw HTML turned off. A Content-Security-Policy of `default-src 'self'` blocks inline scripts, foreign scripts and images from other servers. An agent, or a repository it reads, can write `<script>` or an image link that carries secrets in its address. If the page ran or loaded either, one could drive every agent and the other could leak secrets. Links in a document open in a new tab, with `noopener` and `noreferrer`. Milestone 2 checks that xterm.js draws under this policy; an exception it needs is written here, and never one for scripts. Checked: xterm.js 6 writes its sizes and colours into `<style>` elements, so the policy allows inline styles (`style-src 'self' 'unsafe-inline'`) and nothing else inline. No agent text is ever HTML, and every other source stays `'self'`, so no style can fetch from another server.
+4. **Agent text is never HTML.** Agent output reaches the page only as text nodes, or through the Markdown renderer with raw HTML turned off. A Content-Security-Policy of `default-src 'self'` blocks inline scripts, foreign scripts and images from other servers. An agent, or a repository it reads, can write `<script>` or an image link that carries secrets in its address. If the page ran or loaded either, one could drive every agent and the other could leak secrets. Links in a document open in a new tab, with `noopener` and `noreferrer`. Nothing inline is allowed, styles included: the exception xterm.js needed went with it on 2026-11-21. An exception is written here when one is needed, and never one for scripts.
 5. **Secrets.** The environment denylist and the key scan in `SPEC.md` apply unchanged. The bridge logs no frame contents.
 6. **Writes stay in the project's documents.** The bridge writes a file only through a save, an undo or a restore, and only a file that already exists, ends in `.md` or `.markdown`, and lies inside the project's root once links are resolved. It creates and deletes no file, and refuses a path with `..`.
 
@@ -304,8 +300,8 @@ The page has the same powers as the TUI. It can type into agents and approve the
 | --- | --- | --- |
 | 0 | SPEC change | Done 2026-11-21: the two non-goals, the stack paragraph, the vocabulary, the IR events and the open questions in `SPEC.md`; rule 3 and the layout in `AGENTS.md` |
 | 1 | Page, thread list and indicators | Done 2026-11-21. `desl web` prints a URL. The page shows every project and thread, with every indicator in "Indicators" changing within a second of the TUI. The TUI's header shows the reported model and `⚠ yolo`. The parity check passes. The binary is still one file, and its size and build time are recorded. Measured: 8.2 MB to 10.1 MB and 42 s to 44 s (see Architecture); the first view drew 18 ms after the page began to load, with four threads on localhost. The prompt box and Stop came with it |
-| 2 | Agent screen and conversation | Done 2026-11-21. Conversation: the TUI's history, shared through `desl_proto::conversation`, with search, folded tool calls and live updates; HTML in a reply stays text. Screen: xterm.js 6.0.0 and its fit addon, vendored (`crates/desl-web/page/vendor/README.md`); checked with Claude Code, Codex, Copilot and a task list, a TUI on the same thread, a daemon stop and a `desl daemon restart`. Claude Code, Codex, Copilot and a tasks thread are usable from the page. A thread shown in the TUI and on the page at once keeps the TUI's size and draws right in both. The Conversation tab shows a two-week thread from its first prompt and finds a word in it. A `desl daemon restart` loses nothing on the page |
-| 3 | Waiting list and approvals | Done 2026-11-21. The daemon keeps what a waiting thread's screen asks (`thread.asking` in `docs/protocol.md`), the page's card shows it without the dialog's boxes and rules, and Open its screen shows the thread's screen with the keys in it. Checked with a Claude Code Bash approval, a Codex network approval, and Copilot's folder trust and shell approval: each card showed its dialog, and answering on the page cleared the card and the TUI's marks |
+| 2 | Agent screen and conversation | Done 2026-11-21. Conversation: the TUI's history, shared through `desl_proto::conversation`, with search, folded tool calls and live updates; HTML in a reply stays text. Screen: xterm.js 6.0.0 and its fit addon, vendored (`crates/desl-web/page/vendor/README.md`); checked with Claude Code, Codex, Copilot and a task list, a TUI on the same thread, a daemon stop and a `desl daemon restart`. Claude Code, Codex, Copilot and a tasks thread are usable from the page. A thread shown in the TUI and on the page at once keeps the TUI's size and draws right in both. The Conversation tab shows a two-week thread from its first prompt and finds a word in it. A `desl daemon restart` loses nothing on the page. The Screen tab was removed on 2026-11-21 (see the top of this file) |
+| 3 | Waiting list and approvals | Built 2026-11-21, then removed the same day with the Screen tab, when the author redirected the page to forms (see the top of this file). Milestones 3 to 7 below are replaced by the forms design's |
 | 4 | Questions | `desl ask`, the two events, `desl answer` and the skill move exist. Each of the three agents asks in a test project and gets its answer as the next prompt. A typed prompt supersedes an open question |
 | 5 | Live document | An agent's edit to `SPEC.md` shows within a second, with its agent and thread. Undo works, and is refused when the passage has changed again. A block saved on the page lands in the file while an agent edits another section, and an agent's edit to the same block meanwhile brings up both versions. Claude Code, Codex and Copilot each read a document again after the user changed it, before editing it. A shell overwrite of the user's block shows with Restore. A comment reaches the thread, the agent resolves it, and the comment moves when its quote is gone |
 | 6 | Task list | A status change on the page shows in the tasks thread at once, and the reverse. "Start in…" gets a thread working on the task |

@@ -11,19 +11,18 @@ All notable changes to desl are recorded here. The format follows
   address on 127.0.0.1 with a key that is new each time, and the page lists every project and
   agent thread with the same marks and words as the terminal's sidebar: the agent logo as the
   status (breathing while it works, amber while it waits), the title, the age, the worktree
-  mark, the newest subagents, and each thread's header with its model, permission mode and
-  `⚠ yolo`. It shows who is waiting, sends a prompt to the thread you pick (queued while it
-  works) and stops its turn. It follows the browser's light or dark setting, works at phone
+  mark, and each thread's header with its model, permission mode and `⚠ yolo`. It shows who is
+  waiting, sends a prompt to the thread you pick (queued while it works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
-- On desl web's Screen tab the agent's own input is the only one: the page's prompt box shows
-  under the Conversation tab and at phone width, and Stop moved to the thread's header, there
-  while it works. desl's sentences show under the page for a few seconds.
-- desl web shows a thread's whole conversation beside its screen, the same one `prefix [`
-  shows in the terminal: every prompt with its time, the replies as Markdown, tool calls folded
+- desl web shows the selected thread's whole conversation, the same one `prefix [` shows in the
+  terminal: every prompt with its time, the replies as Markdown, tool calls folded
   to a line you can open, a rule at each new day. A search box finds a word (enter for the next,
   shift+enter for the one before), a box hides the tool calls, and it follows new turns as they
   land.
+  The prompt box sits under it, Stop is in the thread's header while it works, and desl's
+  sentences show there for a few seconds. The agent's own screen stays in the terminal: the
+  right column says which threads wait on you there.
 - `ctrl+space v` opens the workspace in your browser: it starts `desl web` in the background
   when none runs for this workspace, and it runs on after desl closes. Over SSH the address goes
   to the clipboard instead. `desl web --open` does the same from a shell, `desl web` says where

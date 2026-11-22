@@ -73,7 +73,7 @@ Every tool in this space grew sideways. Staying narrow is a feature, and these a
 
 - **No new coding agent, model router or API proxy.** desl drives the agents the user already has, under the user's own logins. It never calls a model API itself.
 - **No plugin runtime, workflow engine or scheduler.** No marketplaces, no event-driven loops, no cron. Long-running automation belongs in the agents or in CI; desl's CLI and skill file let them drive it.
-- **No dashboard.** No metrics pages and no boards. The remote client in phase 3 is the same TUI over TCP. `desl web` is the one browser client (the author's call on 2026-11-21, specified in `web-spec.md`): the workspace as the TUI shows it, plus the waiting list, questions, and comments on and edits to a project's documents. It adds no feature the CLI lacks. The one list desl keeps besides threads is a project's task list (the author's call on 2026-11-20): a flat list in a Markdown file of the project, which the user and the agents both change, shown in a thread of its own (see "Tasks"). It stays flat: no columns, sprints, assignees, estimates or accounts.
+- **No dashboard.** No metrics pages and no boards. The remote client in phase 3 is the same TUI over TCP. `desl web` is the one browser client (the author's call on 2026-11-21, specified in `web-spec.md`): the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user (`docs/design/2026-11-21-web-forms.md`); the agent's screen stays in the terminal. It adds no feature the CLI lacks. The one list desl keeps besides threads is a project's task list (the author's call on 2026-11-20): a flat list in a Markdown file of the project, which the user and the agents both change, shown in a thread of its own (see "Tasks"). It stays flat: no columns, sprints, assignees, estimates or accounts.
 - **No IDE features.** No file browser, editor or language server of desl's own. `o` opens the file in `$EDITOR`, and a files thread runs the file manager the user installed (yazi) in a terminal, as a shell thread runs their shell: desl draws nothing of it. That is the integration. `desl web` shows a project's Markdown files with what the agents changed in them, takes comments on them, and edits them a paragraph at a time (the author's call on 2026-11-21); it opens no other kind of file.
 - **No team or cloud features in the core.** No accounts, no hosted sync, no shared state. `export` and `import` move a thread between the user's own machines.
 - **No agent beyond the three in the core.** Claude Code, Codex and GitHub Copilot CLI are the whole surface until phase 3 (Copilot joined on 2026-11-15, at the author's call, as the third agent he runs daily); more agents come through the third-party adapter protocol, not the core.
@@ -469,8 +469,6 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 | Binary size, stripped | < 25 MB |
 | Store growth | < 1 KB per event excluding tool output blobs |
 | `desl web`: page load to a usable thread list, 20 threads | < 500 ms |
-| `desl web`: a key typed on the page to the agent's terminal | < 10 ms p99 |
-| `desl web`: the agent's output to the page's screen | < 20 ms p99 |
 | `desl web`: an agent's edit to its mark in the open document | < 1.5 s |
 | `desl web`: a save to the file on disk | < 100 ms |
 | `desl web`: memory with three tabs open | < 50 MB |

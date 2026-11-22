@@ -20,11 +20,13 @@
 
 <div class="cols">
   <nav id="projects" class="side" aria-label="Projects"></nav>
+  <div id="grip-side" class="grip" role="separator" aria-orientation="vertical" aria-controls="projects" aria-label="Width of the projects column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
   <main class="main">
     <div id="head" class="head"></div>
     <div id="body" class="body"></div>
   </main>
-  <aside class="wait" aria-labelledby="wait-title">
+  <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the waiting list" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
+  <aside id="wait" class="wait" aria-labelledby="wait-title">
     <h2 id="wait-title" class="label">Waiting</h2>
     <div id="waitlist" class="waitlist"></div>
   </aside>

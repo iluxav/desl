@@ -119,8 +119,39 @@ code, .mono { font-family: var(--mono); }
 @media (min-width: 900px) {
   body { height: 100vh; overflow: hidden; }
   .side, .main, .wait { overflow: auto; max-height: 100%; }
-  .cols { overflow: hidden; }
+  .cols { overflow: hidden; flex-wrap: nowrap; }
+  /* Side by side, the two outer columns keep the widths the user dragged them to. */
+  .side { flex: 0 0 var(--side-w, 280px); max-width: 45vw; border-right: 0; }
+  .wait { flex: 0 0 var(--wait-w, 300px); max-width: 45vw; }
+  .main { flex: 1 1 0; border-right: 0; }
 }
+
+/* The line between two columns, dragged to resize them. Wider than it looks, so it is easy to
+   take; the accent while it is taken or has the keys. */
+.grip { display: none; }
+@media (min-width: 900px) {
+  .grip {
+    display: block;
+    position: relative;
+    flex: 0 0 7px;
+    margin: 0 -3px;
+    z-index: 1;
+    cursor: col-resize;
+    touch-action: none;
+  }
+  .grip::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 3px;
+    width: 1px;
+    background: var(--line);
+  }
+  .grip:hover::before, .grip:focus-visible::before, .grip.held::before { left: 2px; width: 3px; background: var(--accent); }
+  .grip:focus-visible { outline: none; }
+}
+body.resizing { cursor: col-resize; user-select: none; }
 
 .label {
   margin: 0;

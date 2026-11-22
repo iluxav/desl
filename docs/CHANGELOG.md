@@ -16,6 +16,8 @@ All notable changes to desl are recorded here. The format follows
   works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
+- The page's left and right columns resize: drag the line beside one, double-click it for the
+  usual width, or give it the focus and use the arrows. The browser keeps the widths.
 - A project's task list shows in the sidebar by itself once `.tasks.md` exists, also when an
   agent made it with `desl task add` (at once) or by other means (within five seconds). `q`
   closes it on screen; its row stays while the file does.

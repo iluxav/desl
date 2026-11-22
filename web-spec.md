@@ -96,6 +96,8 @@ Shell and file-manager threads are left out of the page. The browser adds nothin
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI does. The page has a light and a dark version, following the browser's setting.
 
+**Resizing.** The left and right columns take the width the user drags the line beside them to (the author's call on 2026-11-21), as a code editor's side panels do. A column is never narrower than its least width (180 px on the left, 220 on the right) nor wider than 45% of the window, and the middle keeps at least 360 px. A double click on the line gives the usual width back (280 and 300 px). From the keyboard the line takes the focus with `tab`, and the arrows move it by 16 px, 64 with `shift`. The widths are kept in the browser, for that browser only. At phone width the columns stack and there is nothing to drag.
+
 ## Indicators
 
 Every indicator the TUI shows appears on the page, with the same words and the same colour roles. The page adds none of its own beyond the permission mode in the header, the waiting list, the document marks, and each project's open tasks and documents in the left column.

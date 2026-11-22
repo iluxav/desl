@@ -360,6 +360,85 @@ async function stop() {
   notice(reply.error ? reply.error : `Asked ${cur.t.title} to stop its turn.`, Boolean(reply.error));
 }
 
+// ---- resizing the outer columns ---------------------------------------------------------------
+
+const WIDTHS = 'desl-web-widths';
+// Each grip: the column it sizes, the custom property it sets, its usual width, its narrowest.
+const COLUMNS = {
+  'grip-side': { column: 'projects', prop: '--side-w', usual: 280, least: 180, fromLeft: true },
+  'grip-wait': { column: 'wait', prop: '--wait-w', usual: 300, least: 220, fromLeft: false },
+};
+// What the middle column keeps whatever the outer ones take.
+const MIDDLE_LEAST = 360;
+
+function savedWidths() {
+  try { return JSON.parse(localStorage.getItem(WIDTHS)) || {}; } catch { return {}; }
+}
+
+function saveWidth(id, px) {
+  const all = savedWidths();
+  if (px === null) delete all[id]; else all[id] = px;
+  try { localStorage.setItem(WIDTHS, JSON.stringify(all)); } catch { /* the widths last until the tab closes */ }
+}
+
+/** Gives a column `px` wide, as far as the window allows; null goes back to the usual width. */
+function setWidth(id, px) {
+  const c = COLUMNS[id];
+  const grip = $(id);
+  const other = Object.keys(COLUMNS).find((k) => k !== id);
+  const otherWidth = $(COLUMNS[other].column).getBoundingClientRect().width;
+  const most = Math.max(c.least, Math.min(window.innerWidth * 0.45, window.innerWidth - otherWidth - MIDDLE_LEAST));
+  const width = px === null ? c.usual : Math.round(Math.min(Math.max(px, c.least), most));
+  if (px === null) document.documentElement.style.removeProperty(c.prop);
+  else document.documentElement.style.setProperty(c.prop, `${width}px`);
+  grip.setAttribute('aria-valuenow', String(width));
+  grip.setAttribute('aria-valuemin', String(c.least));
+  grip.setAttribute('aria-valuemax', String(Math.round(most)));
+  return width;
+}
+
+function resizable() {
+  const saved = savedWidths();
+  for (const [id, c] of Object.entries(COLUMNS)) {
+    const grip = $(id);
+    setWidth(id, typeof saved[id] === 'number' ? saved[id] : null);
+    grip.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      // The arrows go on from where the mouse left it.
+      grip.focus({ preventScroll: true });
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add('held');
+      document.body.classList.add('resizing');
+      const edge = $(c.column).getBoundingClientRect();
+      const move = (ev) => setWidth(id, c.fromLeft ? ev.clientX - edge.left : edge.right - ev.clientX);
+      const up = (ev) => {
+        grip.releasePointerCapture(ev.pointerId);
+        grip.classList.remove('held');
+        document.body.classList.remove('resizing');
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        grip.removeEventListener('pointercancel', up);
+        saveWidth(id, Number(grip.getAttribute('aria-valuenow')));
+      };
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+      grip.addEventListener('pointercancel', up);
+    });
+    grip.addEventListener('dblclick', () => {
+      setWidth(id, null);
+      saveWidth(id, null);
+    });
+    // The keys, for whoever does not drag: the arrows by 16 pixels, with shift by 64.
+    grip.addEventListener('keydown', (e) => {
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+      e.preventDefault();
+      const step = (e.shiftKey ? 64 : 16) * (e.key === 'ArrowRight' ? 1 : -1) * (c.fromLeft ? 1 : -1);
+      saveWidth(id, setWidth(id, $(c.column).getBoundingClientRect().width + step));
+    });
+  }
+}
+
 function main() {
   // A new address pasted into this tab (desl web started again, with a new key) changes only
   // the part after #, which loads nothing by itself.
@@ -371,6 +450,7 @@ function main() {
     $('nokey').hidden = false;
     return;
   }
+  resizable();
   $('prompt-form').addEventListener('submit', sendPrompt);
   $('stop').addEventListener('click', stop);
   render();

@@ -31,7 +31,9 @@ const DRAW = {
   choice(w, into, ctx, value) {
     heading(w, into);
     const name = uid();
-    const picked = new Set(Array.isArray(value) ? value : value === undefined || value === null ? [] : [value]);
+    // A draft or an answer wins; else where the agent said it starts.
+    const given = value === undefined || value === null ? w.value : value;
+    const picked = new Set(Array.isArray(given) ? given : given === undefined || given === null ? [] : [given]);
     const labels = (w.options || []).map((o) => o.label);
     for (const o of w.options || []) {
       const row = el('label', 'fw-option');

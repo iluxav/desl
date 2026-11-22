@@ -38,6 +38,9 @@ pub enum Widget {
         multi: bool,
         #[serde(default)]
         other: bool,
+        /// Where it starts: a label, or a list of them with `multi`.
+        #[serde(default)]
+        value: Option<Value>,
         #[serde(default)]
         optional: bool,
     },
@@ -209,12 +212,25 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
     let id = w.id();
     let twice = |labels: Vec<&str>| labels.iter().enumerate().find(|(i, l)| labels[..*i].contains(l)).map(|(_, l)| l.to_string());
     match w {
-        Widget::Choice { options, .. } => {
+        Widget::Choice { options, multi, value, .. } => {
             if !(2..=12).contains(&options.len()) {
                 return Err(format!("Widget {n} (\"{id}\") has {} options; a choice has 2 to 12.", options.len()));
             }
             if let Some(l) = twice(options.iter().map(|o| o.label.as_str()).collect()) {
                 return Err(format!("Widget {n} (\"{id}\") has the option \"{l}\" twice. The answer names an option by its label."));
+            }
+            let starts: Vec<&Value> = match (value, multi) {
+                (None, _) => Vec::new(),
+                (Some(Value::Array(list)), true) => list.iter().collect(),
+                (Some(_), true) => return Err(format!("Widget {n} (\"{id}\") is multi, so its value is a list of option labels.")),
+                (Some(v), false) => vec![v],
+            };
+            for v in starts {
+                match v.as_str() {
+                    Some(s) if options.iter().any(|o| o.label == s) => {}
+                    Some(s) => return Err(format!("Widget {n} (\"{id}\") starts at \"{s}\", which is not one of its options.")),
+                    None => return Err(format!("Widget {n} (\"{id}\") starts at {v}; a value is an option's label.")),
+                }
             }
         }
         Widget::Select { options, value, .. } => {
@@ -395,13 +411,14 @@ prompt says so.
 
 Widgets by kind, with the answer for each:
 - markdown {text}: text to read. No answer.
-- choice {label?, options[{label, detail?}], multi?, other?}: the label, or a list with multi; other allows typed text.
+- choice {label?, options[{label, detail?}], multi?, other?, value?}: the label, or a list with multi; other allows typed text.
 - checklist {label?, items[{id, label, detail?, checked?}], reorder?}: [{id, checked, note?}] in the user's order.
 - text {label, lines?, placeholder?, value?}: the text.
 - number {label, min, max, step?, unit?, value?}: the number.
 - toggle {label, value?}: true or false.
 - select {label, options[{label, detail?}], value?}: the label.
-Every widget has an id, unique in the form, and may be optional. At most 30 widgets.";
+Every widget has an id, unique in the form, and may be optional. At most 30 widgets. Set value to what is true now \
+or what you recommend (choice takes a label, or a list with multi), so the user changes only what differs.";
 
 /// `close_form`'s description.
 pub const CLOSE_DESCRIPTION: &str =
@@ -437,7 +454,7 @@ pub fn input_schema() -> Value {
                     "max": { "type": "number" },
                     "step": { "type": "number" },
                     "unit": { "type": "string" },
-                    "value": { "description": "Where it starts: text, number, toggle or select." }
+                    "value": { "description": "Where it starts: what is true now or what you recommend." }
                 },
                 "required": ["kind", "id"]
             } }
@@ -478,6 +495,20 @@ mod tests {
         let range = json!({"title": "t", "widgets": [{"kind": "number", "id": "n", "label": "N", "min": 5, "max": 1}]});
         assert_eq!(check(&range).unwrap_err(), "Widget 1 (\"n\") has min 5 above max 1. Swap them.");
         assert!(check(&json!({"title": "", "widgets": []})).unwrap_err().contains("title"));
+    }
+
+    #[test]
+    fn a_choice_starts_on_its_value() {
+        let one = |value: Value| json!({"title": "t", "widgets": [{"kind": "choice", "id": "a", "options": [{"label": "X"}, {"label": "Y"}], "value": value}]});
+        assert!(check(&one(json!("Y"))).is_ok());
+        let err = check(&one(json!("Z"))).unwrap_err();
+        assert!(err.contains("starts at \"Z\", which is not one of its options"), "{err}");
+        let many = |value: Value| json!({"title": "t", "widgets": [{"kind": "choice", "id": "a", "multi": true, "options": [{"label": "X"}, {"label": "Y"}], "value": value}]});
+        assert!(check(&many(json!(["X", "Y"]))).is_ok());
+        let err = check(&many(json!("X"))).unwrap_err();
+        assert!(err.contains("a list"), "{err}");
+        // The author's note on the first live form: what is true now comes pre-set.
+        assert!(TOOL_DESCRIPTION.contains("Set value to what is true now"), "{TOOL_DESCRIPTION}");
     }
 
     #[test]

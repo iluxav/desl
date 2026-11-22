@@ -20,6 +20,8 @@ pub enum By {
     Form,
     /// A prompt desl typed itself, such as asking for a rebase.
     Desl,
+    /// The agent, with desl's `highlight` tool: a question it settled while working.
+    Agent,
 }
 
 #[derive(Serialize, Debug, Clone, PartialEq, Eq)]
@@ -54,6 +56,9 @@ pub fn highlights(events: &[Event]) -> Vec<Entry> {
                     out[t].answer = said;
                 }
             }
+            EventKind::Highlight { question, answer } => {
+                out.push(Entry { by: By::Agent, at: e.timestamp, event: e.index, question: question.clone(), answer: answer.clone() });
+            }
             _ => {}
         }
     }
@@ -76,6 +81,23 @@ fn asked(prompt: &str) -> (By, String) {
         Some(rest) => (By::Desl, two_sentences(rest)),
         None => (By::You, two_sentences(text)),
     }
+}
+
+/// Why an agent's highlight is refused, as a sentence for the agent; `None` when it is kept.
+pub fn refused(question: &str, answer: &str) -> Option<String> {
+    for (what, text) in [("question", question), ("answer", answer)] {
+        let text = text.trim();
+        if text.is_empty() {
+            return Some(format!("The {what} is empty. Give a question you settled and its answer."));
+        }
+        if text.chars().count() > MAX_CHARS {
+            return Some(format!("The {what} is longer than {MAX_CHARS} characters. Say it in at most two short sentences."));
+        }
+        if units(text).iter().map(|u| sentences(u).len()).sum::<usize>() > 2 {
+            return Some(format!("The {what} has more than two sentences. Keep each part to two sentences at most."));
+        }
+    }
+    None
 }
 
 /// The first two sentences of `text`, its Markdown taken out: code, tables and headings left
@@ -240,6 +262,26 @@ mod tests {
         assert_eq!((h[0].event, h[0].at), (1, 1000));
         assert_eq!(h[0].question, "ok when i start the desl it shows the right pane but no tasks, only when i prefix t it refreshes");
         assert_eq!(h[0].answer, "Fixed and pushed (ddfd72d, 335 tests pass). Run make install in ~/Projects/desl.");
+    }
+
+    #[test]
+    fn a_highlight_longer_than_two_sentences_or_300_characters_is_refused() {
+        assert_eq!(refused("Why is the pane empty?", "Only prefix t asked. Now it asks on its own."), None);
+        assert!(refused("Why?", "One. Two. Three.").is_some_and(|s| s.contains("two sentences")));
+        assert!(refused(&"x".repeat(301), "Yes.").is_some_and(|s| s.contains("300 characters")));
+        assert!(refused("Why?", "  ").is_some_and(|s| s.contains("answer is empty")));
+    }
+
+    #[test]
+    fn an_agents_own_highlight_is_an_entry_of_its_own_after_its_turns() {
+        let events = [
+            user(1, "Why is the pane empty?"),
+            ev(2, EventKind::Highlight { question: "Who asks for the list?".into(), answer: "Only prefix t.".into() }),
+            reply(3, "Fixed."),
+        ];
+        let h = highlights(&events);
+        let got: Vec<(By, &str, &str, u64)> = h.iter().map(|e| (e.by, e.question.as_str(), e.answer.as_str(), e.event)).collect();
+        assert_eq!(got, [(By::You, "Why is the pane empty?", "Fixed.", 1), (By::Agent, "Who asks for the list?", "Only prefix t.", 2)]);
     }
 
     #[test]

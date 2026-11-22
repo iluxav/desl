@@ -451,7 +451,7 @@ function conversationArrived(msg) {
   drawHighlights(highAtEnd);
 }
 
-const ASKED_BY = { you: 'You', task: 'Task', form: 'Form', desl: 'desl' };
+const ASKED_BY = { you: 'You', task: 'Task', form: 'Form', desl: 'desl', agent: 'Agent' };
 
 /**
  * The thread's story: each entry who asked and when, the question, and the answer in at most two

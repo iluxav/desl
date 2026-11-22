@@ -1418,6 +1418,27 @@ fn a_form_too_big_or_for_no_agent_is_refused() {
 }
 
 #[test]
+fn an_agents_highlight_goes_in_the_log_and_a_long_one_is_refused() {
+    let mut r = rig("highlight");
+    let t = r.t.clone();
+    let ok = r.cmd(Command::Highlight {
+        thread_id: t.clone(),
+        question: "Why does the pane show no tasks on start?".into(),
+        answer: "Only prefix t asked the daemon for the list. Now the pane asks as soon as it shows.".into(),
+    });
+    assert!(matches!(ok, Ok(Reply::Done)), "{ok:?}");
+    assert_eq!(r.kinds(&t), ["highlight"]);
+    let three = "One. Two. Three.";
+    let err = r.cmd(Command::Highlight { thread_id: t.clone(), question: "Why?".into(), answer: three.into() }).unwrap_err();
+    assert!(err.contains("two sentences"), "{err}");
+    let err = r.cmd(Command::Highlight { thread_id: t.clone(), question: "x".repeat(301), answer: "Yes.".into() }).unwrap_err();
+    assert!(err.contains("300 characters"), "{err}");
+    let err = r.cmd(Command::Highlight { thread_id: t.clone(), question: " ".into(), answer: "Yes.".into() }).unwrap_err();
+    assert!(err.contains("question"), "{err}");
+    assert_eq!(r.kinds(&t), ["highlight"], "a refused one leaves nothing");
+}
+
+#[test]
 fn an_answer_reaches_the_agent_while_another_form_is_open() {
     let mut r = rig("form-two");
     let t = r.t.clone();

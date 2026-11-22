@@ -63,6 +63,7 @@ pub fn serve(
                 "protocolVersion": params.get("protocolVersion").and_then(Value::as_str).unwrap_or("2025-06-18"),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "desl", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS,
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": [
@@ -71,6 +72,7 @@ pub fn serve(
                 { "name": "list_tasks", "description": LIST_TASKS, "inputSchema": list_schema() },
                 { "name": "add_task", "description": ADD_TASK, "inputSchema": add_schema() },
                 { "name": "update_task", "description": UPDATE_TASK, "inputSchema": update_schema() },
+                { "name": "highlight", "description": HIGHLIGHT, "inputSchema": highlight_schema() },
             ] })),
             "tools/call" => Ok(tool(&params, call, thread)),
             other => Err(json!({ "code": -32601, "message": format!("desl mcp has no method {other}.") })),
@@ -99,7 +101,8 @@ fn tool(params: &Value, call: &mut dyn FnMut(Command) -> Result<Reply, String>, 
         "list_tasks" => list_tasks(&args, call, thread),
         "add_task" => add_task(&args, call, thread),
         "update_task" => update_task(&args, call, thread),
-        other => Err(format!("desl has no tool {other}: it has show_form, close_form, list_tasks, add_task and update_task.")),
+        "highlight" => highlight(&args, call, thread),
+        other => Err(format!("desl has no tool {other}: it has show_form, close_form, list_tasks, add_task, update_task and highlight.")),
     };
     let (text, error) = match outcome {
         Ok(text) => (text, false),
@@ -114,6 +117,38 @@ const ADD_TASK: &str = "Add a task to this project's list. Record work you find 
 unasked, and ideas: when the user says not now, later or park it, add it with status parked.";
 const UPDATE_TASK: &str = "Change a task as its work moves: in-progress; ready when it is done on a branch of its own; \
 done; issue with a note saying why when stuck; parked. Or change its title or priority, or add a note.";
+
+/// What an agent reads before it loads desl's tools: some agents load an MCP server's tools only
+/// when a name calls for them.
+const INSTRUCTIONS: &str = "desl runs this thread. While you work, call highlight when you settle a question: \
+you find a cause, choose between approaches, or learn something that changes the plan. Give the question and its \
+answer, each at most two sentences in plain words; the user follows your work by them on desl web. desl's other \
+tools put a form in front of the user (show_form) and keep the project's task list (list_tasks, add_task, \
+update_task).";
+
+const HIGHLIGHT: &str = "Add a step to this thread's Highlights, the short story of your work the user follows on \
+desl web: a question you settled while working and its answer, each at most two sentences, in plain words someone \
+new to the code follows. Call it when you find a cause, choose between approaches, or learn something that changes \
+the plan; not for routine steps. A few a turn at most.";
+
+fn highlight_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "question": { "type": "string", "description": "The question you asked yourself, in at most two sentences." },
+            "answer": { "type": "string", "description": "What you found or decided, in at most two sentences." }
+        },
+        "required": ["question", "answer"]
+    })
+}
+
+fn highlight(args: &Value, call: &mut dyn FnMut(Command) -> Result<Reply, String>, thread: &str) -> Result<String, String> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::to_string);
+    let (Some(question), Some(answer)) = (text("question"), text("answer")) else {
+        return Err("highlight needs a question and its answer, each at most two sentences.".to_string());
+    };
+    call(Command::Highlight { thread_id: thread.to_string(), question, answer }).map(|_| "Added to the thread's Highlights.".to_string())
+}
 
 const STATUSES: [&str; 7] = ["todo", "in-progress", "issue", "ready", "done", "ignored", "parked"];
 const KINDS: [&str; 7] = ["feature", "bug", "task", "refactor", "test", "docs", "idea"];
@@ -269,14 +304,37 @@ mod tests {
         assert_eq!(replies[0]["result"]["serverInfo"]["name"], "desl");
         assert_eq!(replies[0]["result"]["protocolVersion"], "2025-06-18", "the client's version, echoed");
         assert!(replies[0]["result"]["capabilities"]["tools"].is_object());
+        let told = replies[0]["result"]["instructions"].as_str().unwrap_or("");
+        assert!(told.contains("highlight") && told.contains("two sentences"), "agents load tools late: {told}");
         let names: Vec<&str> = replies[1]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["show_form", "close_form", "list_tasks", "add_task", "update_task"]);
+        assert_eq!(names, ["show_form", "close_form", "list_tasks", "add_task", "update_task", "highlight"]);
         assert_eq!(replies[1]["result"]["tools"][0]["inputSchema"], form::input_schema());
         assert_eq!(replies[2]["result"]["content"][0]["text"], form::shown("f-4b1e"));
         assert_eq!(replies[2]["result"]["isError"], false);
         assert!(matches!(&asked[0], Command::FormNew { thread_id, form } if thread_id == "t-7f3a" && form["title"] == "T"));
         assert_eq!(replies[3]["error"]["code"], -32601);
         assert_eq!(replies[4]["result"], json!({}));
+    }
+
+    #[test]
+    fn highlight_records_a_question_and_its_answer_for_this_thread() {
+        let mut asked = Vec::new();
+        let replies = run(
+            &[
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "highlight", "arguments": {"question": "Why?", "answer": "Because."}}}),
+                json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": "highlight", "arguments": {"question": "Why?"}}}),
+            ],
+            |c| {
+                asked.push(c);
+                Ok(Reply::Done)
+            },
+        );
+        assert!(
+            matches!(&asked[0], Command::Highlight { thread_id, question, answer } if thread_id == "t-7f3a" && question == "Why?" && answer == "Because.")
+        );
+        assert_eq!(replies[0]["result"]["isError"], false);
+        assert_eq!(replies[1]["result"]["isError"], true, "no answer: {}", replies[1]);
+        assert_eq!(asked.len(), 1);
     }
 
     #[test]
@@ -303,7 +361,7 @@ mod tests {
             },
         );
         let names: Vec<&str> = replies[0]["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["show_form", "close_form", "list_tasks", "add_task", "update_task"]);
+        assert_eq!(names, ["show_form", "close_form", "list_tasks", "add_task", "update_task", "highlight"]);
         assert!(
             matches!(&asked[0], Command::TaskAdd { project_id, kind: Kind::Idea, status: Status::Parked, priority: Priority::Low, .. } if project_id == "t-7f3a")
         );

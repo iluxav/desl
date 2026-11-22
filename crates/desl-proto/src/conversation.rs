@@ -155,6 +155,8 @@ impl Thread {
             }
             // desl's own form tools: the form's card stands for them, and their results find no line.
             EventKind::ToolCall { name, .. } if name.ends_with("show_form") || name.ends_with("close_form") => {}
+            // The Highlights view shows what the agent's highlight tool kept.
+            EventKind::ToolCall { name, .. } if name.ends_with("highlight") => {}
             EventKind::ToolCall { id, name, args } => {
                 if self.tool_mut(id).is_none() {
                     self.close_streaming();
@@ -252,6 +254,8 @@ impl Thread {
                 self.close_streaming();
                 self.items.push(Item::Note("interrupted".into()));
             }
+            // An agent's highlight is in the Highlights view, not the conversation.
+            EventKind::Highlight { .. } => {}
             EventKind::Form { form_id, title, .. } => {
                 self.close_streaming();
                 self.items.push(Item::Form { form_id: form_id.clone(), title: title.clone(), by: None, answer: None });
@@ -319,6 +323,28 @@ mod tests {
 
     fn ev(index: u64, agent: &str, kind: EventKind) -> Event {
         Event { index, thread_id: "t-7f3a".into(), timestamp: 0, agent: agent.into(), kind }
+    }
+
+    #[test]
+    fn the_highlight_tool_call_has_no_line_in_the_conversation() {
+        let events = [
+            ev(1, "claude", EventKind::ToolCall { id: "c1".into(), name: "mcp__desl__highlight".into(), args: json!({}) }),
+            ev(2, "claude", EventKind::Highlight { question: "Why?".into(), answer: "Because.".into() }),
+            ev(
+                3,
+                "claude",
+                EventKind::ToolResult {
+                    call_id: "c1".into(),
+                    output: "Noted.".into(),
+                    exit_code: None,
+                    is_error: false,
+                    truncated: false,
+                    blob: None,
+                },
+            ),
+        ];
+        let (t, _) = conversation(&events, true);
+        assert!(t.items.is_empty(), "the Highlights view shows it");
     }
 
     #[test]

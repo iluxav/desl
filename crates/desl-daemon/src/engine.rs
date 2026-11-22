@@ -2279,6 +2279,7 @@ impl Engine {
             }
             Command::Prompt { thread_id, text } => self.prompt(&thread_id, &text),
             Command::FormNew { thread_id, form } => self.form_new(&thread_id, &form),
+            Command::Highlight { thread_id, question, answer } => self.highlight(&thread_id, &question, &answer),
             Command::FormAnswer { form_id, answer } => self.form_answer(&form_id, &answer),
             Command::FormClose { form_id, by } => self.form_close(&form_id, &by),
             Command::FormDraft { form_id, draft } => self.form_draft(&form_id, &draft),
@@ -2680,6 +2681,16 @@ impl Engine {
             }
         }
         unreachable!("a free form id always exists")
+    }
+
+    /// An agent's highlight goes in its thread's log, for the page's Highlights.
+    fn highlight(&mut self, thread_id: &str, question: &str, answer: &str) -> Outcome {
+        self.idx(thread_id)?;
+        if let Some(sentence) = desl_proto::highlights::refused(question, answer) {
+            return Err(sentence);
+        }
+        self.append(thread_id, EventKind::Highlight { question: question.trim().to_string(), answer: answer.trim().to_string() });
+        Ok(Reply::Done)
     }
 
     fn form_new(&mut self, thread_id: &str, form: &Value) -> Outcome {

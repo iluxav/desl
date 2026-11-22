@@ -261,6 +261,13 @@ pub enum Command {
         thread_id: String,
         form: Value,
     },
+    /// A question the thread's agent settled and its answer, for the thread's Highlights
+    /// (docs/design/2026-11-22-highlights.md): each at most two sentences. Replied with `done`.
+    Highlight {
+        thread_id: String,
+        question: String,
+        answer: String,
+    },
     /// The user's answer: it closes the form and goes to the thread's agent as its next prompt.
     FormAnswer {
         form_id: String,

@@ -28,7 +28,7 @@ first three were built and removed, the last two moved to Later.
 | Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user; the agent's screen stays in the terminal. It adds no feature the CLI lacks." |
 | Language and stack | "`tokio` … comes back only if remote clients in phase 3 need it." | `desl web` uses `tokio` and `axum`, in its own crate. The daemon and the TUI stay on plain threads and channels. |
 | Naming and vocabulary | No words for the new pieces | **form**: what a thread's agent puts in front of the user on the page, made of widgets, answered with Send. **waiting list**: every open form and every agent dialog in the workspace, in one place. |
-| IR events | — | `form` and `form_answer` |
+| IR events | — | `form` and `form_answer`; `highlight` (an agent's question and answer for the thread's Highlights, from desl's MCP tool `highlight`) |
 | Agent adapters | `launch(opts)` | `launch(opts)` takes `mcp`, desl's own MCP server, which each adapter adds with its agent's flags |
 | CLI | — | `desl form list|show|answer|close|new`; `prefix v` opens the page on a thread's open form |
 

@@ -523,6 +523,11 @@ function clock(ms) {
 
 function drawConversation(toEnd) {
   const list = $('conv');
+  // A field the user is typing in keeps the keys, the caret and the place on screen: the cards
+  // are put back as they were, and nothing else moves.
+  const active = list.contains(document.activeElement) ? document.activeElement : null;
+  const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
+  const top = list.scrollTop;
   list.replaceChildren();
   if (!conv.items.length) {
     list.append(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet.'));
@@ -574,6 +579,11 @@ function drawConversation(toEnd) {
   }
   findAgain(false);
   if (toEnd) list.scrollTop = list.scrollHeight;
+  else list.scrollTop = top;
+  if (active && active.isConnected) {
+    active.focus({ preventScroll: true });
+    if (caret) active.setSelectionRange(caret[0], caret[1]);
+  }
   goToForm();
 }
 
@@ -610,7 +620,11 @@ function formCard(got) {
     onDraft: (draft) => request('form_draft', { form_id: got.form_id, draft }),
     onSend: async (answer) => {
       const reply = await request('form_answer', { form_id: got.form_id, answer });
-      if (reply.error) return reply.error;
+      if (reply.error) {
+        // Also under the page: an answer kept but not delivered redraws the card as answered.
+        notice(reply.error, true);
+        return reply.error;
+      }
       notice(`Sent your answer to ${got.form_id}; the agent gets it as its next prompt.`);
       return null;
     },

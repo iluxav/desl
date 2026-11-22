@@ -476,6 +476,17 @@ pub struct Subagent {
 }
 
 impl Thread {
+    /// A turn is under way, or the agent's own screen or an approval waits on the user: the
+    /// agent is not free. A thread that waits only on a form is free: its agent is idle. A
+    /// client's view; the daemon also knows which waits its agent's screen began.
+    pub fn mid_turn(&self) -> bool {
+        match self.status {
+            Status::Working => true,
+            Status::Waiting => self.open_forms.is_empty() || self.pending_approval.is_some(),
+            _ => false,
+        }
+    }
+
     pub fn binding(&self, agent: &str) -> Option<&Binding> {
         self.bindings.get(agent)
     }

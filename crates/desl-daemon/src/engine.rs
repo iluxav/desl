@@ -1576,8 +1576,8 @@ impl Engine {
         let Some(adapter) = self.adapter(&pty.agent) else { return };
         let asking = adapter.waiting(&pty.tail_text(ASKING_ROWS));
         let status = self.threads[i].status;
-        // Only a wait the screen began ends with the screen: a form waits on the user, not on it.
-        let on_screen = self.asked_on_screen.contains(thread_id);
+        // Only a wait on the screen ends with the screen: a form waits on the user, not on it.
+        let on_screen = self.asked_on_screen.contains(thread_id) || self.threads[i].open_forms.is_empty();
         let next = match status {
             Status::Working if asking => Status::Waiting,
             Status::Waiting if !asking && on_screen => Status::Working,
@@ -1609,7 +1609,7 @@ impl Engine {
         self.poll_tail(thread_id);
         // A prompt sent a moment ago may not have reached the agent's files yet.
         let just_sent = self.entered.get(thread_id).is_some_and(|t| t.elapsed() < Duration::from_secs(3));
-        if self.threads[i].status.busy() || just_sent {
+        if self.mid_turn(i) || just_sent {
             return Err(format!(
                 "{from} is still working, and a half-finished turn is never copied. Wait for it to finish, then press {} s again.",
                 self.prefix()
@@ -2059,7 +2059,7 @@ impl Engine {
                 Ok(Reply::Brief(self.brief_for(i, &to)))
             }),
             Command::Clear { thread_id } => self.idx(&thread_id).and_then(|i| {
-                if self.threads[i].status.busy() {
+                if self.mid_turn(i) {
                     return Err(format!(
                         "{} is still working. Wait for it to finish or press ctrl+c, then clear.",
                         self.threads[i].active_agent
@@ -2219,7 +2219,7 @@ impl Engine {
     fn set_model(&mut self, thread_id: &str, model: Option<&str>) -> Outcome {
         let i = self.idx(thread_id)?;
         let agent = self.threads[i].active_agent.clone();
-        if self.threads[i].status.busy() {
+        if self.mid_turn(i) {
             return Err(format!("{agent} is still working. Wait for it to finish or press ctrl+c, then change the model."));
         }
         let picked = match model.map(str::trim).filter(|m| !m.is_empty()) {
@@ -2262,7 +2262,7 @@ impl Engine {
     fn set_effort(&mut self, thread_id: &str, effort: Option<&str>) -> Outcome {
         let i = self.idx(thread_id)?;
         let agent = self.threads[i].active_agent.clone();
-        if self.threads[i].status.busy() {
+        if self.mid_turn(i) {
             return Err(format!("{agent} is still working. Wait for it to finish or press ctrl+c, then change the effort."));
         }
         let model = self.model_in_use(i, &agent).cloned();
@@ -2412,12 +2412,16 @@ impl Engine {
     /// Thread `i`'s agent has no turn going and its screen asks nothing, so a prompt can go in.
     /// A thread waiting on a form is free: the agent is idle, and the user may talk to it.
     fn agent_free(&self, i: usize) -> bool {
+        !self.mid_turn(i)
+    }
+
+    /// A turn is under way on thread `i`, or a dialog on its agent's screen or an approval waits
+    /// on the user. A wait on a form alone is not one: switch, model, clear and stop treat the
+    /// thread as idle. A waiting thread with no form open waits on its screen even when this
+    /// daemon did not see the dialog begin, as after a handover.
+    fn mid_turn(&self, i: usize) -> bool {
         let t = &self.threads[i];
-        match t.status {
-            Status::Working => false,
-            Status::Waiting => !self.asked_on_screen.contains(&t.id),
-            _ => true,
-        }
+        t.mid_turn() || (t.status == Status::Waiting && self.asked_on_screen.contains(&t.id))
     }
 
     /// A form the store has, open: a sentence otherwise.
@@ -2511,7 +2515,7 @@ impl Engine {
 
     fn interrupt(&mut self, thread_id: &str) -> Outcome {
         let i = self.idx(thread_id)?;
-        if !self.threads[i].status.busy() {
+        if !self.mid_turn(i) {
             return Err(format!("{} is not working, so there is nothing to interrupt.", self.threads[i].active_agent));
         }
         let agent = self.threads[i].active_agent.clone();
@@ -2589,7 +2593,7 @@ impl Engine {
         self.pending.remove(thread_id);
         self.typing.remove(thread_id);
         self.awaiting_turn.remove(thread_id);
-        if self.threads[i].status.busy() {
+        if self.mid_turn(i) {
             self.append(thread_id, EventKind::Interrupt);
             self.threads[i].pending_approval = None;
         }
@@ -2671,7 +2675,7 @@ impl Engine {
             return Err(format!("This thread is already on {to}."));
         }
         self.usable(to)?;
-        if self.threads[i].status.busy() {
+        if self.mid_turn(i) {
             return Err(format!("{from} is still working. Wait for it to finish or press ctrl+c, then switch."));
         }
         self.threads[i].active_agent = to.to_string();
@@ -2917,7 +2921,7 @@ impl Engine {
             checks.push(Check { name: a.id.clone(), ok, detail });
         }
         let sessions: usize = self.live.values().map(|l| l.sessions.len()).sum();
-        let working = self.threads.iter().filter(|t| t.status.busy()).count();
+        let working = (0..self.threads.len()).filter(|i| self.mid_turn(*i)).count();
         checks.push(Check {
             name: "daemon".into(),
             ok: true,
@@ -2928,7 +2932,7 @@ impl Engine {
 
     /// Ends every agent process and tells the clients. Called once, when the loop stops.
     pub fn shutdown(&mut self) {
-        let busy: Vec<String> = self.threads.iter().filter(|t| t.status.busy()).map(|t| t.id.clone()).collect();
+        let busy: Vec<String> = (0..self.threads.len()).filter(|i| self.mid_turn(*i)).map(|i| self.threads[i].id.clone()).collect();
         for id in busy {
             self.append(
                 &id,

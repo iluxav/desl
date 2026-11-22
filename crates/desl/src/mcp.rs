@@ -88,7 +88,7 @@ fn tool(params: &Value, call: &mut dyn FnMut(Command) -> Result<Reply, String>, 
             other => format!("The desl daemon answered with {other:?}."),
         }),
         "close_form" => match args.get("form_id").and_then(Value::as_str) {
-            Some(id) => call(Command::FormClose { form_id: id.to_string(), by: "withdrawn".into() }).map(|_| format!("{id} is withdrawn.")),
+            Some(id) => withdraw(id, call, thread),
             None => Err("close_form needs the form_id that show_form gave.".to_string()),
         },
         other => Err(format!("desl has no tool {other}: it has show_form and close_form.")),
@@ -98,6 +98,19 @@ fn tool(params: &Value, call: &mut dyn FnMut(Command) -> Result<Reply, String>, 
         Err(text) => (text, true),
     };
     json!({ "content": [{ "type": "text", "text": text }], "isError": error })
+}
+
+/// Withdraws a form of this agent's own thread only: a fork's agent knows its parent's forms
+/// from the copied conversation, and they are not its to close.
+fn withdraw(id: &str, call: &mut dyn FnMut(Command) -> Result<Reply, String>, thread: &str) -> Result<String, String> {
+    match call(Command::FormGet { form_id: id.to_string() })? {
+        Reply::Form { thread_id, .. } if thread_id == thread => {}
+        Reply::Form { thread_id, .. } => {
+            return Err(format!("{id} belongs to another thread, {thread_id}; you can withdraw only the forms you showed."));
+        }
+        other => return Err(format!("The desl daemon answered with {other:?}.")),
+    }
+    call(Command::FormClose { form_id: id.to_string(), by: "withdrawn".into() }).map(|_| format!("{id} is withdrawn."))
 }
 
 fn write_line(out: &mut impl Write, v: &Value) -> io::Result<()> {
@@ -150,6 +163,31 @@ mod tests {
     }
 
     #[test]
+    fn close_withdraws_only_a_form_of_its_own_thread() {
+        let mut asked = Vec::new();
+        let replies = run(
+            &[
+                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "close_form", "arguments": {"form_id": "f-4b1e"}}}),
+            ],
+            |c| {
+                asked.push(c);
+                // A fork's agent knows its parent's form from the copied conversation.
+                Ok(Reply::Form {
+                    form_id: "f-4b1e".into(),
+                    thread_id: "t-0000".into(),
+                    form: json!({}),
+                    draft: None,
+                    answer: None,
+                    closed_by: None,
+                })
+            },
+        );
+        assert_eq!(replies[0]["result"]["isError"], true);
+        assert!(replies[0]["result"]["content"][0]["text"].as_str().unwrap().contains("another thread"), "{}", replies[0]);
+        assert!(!asked.iter().any(|c| matches!(c, Command::FormClose { .. })), "nothing closed: {asked:?}");
+    }
+
+    #[test]
     fn a_refusal_goes_back_to_the_agent_to_mend_and_close_withdraws() {
         let mut asked = Vec::new();
         let replies = run(
@@ -159,14 +197,25 @@ mod tests {
                 json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "rm", "arguments": {}}}),
             ],
             |c| {
-                let first = asked.is_empty();
+                let reply = match &c {
+                    Command::FormNew { .. } => Err("The form has no title. Give it one.".into()),
+                    Command::FormGet { form_id } => Ok(Reply::Form {
+                        form_id: form_id.clone(),
+                        thread_id: "t-7f3a".into(),
+                        form: json!({}),
+                        draft: None,
+                        answer: None,
+                        closed_by: None,
+                    }),
+                    _ => Ok(Reply::Done),
+                };
                 asked.push(c);
-                if first { Err("The form has no title. Give it one.".into()) } else { Ok(Reply::Done) }
+                reply
             },
         );
         assert_eq!(replies[0]["result"]["isError"], true);
         assert_eq!(replies[0]["result"]["content"][0]["text"], "The form has no title. Give it one.");
-        assert!(matches!(&asked[1], Command::FormClose { form_id, by } if form_id == "f-4b1e" && by == "withdrawn"));
+        assert!(matches!(&asked[2], Command::FormClose { form_id, by } if form_id == "f-4b1e" && by == "withdrawn"));
         assert_eq!(replies[1]["result"]["isError"], false);
         assert_eq!(replies[2]["result"]["isError"], true, "an unknown tool is the agent's to hear about");
     }

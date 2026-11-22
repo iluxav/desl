@@ -158,6 +158,10 @@ pub fn check(form: &Value) -> Result<Form, String> {
     if title.contains('\n') || title.chars().count() > 120 {
         return Err("The form's title is one line of at most 120 characters. Put the rest in a markdown widget.".to_string());
     }
+    // It is typed into the agent's terminal with the answer.
+    if title.chars().any(char::is_control) {
+        return Err("The form's title has a control character, such as a tab or an escape. Use plain text.".to_string());
+    }
     let Some(widgets) = top.get("widgets").and_then(Value::as_array) else {
         return Err("The form has no widgets. Give it a list of them, at least one.".to_string());
     };
@@ -474,6 +478,14 @@ mod tests {
         let range = json!({"title": "t", "widgets": [{"kind": "number", "id": "n", "label": "N", "min": 5, "max": 1}]});
         assert_eq!(check(&range).unwrap_err(), "Widget 1 (\"n\") has min 5 above max 1. Swap them.");
         assert!(check(&json!({"title": "", "widgets": []})).unwrap_err().contains("title"));
+    }
+
+    #[test]
+    fn a_title_holds_no_control_characters() {
+        // The title is typed into the agent's terminal with the answer: a carriage return would
+        // send it early, and an escape could end the paste it goes in.
+        let err = check(&json!({"title": "a\rb\u{1b}[201~c", "widgets": [{"kind": "toggle", "id": "a", "label": "A"}]})).unwrap_err();
+        assert!(err.contains("control"), "{err}");
     }
 
     #[test]

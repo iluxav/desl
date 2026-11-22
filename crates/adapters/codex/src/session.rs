@@ -117,6 +117,13 @@ impl Reader {
 
     /// An `exec` script as the neutral tool call it makes.
     fn exec(&self, script: &str) -> (String, Value) {
+        // An MCP tool, called from the runner as `tools.mcp__<server>__<tool>(…)`: named as Claude
+        // Code names one, before anything in its arguments is taken for a command.
+        if let Some(at) = script.find("tools.mcp__") {
+            let name: String =
+                script[at + "tools.".len()..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+            return (name, json!({ "script": script }));
+        }
         if let Some(cmd) = string_after(script, "cmd:") {
             return (tool::BASH.into(), json!({ "command": unwrap_shell(&cmd) }));
         }
@@ -477,6 +484,18 @@ mod tests {
         assert!(matches!(&got[4], Reading::Event(EventKind::ToolCall { name, args, .. }) if name == "edit" && args["path"] == "net.py"));
         assert!(matches!(&got[5], Reading::Event(EventKind::AssistantMessage { text, .. }) if text == "The owner is Ana."));
         assert_eq!(got[6], Reading::Idle);
+    }
+
+    #[test]
+    fn an_mcp_tool_called_from_the_runner_is_named_as_the_tool() {
+        // Codex calls MCP tools from its JavaScript runner (checked with Codex CLI 0.171.0).
+        let mut r = Reader::new(Path::new("/tmp/demo"));
+        let line = r#"{"type":"response_item","payload":{"type":"custom_tool_call","call_id":"c9","name":"exec","input":"const r = await tools.mcp__desl__show_form({title:\"Run which cmd: tests?\", widgets:[]});\ntext(r);"}}"#;
+        let got = r.line(line);
+        assert!(
+            matches!(&got[0], Reading::Event(EventKind::ToolCall { name, .. }) if name == "mcp__desl__show_form"),
+            "a form whose text says cmd: is still the form: {got:?}"
+        );
     }
 
     #[test]

@@ -1402,3 +1402,39 @@ fn a_prompt_reaches_the_agent_while_a_form_is_open() {
     assert_eq!(r.thread(&t).status, Status::Waiting, "after the turn it waits on the form again");
     assert_eq!(r.thread(&t).open_forms.len(), 1, "talking to the agent closes no form");
 }
+
+#[test]
+fn a_thread_waiting_on_a_form_switches_and_its_answer_reaches_the_new_agent() {
+    let mut r = rig("form-switch");
+    let t = r.t.clone();
+    r.prompt(&t, "first");
+    let form_id = show(&mut r, &t);
+    r.cmd(Command::SetModel { thread_id: t.clone(), model: Some("fast".into()) }).expect("a model can be picked meanwhile");
+    r.cmd(Command::Switch { thread_id: t.clone(), agent: "codex".into() }).expect("a wait on a form is no turn under way");
+    assert_eq!(r.thread(&t).open_forms.len(), 1, "the form stays open across the switch");
+    r.cmd(Command::FormAnswer { form_id: form_id.clone(), answer: json!({"next": "M4"}) }).unwrap();
+    let answer = desl_proto::form::answer_prompt(&form_id, "Which milestone next?", &json!({"next": "M4"}));
+    assert!(r.codex.lock().unwrap().payloads.last().is_some_and(|p| p.contains(&answer)), "{:?}", r.codex.lock().unwrap().payloads);
+    let err = r.cmd(Command::Interrupt { thread_id: t.clone() });
+    assert!(err.is_err(), "nothing to interrupt: {err:?}");
+}
+
+#[test]
+fn a_stop_says_nothing_of_an_interrupted_turn_for_a_thread_waiting_on_a_form() {
+    let mut r = rig("form-stop");
+    let t = r.t.clone();
+    show(&mut r, &t);
+    r.engine.shutdown();
+    assert!(!r.events(&t).iter().any(|e| matches!(e.kind, EventKind::Error { .. })), "{:?}", r.kinds(&t));
+}
+
+#[test]
+fn a_thread_waiting_on_its_screen_after_a_handover_queues_a_prompt() {
+    // A daemon that took over knows nothing of the dialog the one before it saw: the thread's
+    // row says waiting, it has no form, so its screen asks something.
+    let mut r = rig("screen-wait");
+    let t = r.t.clone();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.threads[i].status = Status::Waiting;
+    assert!(matches!(r.cmd(Command::Prompt { thread_id: t.clone(), text: "later".into() }), Ok(Reply::Sent { queued: true })));
+}

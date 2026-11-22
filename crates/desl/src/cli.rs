@@ -383,6 +383,12 @@ pub fn form_close(paths: &Paths, out: &Out, form: &str) -> Result<()> {
     Ok(())
 }
 
+/// The prompt `desl send` typed, as the agent's session recorded it: desl may have put a line
+/// before it for each form the user dismissed since the agent's last prompt.
+fn is_own_prompt(text: &str, prompt: &str) -> bool {
+    desl_proto::form::strip_notes(text) == prompt
+}
+
 fn done(out: &Out, v: Value, text: String) {
     if out.json { out.value(&v) } else { println!("{text}") }
 }
@@ -457,7 +463,7 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
                 }
             },
             ServerFrame::Event { change: Change::Appended { event } } if event.thread_id == t.id => {
-                if matches!(&event.kind, EventKind::UserMessage { text, .. } if text == prompt) {
+                if matches!(&event.kind, EventKind::UserMessage { text, .. } if is_own_prompt(text, prompt)) {
                     sent = true;
                     continue;
                 }
@@ -890,7 +896,7 @@ pub fn daemon_restart(paths: &Paths, out: &Out) -> Result<()> {
         }
     }
     let Some(mut conn) = again(paths) else { bail!("The desl daemon went away. Run desl to start it.") };
-    let working: Vec<String> = workspace(&mut conn)?.threads.iter().filter(|t| t.status.busy()).map(|t| t.id.clone()).collect();
+    let working: Vec<String> = workspace(&mut conn)?.threads.iter().filter(|t| t.mid_turn()).map(|t| t.id.clone()).collect();
     if !working.is_empty() {
         let (n, verb) = if working.len() == 1 { ("one agent".to_string(), "is") } else { (format!("{} agents", working.len()), "are") };
         bail!(
@@ -1021,4 +1027,17 @@ pub fn skill_install(out: &Out) -> Result<()> {
     lines.push("Agents started from now on can drive desl; ask one to fork this thread to another agent.".into());
     done(out, v, lines.join("\n"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_prompt_is_known_with_a_dismissal_note_before_it() {
+        let note = desl_proto::form::dismissed_note("f-4b1e", "Pick");
+        assert!(is_own_prompt(&format!("{note}\n\nrun the tests"), "run the tests"), "queued behind a dismissal");
+        assert!(is_own_prompt("run the tests", "run the tests"));
+        assert!(!is_own_prompt("run the tests now", "run the tests"));
+    }
 }

@@ -68,7 +68,7 @@ pub enum SubState {
 
 /// Running only while its thread's turn is: one left unfinished by a stopped turn is not.
 pub fn sub_state(s: &Subagent, t: &Thread) -> SubState {
-    match (s.finished, t.status.busy()) {
+    match (s.finished, t.mid_turn()) {
         (true, _) => SubState::Done,
         (false, true) => SubState::Running,
         (false, false) => SubState::Unfinished,

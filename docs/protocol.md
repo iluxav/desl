@@ -40,7 +40,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 
 | Command | Fields | Reply | Notes |
 | --- | --- | --- | --- |
-| `hello` | `protocol`, `client` | `hello {protocol, version, pid}` | First frame on every connection. A different major `protocol` is refused. |
+| `hello` | `protocol`, `client` | `hello {protocol, version, pid}` | First frame on every connection. A different major `protocol` is refused. `client` names the client: `tui`, `cli`, or `web` for `desl web`'s bridge. |
 | `workspace` | | `workspace` | Projects, threads, agents, and `file_manager`: the program a files thread runs (`yazi`) when it is on the daemon's `PATH` now, absent otherwise. No subscription. |
 | `subscribe` | `cwd?` | `workspace` | As `workspace`, and from now on every change arrives as an event. `cwd` registers that directory's repository as a project, makes sure it has a thread, and sets `project_id` and `focus` in the reply. |
 | `open_thread` | `thread_id` | `thread {thread, events, partial}` | The thread's whole log, and its token stream from now on. `partial` is the text of a block still being generated. |

@@ -106,6 +106,21 @@ takes a word and a triple click a line. The agents select and copy by themselves
 The prefix is a setting; `ctrl+a` or any `ctrl+<letter>` works. Press it twice to send it to
 the agent.
 
+## In a browser
+
+`desl web` opens the workspace in a browser, beside the terminal:
+
+```sh
+desl web
+# desl web: http://127.0.0.1:7428/#t=<key>
+```
+
+Open the address it prints. The page lists every project and agent thread with the same marks
+and words as the sidebar, shows who is waiting, and sends a prompt to the thread you pick
+(queued while it works) or stops its turn. It listens on 127.0.0.1 only, and the key after
+`#t=` is new each time desl web starts. `ctrl+c` stops it; the agents keep working. The
+agent's own screen, questions to click and the live document come next (see `web-spec.md`).
+
 ## From a script
 
 Every command takes `--json`, and every thread has a short id such as `t-7f3a`.

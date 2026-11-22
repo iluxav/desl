@@ -151,7 +151,7 @@ The workspace screen, in the style of Herdr and T3 Code in a terminal: projects 
 
 **Worktrees.** In the `prefix c` and `prefix f` menus, `w` gives the new thread a git worktree of its own (`desl new --worktree`, `desl fork --worktree` from the CLI): `<project>/.worktrees/<thread>` on a new branch `desl/<thread>`, from the project's commit for a new thread and from the parent's for a fork; `.worktrees/` goes into the repository's `info/exclude`, so the user's tracked files never change. The thread's agent starts there; the sidebar and header show `⎇ desl/<thread>`, the header with `±n` while the worktree has uncommitted paths. Closing the thread (`prefix x`) removes the worktree only when nothing in it is uncommitted, and keeps the branch, saying which. A directory that is not a repository, or one with no commit yet, is refused with why. `desl worktree new|list|rm` and the `worktree` permission mode come in phase 2.
 
-**Header.** The agent panel's top border: the agent's logo and the thread's own title (in the accent and bold while the pane has the keys, dimmer otherwise), which is what tells two panes on one project apart; then the project, as its coloured mark and its name (for a shell or a file manager, where it is now, written from the project's name: `desl/docs`), the branch and `±n` when the thread has a worktree, and the model and effort as the thread's session last used them; on the right the thread's status and id, or, while scrolled back, how far. A narrow pane gives way in this order: the model, the branch, the status word, the length of the place, the id, the place (the coloured mark stays), and only then the title.
+**Header.** The agent panel's top border: the agent's logo and the thread's own title (in the accent and bold while the pane has the keys, dimmer otherwise), which is what tells two panes on one project apart; then the project, as its coloured mark and its name (for a shell or a file manager, where it is now, written from the project's name: `desl/docs`), the branch and `±n` when the thread has a worktree, and the model and effort as the thread's session last used them (the model the agent reported, before one picked with `desl model` that it has not started on yet); on the right `⚠ yolo` while the thread's permission mode is yolo, never dropped for room, then the thread's status and id, or, while scrolled back, how far. A narrow pane gives way in this order: the model, the branch, the status word, the length of the place, the id, the place (the coloured mark stays), and only then the title.
 
 **Key line.** The common keys after the prefix, lit while the prefix is armed; a notice from desl (why a switch did not happen, say) takes its place until the next key. Never drawn over the agent.
 
@@ -212,6 +212,7 @@ All keys are remappable in `keys.toml` by named command, with `vim` and `emacs` 
 ```
 desl                         attach to the workspace (starts the daemon if needed)
 desl status                  the thread list as text
+desl web [--port N]          the workspace in a browser, at 127.0.0.1 (see web-spec.md)
 desl thread list|show|rename|rm
 desl new [-p project] [--agent claude] [--worktree] [-m "prompt"]   --agent shell, files or tasks opens the user's shell, their file manager or the task list
 desl send <thread> "prompt"  type the prompt into the thread's agent and print the reply when the turn ends
@@ -466,6 +467,12 @@ These are release gates, measured in CI on a reference machine (4-core laptop, 1
 | Daemon CPU at idle | < 0.5% |
 | Binary size, stripped | < 25 MB |
 | Store growth | < 1 KB per event excluding tool output blobs |
+| `desl web`: page load to a usable thread list, 20 threads | < 500 ms |
+| `desl web`: a key typed on the page to the agent's terminal | < 10 ms p99 |
+| `desl web`: the agent's output to the page's screen | < 20 ms p99 |
+| `desl web`: an agent's edit to its mark in the open document | < 1.5 s |
+| `desl web`: a save to the file on disk | < 100 ms |
+| `desl web`: memory with three tabs open | < 50 MB |
 
 **Rendering.** The agent draws into desl's emulator; desl paints the changed cells at most once per 12 ms, each paint one synchronized-output frame, and passes the agent's key-mode requests (kitty keyboard, modifyOtherKeys, bracketed paste, focus reports) to the real terminal. desl answers the agent's questions to its terminal (cursor position, colours, attributes) from the user's terminal's answers, probed once. Resize goes to the agent's PTY at once and to hidden PTYs debounced at 50 ms. When a pane gets a new width, desl wraps what is on its screen and in its scrollback again at that width, as the user's own terminal does: a line that wrapped is joined and wrapped anew, a line too long for a narrower pane continues on the next row and is whole again when the pane widens, and the cursor stays on its character. A program on the alternate screen (an editor, a pager, an agent's full-screen view) draws itself afresh for the new size; the screen behind it is wrapped again all the same, so it is right when the program quits. The daemon's screen model of each PTY is resized the same way, so it stays what a client shows.
 

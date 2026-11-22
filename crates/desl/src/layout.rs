@@ -5,6 +5,7 @@
 use crate::ui::text::truncate_end;
 use crate::{icons, theme};
 use desl_ir::{FILES, GitState, Project, SHELL, Status, TASKS, Thread, is_agent};
+use desl_proto::view::{self, SubState};
 use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -12,6 +13,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
+
+/// Shared with `desl web`, so both clients order and word the workspace alike.
+pub use desl_proto::view::{age, order, tilde};
 
 /// What a key after the prefix does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,23 +95,6 @@ pub fn action(c: char) -> Option<Action> {
     KEYS.iter().find(|b| b.key.chars().eq([c])).and_then(|b| b.action)
 }
 
-/// Every thread in a fixed order: by project, then oldest first. The sidebar, `prefix n`,
-/// `prefix p` and `prefix 1`…`9` follow it, so a thread keeps its place while statuses change.
-pub fn order<'a>(projects: &[Project], threads: &'a [Thread]) -> Vec<&'a Thread> {
-    let rank = |t: &Thread| projects.iter().position(|p| p.id == t.project_id).unwrap_or(usize::MAX);
-    let mut out: Vec<&Thread> = threads.iter().collect();
-    out.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.created_at.cmp(&b.created_at)).then(a.id.cmp(&b.id)));
-    out
-}
-
-/// A path with the home directory written `~`.
-pub fn tilde(path: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && path.starts_with(&home) => format!("~{}", &path[home.len()..]),
-        _ => path.to_string(),
-    }
-}
-
 /// The end of `s` in at most `width` columns, `…` standing for what was cut: a path keeps the
 /// directories nearest the project.
 pub fn truncate_start(s: &str, width: usize) -> String {
@@ -184,9 +171,6 @@ pub enum Row {
     Gap,
 }
 
-/// A thread lists at most this many of its subagents, the newest.
-pub const SUBAGENTS_SHOWN: usize = 4;
-
 pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
     let mut out = Vec::new();
     let mut last: Option<&str> = None;
@@ -200,8 +184,7 @@ pub fn rows(projects: &[Project], threads: &[Thread]) -> Vec<Row> {
             out.push(Row::Project(t.project_id.clone()));
         }
         out.push(Row::Thread(t.id.clone()));
-        let n = t.subagents.len();
-        out.extend((n.saturating_sub(SUBAGENTS_SHOWN)..n).map(|k| Row::Sub(t.id.clone(), k)));
+        out.extend(view::subagents_shown(t).map(|k| Row::Sub(t.id.clone(), k)));
     }
     out
 }
@@ -457,19 +440,8 @@ fn text_icon(agent: &str) -> &'static str {
     }
 }
 
-/// How long ago `then` was, in one short word: `now`, `5m`, `3h`, `2d`. Both in milliseconds.
-pub fn age(now: i64, then: i64) -> String {
-    let s = (now - then).max(0) / 1000;
-    match s {
-        0..60 => "now".into(),
-        60..3600 => format!("{}m", s / 60),
-        3600..86400 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
-}
-
 fn sidebar(f: &mut Frame, v: &View, area: Rect, stacked: Option<bool>) {
-    let waiting = v.threads.iter().filter(|t| t.status == Status::Waiting).count();
+    let waiting = view::waiting(v.projects, v.threads).len();
     let mut block = panel(v.cursor.is_some()).title(Line::from(Span::styled(" Projects ", theme::bold())));
     if waiting > 0 {
         let text = match icons::waiting() {
@@ -533,8 +505,7 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect, stacked: Option<bool>) {
                     (Some(i), Some(stacked)) => format!("{} ", icons::pane(i > 0, stacked)),
                     _ => String::new(),
                 };
-                let title = if t.name.is_empty() { "New thread" } else { t.name.as_str() };
-                let title = truncate_end(title, w.saturating_sub(5 + mark.width() + right.width()));
+                let title = truncate_end(view::title(t), w.saturating_sub(5 + mark.width() + right.width()));
                 let pad = w.saturating_sub(4 + title.width() + mark.width() + right.width());
                 let (edge, edge_style) = match pane {
                     Some(_) if focused => ("▌", theme::accent()),
@@ -555,15 +526,13 @@ fn sidebar(f: &mut Frame, v: &View, area: Rect, stacked: Option<bool>) {
             Row::Sub(id, k) => {
                 let Some(t) = v.threads.iter().find(|t| t.id == *id) else { continue };
                 let Some(s) = t.subagents.get(*k) else { continue };
-                // Running only while its thread's turn is: one left unfinished by a stopped turn is not.
-                let (glyph, style) = match (s.finished, t.status.busy()) {
-                    (true, _) => (icons::sub_done(), theme::muted()),
-                    (false, true) => (icons::sub_running(), theme::accent()),
-                    (false, false) => (icons::sub_unfinished(), theme::muted()),
+                let (glyph, style) = match view::sub_state(s, t) {
+                    SubState::Done => (icons::sub_done(), theme::muted()),
+                    SubState::Running => (icons::sub_running(), theme::accent()),
+                    SubState::Unfinished => (icons::sub_unfinished(), theme::muted()),
                 };
                 let last = !matches!(rows.get(i + 1), Some(Row::Sub(next, _)) if next == id);
-                let what = if s.description.is_empty() { s.kind.clone() } else { s.description.clone() };
-                let label = if s.kind == "general-purpose" || s.description.is_empty() { what } else { format!("{} · {what}", s.kind) };
+                let label = view::sub_label(s);
                 let lit = v.cursor == Some(i);
                 let shown = v.shown_sub == Some((id.as_str(), s.id.as_str()));
                 let label = truncate_end(&label, w.saturating_sub(7));
@@ -633,6 +602,9 @@ fn project_row(path: &str, git: Option<&GitState>, w: usize) -> Line<'static> {
 
 /// The agent's panel: its border, with the project, agent and model on top and the thread's
 /// id and status on the right.
+/// In a thread's header while its agent may do anything without asking.
+const YOLO: &str = "⚠ yolo ";
+
 fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) {
     let mut block = panel(focused && v.cursor.is_none() && v.help.is_none());
     if focused && let Some(s) = &v.sub {
@@ -678,15 +650,12 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
             ),
             _ => (String::new(), String::new()),
         };
-        let binding = t.bindings.get(p.agent);
-        let mut model = binding.and_then(|b| b.model_choice.clone().or(b.model.clone())).unwrap_or_default();
-        if let Some(e) = binding.and_then(|b| b.effort_choice.as_deref()) {
-            model = if model.is_empty() { format!("{e} effort") } else { format!("{model} · {e}") };
-        }
+        let mut model = view::model(t.bindings.get(p.agent));
         if let Some(chip) = icons::model().filter(|_| !model.is_empty()) {
             model = format!("{chip} {model}");
         }
-        let title = if t.name.is_empty() { "New thread".to_string() } else { t.name.clone() };
+        let title = view::title(t).to_string();
+        let yolo = view::yolo(t);
         let (icon, icon_style) = agent_icon(p.agent);
         let chip = icons::project(project.is_some_and(|x| x.git.branch.is_some()));
         let git = format!("{branch}{dirty}");
@@ -700,7 +669,7 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
                 (false, 0..=2) => 4 + t.status.word().width() + 1 + t.id.width() + 1,
                 (false, 3..=4) => 3 + t.id.width() + 1,
                 _ => 3,
-            };
+            } + if yolo && p.scrolled == 0 { YOLO.width() } else { 0 };
             let mut w = 3 + title.width() + 3 + 2 + place_w + 1 + right;
             if level < 2 {
                 w += git.width();
@@ -727,7 +696,12 @@ fn main_panel(f: &mut Frame, v: &View, p: &PaneView, focused: bool, area: Rect) 
         let right = if p.scrolled > 0 {
             Line::from(Span::styled(format!(" ↑ {} lines · wheel down to follow ", p.scrolled), theme::warning()))
         } else {
-            let mut r = vec![Span::raw(" "), Span::styled(icons::status(t.status).to_string(), glyph_style(t.status))];
+            let mut r = vec![Span::raw(" ")];
+            // Never dropped for room: the agent asks nothing before it acts.
+            if yolo {
+                r.push(Span::styled(YOLO, theme::warning().add_modifier(Modifier::BOLD)));
+            }
+            r.push(Span::styled(icons::status(t.status).to_string(), glyph_style(t.status)));
             if level <= 2 {
                 r.push(Span::styled(format!(" {}", t.status.word()), theme::dim()));
             }
@@ -1298,6 +1272,79 @@ mod tests {
             .map(|y| (0..b.area.width).map(|x| b[(x, y)].symbol()).collect::<String>().trim_end().to_string())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// web-spec.md "Indicators": a parity check, a release gate. The page draws what
+    /// `desl_proto::view` works out, word for word, so each of those words must be on the
+    /// terminal's screen too: the waiting count, each project's name, branch and count, each
+    /// thread's title and age, each subagent, and the header's model, status, id and `⚠ yolo`.
+    #[test]
+    fn the_page_and_the_terminal_say_the_same() {
+        let mut projects = vec![project("desl"), project("rebrand")];
+        projects[0].git = GitState { branch: Some("main".into()), dirty: 2, ..GitState::default() };
+        let mut threads = vec![
+            thread("t-1a", "desl", 1, Status::Working, "Web client"),
+            thread("t-2b", "desl", 2, Status::Waiting, "History view"),
+            thread("t-3c", "rebrand", 3, Status::Idle, ""),
+        ];
+        threads[0].subagents =
+            vec![desl_ir::Subagent { id: "s1".into(), kind: "Explore".into(), description: "price hosts".into(), ..Default::default() }];
+        threads[0].updated_at = 2 * 60_000;
+        threads[1].permission_mode = desl_ir::PermissionMode::Yolo;
+        let now = 23 * 60_000;
+        let page = view::sidebar(&projects, &threads, now, view::on_page);
+        let a = areas(120, 30, true, None);
+        let vt = vt100::Parser::new(a.panes[0].height.try_into().unwrap(), a.panes[0].width.try_into().unwrap(), 0);
+        let v = View {
+            projects: &projects,
+            threads: &threads,
+            panes: vec![PaneView { thread_id: "t-2b", agent: "claude", scrolled: 0, selection: None }],
+            focus: 0,
+            cursor: None,
+            skip: 0,
+            prefix_armed: false,
+            notice: None,
+            help: None,
+            menu: None,
+            finder: None,
+            sub: None,
+            now,
+            shown_sub: None,
+            renaming: None,
+            info: None,
+            pulse: 1.0,
+            prefix: "ctrl+space",
+        };
+        let mut t = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        t.draw(|f| draw(f, &v, &a, &[vt.screen()])).unwrap();
+        let s = screen(&t);
+        assert!(s.contains(&format!("{} waiting", page.waiting.len())), "{s}");
+        let mut words = 0;
+        for p in &page.projects {
+            let mut said = vec![p.name.clone(), p.branch.as_ref().map(|b| format!("⎇ {b}")).unwrap_or_default()];
+            if p.dirty > 0 {
+                said.push(format!("±{}", p.dirty));
+            }
+            for th in &p.threads {
+                // A thread's title and its age sit on one row of the sidebar, under the headers.
+                let row =
+                    s.lines().skip(1).find(|l| l.contains(&th.title)).unwrap_or_else(|| panic!("{} is not on the screen:\n{s}", th.title));
+                assert!(row.contains(&format!(" {} ", th.age)), "{row}");
+                said.extend(th.subagents.iter().map(|x| x.label.clone()));
+                words += 2;
+            }
+            for w in said.iter().filter(|w| !w.is_empty()) {
+                assert!(s.contains(w.as_str()), "the page says {w:?}, the terminal does not:\n{s}");
+                words += 1;
+            }
+        }
+        let shown = page.projects.iter().flat_map(|p| &p.threads).find(|th| th.id == "t-2b").unwrap();
+        let header = s.lines().next().unwrap_or_default();
+        for w in [shown.header.model.as_str(), shown.word, shown.id.as_str(), "⚠ yolo"] {
+            assert!(header.contains(w), "the header lacks {w:?}: {header}");
+            words += 1;
+        }
+        assert_eq!(words, 15, "every word was looked for");
     }
 
     #[test]

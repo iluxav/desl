@@ -112,7 +112,7 @@ Every indicator the TUI shows appears on the page, with the same words and the s
 
 - **Source:** every indicator comes from the daemon's events (`workspace`, `thread`, `project`, `appended`), so it changes on the page when it changes in the TUI. The page polls nothing of its own.
 - **Model:** the header shows the model the agent reported for its session, not only the one picked with `desl model`, following principle 8, honest status. The TUI shows the picked model first today (`model_choice` before `model` in `crates/desl/src/layout.rs`); milestone 1 changes both clients to the reported one.
-- **No drift:** an indicator computed inside the TUI's code today moves to the daemon or to a crate both clients use. A parity check, in which each row of this table appears in both clients, is a release gate.
+- **No drift:** an indicator computed inside the TUI's code today moves to the daemon or to a crate both clients use. A parity check, in which each row of this table appears in both clients, is a release gate. Done in milestone 1: `desl_proto::view` orders the projects and threads and words every row and header; the TUI draws from it, and the bridge sends it to the page as it is. The parity check is `the_page_and_the_terminal_say_the_same` in `crates/desl/src/layout.rs`: each word of the page's view is on the TUI's screen.
 
 ## The waiting list
 
@@ -260,7 +260,14 @@ browser ──WebSocket, JSON frames──▶ desl web (tokio, axum) ──Unix 
 - **tokio stays in its own crate.** A new crate, `crates/desl-web`, holds the async code, and the runtime starts only when `desl web` runs. One WebSocket carries terminal output out and keys in at the same time, which tokio handles directly.
 - **Upgrades.** When the daemon restarts (`desl daemon restart`), its socket closes. `desl web` connects to the new daemon, sends `hello` and `subscribe` again, re-attaches the threads each tab shows, and the tabs carry on. When the binary changes, `desl web` starts again from the new binary, as an open TUI does, keeping its port and its token, so the page reconnects by itself without a new URL.
 
-**Cost (estimates, not measured):** about 1–2 MB more binary than today's 8 MB, and a clean build 20–40 seconds longer. Milestone 1 measures both.
+**Cost, measured in milestone 1:** the stripped release binary grew from 8.2 MB to 10.1 MB, and a clean release build from 42 s to 44 s, on the author's machine.
+
+**The bridge's own messages.** Besides the daemon's frames, the bridge sends the page:
+- `{"type": "view", "view": {waiting, projects}}`: the sidebar as `desl_proto::view::Sidebar` words it, each project with its threads, each thread with its status, glyph, word, age, worktree mark, subagents and header (project, branch, count, model, permission mode, `yolo`). It is sent when the workspace changes, and every 15 seconds when an age moved on; never twice the same.
+- `{"type": "bridge", "state": "no_daemon" | "daemon_gone"}` when the daemon cannot be reached or closed the connection; the page connects again, with growing waits up to 5 seconds.
+- A refused request is answered as the daemon would, `{"type": "reply", "id", "error"}`, and never reaches the daemon: `shutdown`, `handover` and `hello`.
+
+The bridge says `hello` as client `web` and subscribes without a directory, so it registers no project; request ids from 2^52 up are its own, and their replies stay with it. The page sends the key as `{"token": "…"}`; a wrong or late key closes the socket with code 4401, and the page asks for the address desl web printed. A new address pasted into an open tab loads it with the new key.
 
 ## Budgets
 
@@ -291,7 +298,7 @@ The page has the same powers as the TUI. It can type into agents and approve the
 | # | Milestone | Done when |
 | --- | --- | --- |
 | 0 | SPEC change | Done 2026-11-21: the two non-goals, the stack paragraph, the vocabulary, the IR events and the open questions in `SPEC.md`; rule 3 and the layout in `AGENTS.md` |
-| 1 | Page, thread list and indicators | `desl web` prints a URL. The page shows every project and thread, with every indicator in "Indicators" changing within a second of the TUI. The TUI's header shows the reported model and `⚠ yolo`. The parity check passes. The binary is still one file, and its size and build time are recorded |
+| 1 | Page, thread list and indicators | Done 2026-11-21. `desl web` prints a URL. The page shows every project and thread, with every indicator in "Indicators" changing within a second of the TUI. The TUI's header shows the reported model and `⚠ yolo`. The parity check passes. The binary is still one file, and its size and build time are recorded. Measured: 8.2 MB to 10.1 MB and 42 s to 44 s (see Architecture); the first view drew 18 ms after the page began to load, with four threads on localhost. The prompt box and Stop came with it |
 | 2 | Agent screen and conversation | Claude Code, Codex, Copilot and a tasks thread are usable from the page. A thread shown in the TUI and on the page at once keeps the TUI's size and draws right in both. The Conversation tab shows a two-week thread from its first prompt and finds a word in it. A `desl daemon restart` loses nothing on the page |
 | 3 | Waiting list and approvals | For each of the three agents, an approval card shows its dialog, Open its screen shows it, and answering it there clears the card and the TUI's marks |
 | 4 | Questions | `desl ask`, the two events, `desl answer` and the skill move exist. Each of the three agents asks in a test project and gets its answer as the next prompt. A typed prompt supersedes an open question |
@@ -327,7 +334,7 @@ Each milestone follows the definition of done in `SPEC.md`: spec match, tests, h
 1. **When.** Phase 3, beside remote TCP mode, or right after the phase 1 gate?
 2. **One thread on two screens.** Version 1 keeps the TUI's size while a TUI shows the thread. Should a later version follow the client that typed last, as tmux's `window-size latest` does? It needs the TUI to draw a screen of another size.
 3. **Questions and comments in the TUI.** How does the TUI show and answer a desl question without a modal (moment 5)? One option is a line under the thread in the sidebar, answered with a key. Does the TUI show comments at all, or only their prompts?
-4. **Port.** A free port picked at each start, or a fixed default with `--port`? No configuration should be needed either way. Proposed: a fixed default, and the next free port when it is taken. Either way the port and the token survive an upgrade (see Architecture).
+4. **Port.** Settled in milestone 1: 7428, else the next free one of the 19 after it, or `--port`. Still open: keeping the port and the token when `desl web` starts again from a new binary (milestone 2).
 5. **Prompt wording.** The exact text that answers and comments arrive as. It is tested with each agent, like the agent preamble in `SPEC.md`'s open questions.
 6. **Default document.** Is the order `SPEC.md`, `AGENTS.md`, `README.md` right, or should a project pin its document?
 7. **Claude Code's own questions.** Start Claude with `--disallowedTools AskUserQuestion` (present in Claude Code 2.1.329) so it asks with `desl ask` in every client, which needs question 3 answered for the TUI first; or have the Claude adapter read `AskUserQuestion` from the session file as a `question`, shown on the page and answered on Claude's own screen. Proposed: the second for version 1, the first once the TUI can answer a desl question.

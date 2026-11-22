@@ -5,6 +5,7 @@ members = [
     "crates/desl-daemon",
     "crates/desl-proto",
     "crates/desl-ir",
+    "crates/desl-web",
     "crates/adapters/claude",
     "crates/adapters/codex",
     "crates/adapters/copilot",
@@ -20,6 +21,7 @@ publish = false
 desl-ir = { path = "crates/desl-ir" }
 desl-proto = { path = "crates/desl-proto" }
 desl-daemon = { path = "crates/desl-daemon" }
+desl-web = { path = "crates/desl-web" }
 adapter-claude = { path = "crates/adapters/claude" }
 adapter-codex = { path = "crates/adapters/codex" }
 adapter-copilot = { path = "crates/adapters/copilot" }
@@ -39,6 +41,9 @@ clap = { version = "4", features = ["derive"] }
 sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+# desl web only (web-spec.md "Architecture"): the daemon and the TUI stay on threads.
+tokio = { version = "1", features = ["rt", "net", "io-util", "macros", "sync", "time", "signal"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "ws"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

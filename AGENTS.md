@@ -34,7 +34,7 @@ crates/
   desl-daemon/     thread engine, store, projector, approval broker, git service, PTY host, event bus
   desl-proto/      the daemon protocol (versioned, documented in docs/protocol.md)
   desl-ir/         the event IR and Thread/Binding types
-  desl-web/        planned: `desl web`, the browser client (tokio, axum; see web-spec.md)
+  desl-web/        `desl web`, the browser client: the bridge to the daemon and the page (tokio, axum; see web-spec.md)
   adapters/
     claude/        fixtures/, replay tests, the Claude Code adapter
     codex/         fixtures/, replay tests, the Codex adapter

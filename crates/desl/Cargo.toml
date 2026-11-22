@@ -10,6 +10,7 @@ description = "desl (say diesel): a terminal workspace for coding agents. The cl
 desl-ir = { workspace = true }
 desl-proto = { workspace = true }
 desl-daemon = { workspace = true }
+desl-web = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }

@@ -49,6 +49,12 @@ enum Cmd {
     Attach,
     /// The sidebar as text
     Status,
+    /// The workspace in a browser: prints the address to open, serves it until ctrl+c
+    Web {
+        /// The port on 127.0.0.1 (default: 7428, or the next free one)
+        #[arg(long)]
+        port: Option<u16>,
+    },
     /// List, show, rename or remove threads
     Thread {
         #[command(subcommand)]
@@ -283,6 +289,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
     match cli.command.unwrap_or(Cmd::Attach) {
         Cmd::Attach => attach(paths),
         Cmd::Status => cli::status(paths, &out),
+        Cmd::Web { port } => cli::web(paths, &out, port),
         Cmd::Thread { command } => match command {
             ThreadCmd::List => cli::thread_list(paths, &out),
             ThreadCmd::Show { thread } => cli::thread_show(paths, &out, &thread),

@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>desl</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/app.css">
+<script type="module" src="/app.js"></script>
+</head>
+<body>
+<header class="top">
+  <span class="brand">desl</span>
+  <span class="crumb">workspace</span>
+  <span class="grow"></span>
+  <span id="waiting-pill" class="pill" hidden></span>
+  <span id="link" class="link" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="link-text">connecting</span></span>
+</header>
+
+<div class="cols">
+  <nav id="projects" class="side" aria-label="Projects"></nav>
+  <main class="main">
+    <div id="head" class="head"></div>
+    <div id="body" class="body"></div>
+  </main>
+  <aside class="wait" aria-labelledby="wait-title">
+    <h2 id="wait-title" class="label">Waiting</h2>
+    <div id="waitlist" class="waitlist"></div>
+  </aside>
+</div>
+
+<footer class="composer">
+  <form id="prompt-form" autocomplete="off">
+    <span class="caret" aria-hidden="true">›</span>
+    <input id="prompt" type="text" aria-label="Prompt" placeholder="Pick a thread" disabled>
+    <button id="send" type="submit" class="primary" disabled>Send</button>
+    <button id="stop" type="button" class="stop" disabled><svg aria-hidden="true" width="11" height="11" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor"></rect></svg>Stop</button>
+  </form>
+  <p id="notice" class="notice" role="status" aria-live="polite"></p>
+</footer>
+
+<div id="nokey" class="nokey" hidden>
+  <div class="nokey-box">
+    <h1>This page needs its key</h1>
+    <p>Run <code>desl web</code> in a terminal and open the address it prints. The key is the part after <code>#t=</code>, and it changes each time desl web starts.</p>
+  </div>
+</div>
+</body>
+</html>

@@ -99,20 +99,13 @@ pub fn focus_surface() -> Style {
     }
 }
 
-/// Eight hues a project can have, none of them the accent's blue: a project's colour is never
-/// mistaken for "this pane has the keys".
-const HUES: [(u8, u8, u8); 8] =
-    [(242, 142, 43), (118, 183, 178), (89, 161, 79), (237, 201, 72), (176, 122, 161), (255, 157, 167), (156, 117, 95), (181, 189, 104)];
-
-/// A project's own colour, the same wherever its icon is drawn: one of [`HUES`], picked from
-/// its path, so it never changes. Darker on a light background.
+/// A project's own colour, the same wherever its icon is drawn and in `desl web`: one of
+/// [`desl_proto::view::HUES`], picked from its path, so it never changes. Darker on a light background.
 pub fn project_hue(path: &str) -> Style {
     if no_color() {
         return Style::default();
     }
-    // FNV-1a: the same path gives the same colour in every build.
-    let h = path.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
-    let c = HUES[(h % HUES.len() as u64) as usize];
+    let c = desl_proto::view::hue(path);
     let light = BG.get().is_some_and(|b| u32::from(b.0) * 299 + u32::from(b.1) * 587 + u32::from(b.2) * 114 > 128_000);
     Style::default().fg(if light { mixed(c, (0, 0, 0), 0.35) } else { Color::Rgb(c.0, c.1, c.2) })
 }

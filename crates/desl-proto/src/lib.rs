@@ -12,6 +12,7 @@ pub mod paths;
 pub mod reflow;
 pub mod replay;
 pub mod term;
+pub mod view;
 
 use desl_ir::adapter::{Capabilities, Detection};
 use desl_ir::{Decision, Event, ModelInfo, PermissionMode, Project, Status, Thread};

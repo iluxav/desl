@@ -19,6 +19,21 @@ impl Out {
     }
 }
 
+/// `desl web` (web-spec.md): starts the daemon when it is not running, prints the address to
+/// open, key included, and serves the page until ctrl+c. The agents keep working without it.
+pub fn web(paths: &Paths, out: &Out, port: Option<u16>) -> Result<()> {
+    drop(connect(paths, true)?);
+    desl_web::run(&paths.socket, port, |url| {
+        if out.json {
+            out.value(&json!({ "url": url }));
+        } else {
+            println!("desl web: {url}");
+            println!("Open it in a browser on this machine. ctrl+c stops desl web; the agents keep working.");
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+    })
+}
+
 /// Connects to the daemon. With `start`, a daemon that is not running is started: every thread
 /// is in the store, so any command can be answered from a cold start.
 static OWN_BINARY: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();

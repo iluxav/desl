@@ -7,6 +7,15 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- `desl web`: the workspace in a browser, the first milestone of `web-spec.md`. It prints an
+  address on 127.0.0.1 with a key that is new each time, and the page lists every project and
+  agent thread with the same marks and words as the terminal's sidebar: the agent logo as the
+  status (breathing while it works, amber while it waits), the title, the age, the worktree
+  mark, the newest subagents, and each thread's header with its model, permission mode and
+  `⚠ yolo`. It shows who is waiting, sends a prompt to the thread you pick (queued while it
+  works) and stops its turn. It follows the browser's light or dark setting, works at phone
+  width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
+  a rebinding host name gets nothing. Shells and file managers stay in the terminal.
 - A project's task list shows in the sidebar by itself once `.tasks.md` exists, also when an
   agent made it with `desl task add` (at once) or by other means (within five seconds). `q`
   closes it on screen; its row stays while the file does.
@@ -138,6 +147,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Changed
 
+- The thread's header in the terminal names the model the agent reported for its session,
+  before one picked with `desl model` that it has not started on yet, and says `⚠ yolo` while
+  the thread's permission mode is yolo. The sidebar's order and words now come from
+  `desl_proto::view`, which `desl web` sends to the page, so the two cannot disagree.
 - `prefix o` also lists the plain folders beside your projects and repositories, marked
   `folder`: a directory made a minute ago in `~/Projects` is found before it has a `.git`.
   The home folder's own children are still listed only when they are projects, repositories

@@ -16,6 +16,11 @@ All notable changes to desl are recorded here. The format follows
   works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
+- desl web shows the agent's own screen: the selected thread's Claude Code, Codex, Copilot or
+  task list, drawn by xterm.js, with keys, paste and the mouse, as in the terminal. When the
+  terminal shows the same thread, the page draws it at the terminal's size so the terminal stays
+  right, and takes its own size back when the terminal moves on. It comes back by itself after
+  `desl daemon restart`, and an agent that ended starts again with one click.
 - `ctrl+space v` opens the workspace in your browser: it starts `desl web` in the background
   when none runs for this workspace, and it runs on after desl closes. Over SSH the address goes
   to the clipboard instead. `desl web --open` does the same from a shell, `desl web` says where

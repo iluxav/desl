@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>desl</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/app.css">
 <script type="module" src="/app.js"></script>
 </head>
@@ -23,7 +24,15 @@
   <div id="grip-side" class="grip" role="separator" aria-orientation="vertical" aria-controls="projects" aria-label="Width of the projects column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
   <main class="main">
     <div id="head" class="head"></div>
-    <div id="body" class="body"></div>
+    <div class="pane">
+      <div id="screen-pane" class="screen-pane" aria-label="The agent's own screen">
+        <div id="screen" class="screen"></div>
+      </div>
+      <div id="screen-note" class="screen-note" role="status" hidden>
+        <p id="screen-note-text"></p>
+        <button id="screen-again" type="button" class="secondary" hidden>Start it again</button>
+      </div>
+    </div>
   </main>
   <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the waiting list" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
   <aside id="wait" class="wait" aria-labelledby="wait-title">

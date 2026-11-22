@@ -120,10 +120,11 @@ Or press `ctrl+space v` in desl, which starts it in the background and opens you
 it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
 
 Open the address it prints. The page lists every project and agent thread with the same marks
-and words as the sidebar, shows who is waiting, and sends a prompt to the thread you pick
-(queued while it works) or stops its turn. It listens on 127.0.0.1 only, and the key after
-`#t=` is new each time desl web starts. `ctrl+c` stops it; the agents keep working. The
-agent's own screen, questions to click and the live document come next (see `web-spec.md`).
+and words as the sidebar, shows who is waiting, and draws the agent's own screen for the thread
+you pick, keys and all; the prompt box sends to it (queued while it works) and Stop ends its
+turn. It listens on 127.0.0.1 only, and the key after
+`#t=` is new each time desl web starts. `ctrl+c` stops it; the agents keep working. The whole
+conversation, questions to click and the live document come next (see `web-spec.md`).
 
 ## From a script
 

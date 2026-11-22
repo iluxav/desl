@@ -1824,7 +1824,7 @@ impl Client {
             return;
         }
         match (self.busy.take(), ok) {
-            (Some(Busy::Attach(_, want, from)), Some(Reply::Attached { thread_id, agent, replay })) if thread_id == want => {
+            (Some(Busy::Attach(_, want, from)), Some(Reply::Attached { thread_id, agent, replay, .. })) if thread_id == want => {
                 let Some(p) = self.pane_of(&from) else {
                     // The pane closed while its thread was arriving.
                     self.link.request(Command::Leave { thread_id });

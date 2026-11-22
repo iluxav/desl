@@ -238,7 +238,8 @@ async fn a_rebinding_host_name_gets_nothing() {
     };
     let ok = get(format!("127.0.0.1:{}", rig.port)).await;
     assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
-    assert!(ok.to_lowercase().contains("content-security-policy: default-src 'self'"), "{ok}");
+    let csp = ok.to_lowercase().lines().find(|l| l.starts_with("content-security-policy:")).unwrap_or_default().to_string();
+    assert!(csp.contains("default-src 'self'") && !csp.contains("script-src"), "scripts only from the page itself: {csp}");
     assert!(ok.contains("<title>desl</title>"));
     let evil = get(format!("evil.example:{}", rig.port)).await;
     assert!(evil.starts_with("HTTP/1.1 403"), "{evil}");

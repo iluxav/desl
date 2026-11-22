@@ -1236,3 +1236,67 @@ fn a_turn_whose_agent_was_handed_over_is_not_called_interrupted() {
     engine.let_go();
     assert_eq!(engine.terminals(), 0);
 }
+
+/// Every frame a client was sent since the last look.
+fn frames(out: &std::sync::mpsc::Receiver<Arc<Vec<u8>>>) -> Vec<ServerFrame> {
+    let mut all = Vec::new();
+    while let Ok(bytes) = out.try_recv() {
+        all.push(desl_proto::read_frame::<_, ServerFrame>(&mut &bytes[..]).unwrap().unwrap());
+    }
+    all
+}
+
+/// web-spec.md "One thread on two screens": a TUI draws an agent through an emulator of its
+/// pane's size, so its size wins over a page's; the page hears the size and draws at it, and
+/// gets its own once no TUI shows the thread.
+#[test]
+fn a_tui_keeps_its_size_and_a_page_draws_at_it() {
+    let mut r = rig("sizes");
+    let t = r.t.clone();
+    let Ok(Reply::Created { thread_id: shell }) = r.cmd(Command::NewThread {
+        cwd: r.thread(&t).cwd,
+        agent: Some(SHELL.into()),
+        prompt: None,
+        beside: Some(t.clone()),
+        worktree: false,
+    }) else {
+        panic!("a shell thread")
+    };
+    let attach = |rows, cols| Command::Attach { thread_id: shell.clone(), rows, cols, answers: term::Answers::default() };
+    let resize = |rows, cols| Command::Resize { thread_id: shell.clone(), rows, cols };
+    let size = |r: &Rig| r.engine.ptys[&shell].1.size();
+    // Client 1, the rig's, is a TUI; client 2 a page.
+    r.cmd(Command::Hello { protocol: desl_proto::PROTOCOL, client: "tui".into() }).unwrap();
+    r.cmd(attach(30, 100)).unwrap();
+    let (page_tx, page) = channel();
+    r.engine.handle(Msg::Connected { client: 2, out: page_tx });
+    let ask = |r: &mut Rig, client: u64, id: u64, command: Command| {
+        r.engine.handle(Msg::Request { client, request: Request { id, command } });
+    };
+    ask(&mut r, 2, 1, Command::Hello { protocol: desl_proto::PROTOCOL, client: "web".into() });
+    ask(&mut r, 2, 2, attach(50, 200));
+    assert_eq!(size(&r), (30, 100), "the TUI's size stays");
+    let got = frames(&page);
+    assert!(
+        got.iter().any(|f| matches!(f, ServerFrame::Reply { id: 2, ok: Some(Reply::Attached { rows: 30, cols: 100, .. }), .. })),
+        "the page is told the size it draws at: {got:?}"
+    );
+    ask(&mut r, 2, 3, resize(40, 160));
+    assert_eq!(size(&r), (30, 100), "asking again changes nothing while the TUI shows it");
+    assert!(frames(&page).is_empty());
+    // The TUI's pane changes size: the page hears it, the TUI is not told what it did.
+    ask(&mut r, 1, 98, resize(28, 90));
+    assert_eq!(size(&r), (28, 90));
+    assert!(frames(&page).iter().any(|f| matches!(f, ServerFrame::PtySize { rows: 28, cols: 90, .. })));
+    // The TUI shows another thread: the page's newest size applies, and the page hears it.
+    ask(&mut r, 1, 99, Command::Leave { thread_id: shell.clone() });
+    assert_eq!(size(&r), (40, 160));
+    assert!(frames(&page).iter().any(|f| matches!(f, ServerFrame::PtySize { rows: 40, cols: 160, .. })));
+    assert!(!frames(&r.out).iter().any(|f| matches!(f, ServerFrame::PtySize { .. })), "a TUI never gets the size");
+    // A TUI that comes back takes it again.
+    ask(&mut r, 1, 100, attach(24, 80));
+    assert_eq!(size(&r), (24, 80));
+    // And when it disconnects, the page's size applies again.
+    r.engine.handle(Msg::Disconnected { client: 1 });
+    assert_eq!(size(&r), (40, 160));
+}

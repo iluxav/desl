@@ -11,7 +11,7 @@ use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::extract::ws::WebSocketUpgrade;
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use std::io::Read;
@@ -24,9 +24,16 @@ pub const PORT: u16 = 7428;
 /// How many ports from [`PORT`] on it tries.
 const TRIES: u16 = 20;
 
-const INDEX: &str = include_str!("../page/index.html");
-const SCRIPT: &str = include_str!("../page/app.js");
-const STYLE: &str = include_str!("../page/app.css");
+/// The page's files, compiled in: each address, its media type and its text.
+const FILES: &[(&str, &str, &str)] = &[
+    ("/", "text/html; charset=utf-8", include_str!("../page/index.html")),
+    ("/app.js", "text/javascript; charset=utf-8", include_str!("../page/app.js")),
+    ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
+    // xterm.js draws an agent's screen (page/vendor/README.md says where each copy came from).
+    ("/vendor/xterm.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/xterm.mjs")),
+    ("/vendor/xterm.css", "text/css; charset=utf-8", include_str!("../page/vendor/xterm.css")),
+    ("/vendor/addon-fit.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/addon-fit.mjs")),
+];
 
 /// What every connection is checked against.
 #[derive(Clone)]
@@ -84,13 +91,7 @@ fn key() -> Result<String> {
 }
 
 pub(crate) fn app(shared: Shared) -> Router {
-    Router::new()
-        .route("/", get(index))
-        .route("/app.js", get(script))
-        .route("/app.css", get(style))
-        .route("/ws", get(socket))
-        .fallback(missing)
-        .with_state(shared)
+    Router::new().route("/ws", get(socket)).fallback(asset).with_state(shared)
 }
 
 /// The request names this server by an address it answers at. Anything else (a rebinding host
@@ -117,9 +118,12 @@ fn file(h: &HeaderMap, s: &Shared, kind: &'static str, body: &'static str) -> Re
         return refused();
     }
     let p = s.port;
+    // Styles may be inline, scripts never: xterm.js sizes and colours its screen through style
+    // elements it writes (web-spec.md "Security", rule 4). No agent text is ever HTML, and the
+    // other sources stay 'self', so no style can fetch from anywhere else.
     let csp = format!(
-        "default-src 'self'; connect-src 'self' ws://127.0.0.1:{p} ws://localhost:{p}; img-src 'self' data:; \
-         base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:{p} ws://localhost:{p}; \
+         img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
     );
     let mut r = Response::new(Body::from(body));
     let hs = r.headers_mut();
@@ -133,20 +137,12 @@ fn file(h: &HeaderMap, s: &Shared, kind: &'static str, body: &'static str) -> Re
     r
 }
 
-async fn index(State(s): State<Shared>, h: HeaderMap) -> Response {
-    file(&h, &s, "text/html; charset=utf-8", INDEX)
-}
-
-async fn script(State(s): State<Shared>, h: HeaderMap) -> Response {
-    file(&h, &s, "text/javascript; charset=utf-8", SCRIPT)
-}
-
-async fn style(State(s): State<Shared>, h: HeaderMap) -> Response {
-    file(&h, &s, "text/css; charset=utf-8", STYLE)
-}
-
-async fn missing() -> Response {
-    (StatusCode::NOT_FOUND, "desl web has no such page.\n").into_response()
+/// One of the page's files, or a sentence that there is no such page.
+async fn asset(State(s): State<Shared>, h: HeaderMap, uri: Uri) -> Response {
+    match FILES.iter().find(|(path, _, _)| *path == uri.path()) {
+        Some((_, kind, body)) => file(&h, &s, kind, body),
+        None => (StatusCode::NOT_FOUND, "desl web has no such page.\n").into_response(),
+    }
 }
 
 async fn socket(State(s): State<Shared>, h: HeaderMap, up: WebSocketUpgrade) -> Response {

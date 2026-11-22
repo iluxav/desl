@@ -1,6 +1,10 @@
 // desl web's page (web-spec.md). It speaks the daemon's protocol through desl web's bridge and
 // draws the `view` the bridge sends: the sidebar as desl itself words it for the terminal, so
-// both clients say the same. Text from agents only ever goes into the page as text nodes.
+// both clients say the same. Text from agents only ever goes into the page as text nodes, or
+// into xterm.js, which draws the agent's own screen.
+
+import { Terminal } from '/vendor/xterm.mjs';
+import { FitAddon } from '/vendor/addon-fit.mjs';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -99,6 +103,9 @@ function connect(key) {
   };
   ws.onclose = (e) => {
     state.ws = null;
+    // What this connection showed went with it: the next one attaches again.
+    screen.thread = null;
+    screen.ready = false;
     for (const [, done] of state.pending) done({ error: 'desl web lost the daemon before it answered. Send it again.' });
     state.pending.clear();
     if (e.code === 4401) {
@@ -133,8 +140,31 @@ function handle(msg) {
       }
       break;
     }
+    case 'pty':
+      if (msg.thread_id === screen.thread) drawn(fromB64(msg.data));
+      break;
+    case 'pty_size':
+      if (msg.thread_id === screen.thread) sized(msg.rows, msg.cols);
+      break;
+    case 'pty_replace':
+      // The thread moved to another agent: its screen is the new agent's.
+      if (msg.thread_id === screen.thread) replaced(fromB64(msg.data));
+      break;
+    case 'pty_ended':
+      if (msg.thread_id === screen.thread) ended();
+      break;
+    case 'notice':
+      if (msg.thread_id === screen.thread) notice(msg.text);
+      break;
     default:
       break;
+  }
+}
+
+/** Sends a request the daemon never answers: keys, a size, leaving a thread. */
+function fire(command, fields) {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ id: state.nextId++, command, ...fields }));
   }
 }
 
@@ -179,9 +209,9 @@ function render() {
   const cur = current();
   drawSide(cur);
   drawHead(cur);
-  drawBody(cur);
   drawWaiting();
   drawChrome(cur);
+  if (cur && $('link').dataset.state === 'connected' && screen.term && cur.t.id !== screen.thread) attach(cur.t.id);
 }
 
 function drawSide(cur) {
@@ -255,32 +285,6 @@ function drawHead(cur) {
   head.append(left, right);
 }
 
-function drawBody(cur) {
-  const body = $('body');
-  body.replaceChildren();
-  if (!cur) {
-    body.append(el('p', 'empty', state.view ? 'Pick a thread on the left.' : ''));
-    return;
-  }
-  const { t, p } = cur;
-  const h = t.header;
-  const facts = el('dl', 'facts');
-  const fact = (k, v) => facts.append(el('dt', '', k), el('dd', '', v));
-  fact('Status', `${t.glyph} ${t.word}`);
-  if (t.age) fact('Last change', t.age === 'now' ? 'just now' : `${t.age} ago`);
-  fact('Agent', t.agent);
-  if (h.model) fact('Model', h.model);
-  fact('Permissions', h.yolo ? `${h.mode}: the agent does anything without asking` : h.mode);
-  fact('Project', p.parent ? `${h.project} in ${p.parent}` : h.project);
-  if (h.branch) fact('Worktree', `its own, on ${h.branch}`);
-  if (t.subagents.length) {
-    const running = t.subagents.filter((s) => s.state === 'running').length;
-    fact('Subagents', running ? `${t.subagents.length}, ${running} running` : String(t.subagents.length));
-  }
-  fact('Thread', t.id);
-  body.append(facts, el('p', 'next', 'Next on this page: the agent\'s own screen, and the whole conversation.'));
-}
-
 function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
@@ -333,6 +337,189 @@ function notice(text, error = false) {
   const n = $('notice');
   n.textContent = text;
   n.classList.toggle('error', error);
+}
+
+// ---- the agent's screen ------------------------------------------------------------------------
+
+const screen = {
+  term: null,
+  fit: null,
+  /** The thread attached, whose screen this is. */
+  thread: null,
+  /** Its replay is drawn: what comes next is drawn as it comes. */
+  ready: false,
+  /** What came while the replay was being drawn. */
+  queue: [],
+  /** The size last asked for. */
+  asked: null,
+  timer: null,
+};
+
+function fromB64(s) {
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function toB64(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+const paint = (bytes) => new Promise((resolve) => screen.term.write(bytes, resolve));
+
+// What the daemon kept of a terminal marks each size it was given: `ESC _ desl;size;R;C ESC \`.
+// Each part is drawn at its size, as it was while it happened (docs/protocol.md, `attach`).
+const MARK = new TextEncoder().encode('\x1b_desl;size;');
+
+function marks(b) {
+  const out = [];
+  for (let i = 0; i + MARK.length <= b.length; i++) {
+    let same = true;
+    for (let k = 0; k < MARK.length && same; k++) same = b[i + k] === MARK[k];
+    if (!same) continue;
+    let j = i + MARK.length;
+    let text = '';
+    while (j < b.length && b[j] !== 0x1b && text.length < 12) text += String.fromCharCode(b[j++]);
+    if (b[j] !== 0x1b || b[j + 1] !== 0x5c) continue;
+    const [rows, cols] = text.split(';').map(Number);
+    if (rows > 0 && cols > 0) out.push({ at: i, end: j + 2, rows, cols });
+    i = j + 1;
+  }
+  return out;
+}
+
+async function play(bytes) {
+  let from = 0;
+  for (const m of marks(bytes)) {
+    await paint(bytes.subarray(from, m.at));
+    screen.term.resize(m.cols, m.rows);
+    from = m.end;
+  }
+  await paint(bytes.subarray(from));
+}
+
+/** The size that fits the pane. */
+function proposed() {
+  const d = screen.fit.proposeDimensions();
+  return d && d.cols > 1 && d.rows > 1 ? { cols: d.cols, rows: d.rows } : { cols: 100, rows: 30 };
+}
+
+function screenNote(text, again) {
+  $('screen-note').hidden = !text;
+  $('screen-note-text').textContent = text || '';
+  $('screen-again').hidden = !again;
+}
+
+/** Shows thread `id`'s screen: the agent's interface starts if it is not running. */
+async function attach(id) {
+  if (screen.thread && screen.thread !== id) fire('leave', { thread_id: screen.thread });
+  screen.thread = id;
+  screen.ready = false;
+  screen.queue = [];
+  screenNote('');
+  const want = proposed();
+  screen.asked = want;
+  const reply = await request('attach', { thread_id: id, rows: want.rows, cols: want.cols });
+  if (screen.thread !== id) return;
+  if (reply.error || !reply.ok) {
+    screenNote(reply.error || 'desl could not show this thread.', true);
+    return;
+  }
+  const { replay, rows, cols } = reply.ok;
+  screen.term.reset();
+  screen.term.resize(cols || want.cols, rows || want.rows);
+  await play(fromB64(replay || ''));
+  if (screen.thread !== id) return;
+  // The size the terminal has now: a TUI's, when one shows the thread too.
+  screen.term.resize(cols || want.cols, rows || want.rows);
+  for (const bytes of screen.queue.splice(0)) await paint(bytes);
+  screen.ready = true;
+}
+
+function drawn(bytes) {
+  if (screen.ready) screen.term.write(bytes);
+  else screen.queue.push(bytes);
+}
+
+function sized(rows, cols) {
+  if (rows > 0 && cols > 0) screen.term.resize(cols, rows);
+}
+
+async function replaced(bytes) {
+  screen.ready = false;
+  screen.term.reset();
+  await play(bytes);
+  screen.ready = true;
+}
+
+function ended() {
+  screen.ready = false;
+  const cur = current();
+  const who = cur ? cur.t.agent : 'The agent';
+  screenNote(`${who} ended. Start it again on the same conversation, or pick another thread.`, true);
+}
+
+// xterm.js answers the questions an agent asks its terminal by itself. The daemon answers them
+// for a page (docs/protocol.md, `hello`), so these never reach the agent from here, and it hears
+// each answer once.
+const REPLIES = [
+  /^\x1b\[\??\d+;\d+R$/, // the cursor's place
+  /^\x1b\[[?>=][\d;]*c$/, // what kind of terminal
+  /^\x1b\[\d*n$/, // its state
+  /^\x1b\[\??[\d;]+\$y$/, // a mode's state
+  /^\x1b\][\d;]+[^\x07\x1b]*(\x07|\x1b\\)$/, // a colour
+  /^\x1bP[\s\S]*\x1b\\$/, // its name and settings
+  /^\x1b\[\?\d+u$/, // its keyboard flags
+  /^\x1b\[\d+;\d+;\d+t$/, // its size
+];
+
+function typed(bytes, text) {
+  if (!screen.ready || !screen.thread) return;
+  if (REPLIES.some((r) => r.test(text))) return;
+  fire('input', { thread_id: screen.thread, data: toB64(bytes) });
+}
+
+/** The pane changed size: ask for the size that fits it, a moment after it settles. */
+function refit() {
+  clearTimeout(screen.timer);
+  screen.timer = setTimeout(() => {
+    if (!screen.thread || !screen.ready) return;
+    const want = proposed();
+    if (screen.asked && want.cols === screen.asked.cols && want.rows === screen.asked.rows) return;
+    screen.asked = want;
+    fire('resize', { thread_id: screen.thread, rows: want.rows, cols: want.cols });
+  }, 120);
+}
+
+function setupScreen() {
+  const term = new Terminal({
+    fontFamily: '"JetBrainsMono Nerd Font", "JetBrainsMono NF", "Symbols Nerd Font Mono", "JetBrains Mono", ui-monospace, Menlo, monospace',
+    fontSize: 13,
+    scrollback: 5000,
+    cursorBlink: false,
+    theme: {
+      background: '#0b0c10',
+      foreground: '#d6d9e0',
+      cursor: '#d6d9e0',
+      selectionBackground: 'rgba(106, 166, 255, 0.35)',
+    },
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open($('screen'));
+  term.onData((text) => typed(new TextEncoder().encode(text), text));
+  term.onBinary((text) => typed(Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff), text));
+  screen.term = term;
+  screen.fit = fit;
+  new ResizeObserver(refit).observe($('screen-pane'));
+  $('screen-again').addEventListener('click', () => {
+    const id = screen.thread;
+    screen.thread = null;
+    if (id) attach(id);
+  });
 }
 
 // ---- the prompt -------------------------------------------------------------------------------
@@ -451,6 +638,7 @@ function main() {
     return;
   }
   resizable();
+  setupScreen();
   $('prompt-form').addEventListener('submit', sendPrompt);
   $('stop').addEventListener('click', stop);
   render();

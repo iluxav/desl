@@ -125,7 +125,7 @@ in the browser, for that browser only.
 
 | Indicator | In the TUI | On the page |
 | --- | --- | --- |
-| Waiting count | Sidebar header and terminal title (`1 waiting`) | Page header and tab title |
+| Waiting count | Sidebar header and terminal title (`1 waiting`) | Page header, and the tab title's start: `(2) desl · claude · t-7f3a`, with an amber dot as the tab's icon |
 | Project row | Mark in the project's colour, folder name, branch, uncommitted count, directory | The same |
 | Thread row | Agent logo as status (pulses while working; warning colour while waiting; critical when failed; faded while idle), title, age, `⎇` for a worktree | The same, with the same timing and colours; no subagents |
 | Thread header | Agent mark, title, project, model, effort, status word, thread id | The same, plus the permission mode and `⚠ yolo` |
@@ -136,6 +136,10 @@ in the browser, for that browser only.
   `the_page_and_the_terminal_say_the_same` in `crates/desl/src/layout.rs`.
 - **Model:** the header shows the model the agent reported for its session, before the one
   picked with `desl model`.
+- **Attention:** in the background, the tab blinks when something new waits: every second its
+  title turns to `● 2 waiting · desl` and back, and its icon's dot goes and comes, until the user
+  comes back to the tab. Something that waited when they left does not blink it
+  (`page/attention.js`).
 
 ## Forms
 

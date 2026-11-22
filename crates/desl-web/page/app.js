@@ -6,6 +6,7 @@
 
 import { card } from '/forms.js';
 import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
+import { attend, setupAttention } from '/attention.js';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -384,12 +385,13 @@ function drawChrome(cur) {
   const pill = $('waiting-pill');
   pill.hidden = ids.length === 0;
   pill.textContent = `${ids.length} waiting`;
-  // As the terminal's title: the waiting threads other than the one on screen.
-  const others = ids.filter((id) => !cur || id !== cur.t.id).length;
+  // The tab's title leads with what waits, each form and each agent asking in its screen; in
+  // the background, something new blinks it (attention.js).
   let title = cur ? `desl · ${cur.t.agent} · ${cur.t.id}` : 'desl';
   if (cur && cur.t.header.yolo) title += ' · ⚠ yolo';
-  if (others) title += ` · ${others} waiting`;
-  document.title = title;
+  const forms = state.view ? state.view.forms || [] : [];
+  const screens = state.view ? state.view.screen || [] : [];
+  attend(title, [...forms.map((f) => f.form_id), ...screens.map((id) => `screen:${id}`)]);
   const ready = Boolean(cur) && $('link').dataset.state === 'connected';
   const input = $('prompt');
   input.disabled = !ready;
@@ -1274,6 +1276,7 @@ function main() {
   resizable();
   setupConversation();
   setupTasks();
+  setupAttention();
   $('prompt-form').addEventListener('submit', sendPrompt);
   connect(key);
 }

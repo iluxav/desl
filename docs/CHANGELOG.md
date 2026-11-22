@@ -7,6 +7,9 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- desl web's tab asks for your eyes: its title starts with how many things wait, `(2) desl ·
+  …`, with an amber dot as its icon; in the background, something new waiting blinks the title
+  and the dot until you come back to the tab.
 - Highlights on desl web: beside a thread's conversation, its story as short questions and
   answers, at most two sentences each, live. Each turn is one: what started it (your prompt, a
   task, a form's answer) and the first two sentences of the agent's reply, or its words so far

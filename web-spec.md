@@ -155,16 +155,37 @@ tool and the tests.
 | Kind | The agent gives | The answer |
 | --- | --- | --- |
 | `markdown` | `text` | none |
-| `choice` | `label?`, `options[] {label, detail?}` (2 to 12), `multi?`, `other?` | the label, or a list; `other` allows typed text |
+| `choice` | `label?`, `options[] {label, detail?}` (2 to 12), `multi?`, `other?`, `value?` | the label, or a list; `other` allows typed text |
 | `checklist` | `label?`, `items[] {id, label, detail?, checked?}` (1 to 50), `reorder?` | `[{id, checked, note?}]` in the user's order |
 | `text` | `label`, `lines?`, `placeholder?`, `value?` | the text |
 | `number` | `label`, `min`, `max`, `step?`, `unit?`, `value?` | the number |
 | `toggle` | `label`, `value?` | true or false |
 | `select` | `label`, `options[] {label, detail?}` (1 to 50), `value?` | the label |
+| `preview` | `label?`, `html`, `css?` (each at most 64 KB), `controls[]` (at most 12): `range {var, label?, min, max, step?, unit?, value?}`, `colour {var, label?, value?}` (`color` also), `select {var, label?, options[] (CSS values, 1 to 20), value?}` | `{var: value}` for every control: a number, `#rrggbb`, or the CSS value |
+| `table` | `label?`, `columns[] {id, label?, edit?: text, select or check, options?}` (1 to 12), `rows[] {id, <column id>: value}` (1 to 200) | the changed rows, `[{id, <column>: value}]` with only the changed cells; `[]` when nothing changed |
+| `images` | `label?`, `images[] {path, caption?}` (1 to 12), `multi?`, `value?` | the path, or a list |
 
-`document`, `diff`, `preview`, `table` and `images` follow in milestones 3 to 5, as the design
-describes them: the agent names files and desl reads them, so a form stays small and the user
-sees the file as it is.
+`value`, where a widget takes one, is where it starts: the tool tells the agent to set it to what
+is true now or what it recommends, so the user changes only what differs.
+
+**The preview.** The agent's HTML is drawn in an `<iframe sandbox="allow-same-origin">`, so
+nothing in it runs (no `allow-scripts`), and the page's CSP, which the frame inherits, refuses
+inline script and anything from outside. The page fills the frame through the DOM, and drops
+`script`, `iframe`, `object`, `embed`, `meta`, `base` and `link` elements, `on…` attributes and
+`javascript:` URLs as a second lock. Since the CSP refuses inline style, the agent's CSS and its
+`<style>` elements become a constructed stylesheet, and its `style` attributes are set through
+CSSOM. A link click stays in the frame. The controls are drawn by the page and set CSS variables
+on the frame's root; a conversation redraw leaves the card on the page, so the frame never loads
+again mid-drag. **Wide** gives the card the waiting list's width too.
+
+**Pictures.** An `images` widget names files; desl reads them. Each path must resolve, links
+followed, inside the thread's directory, and be a PNG, JPEG, GIF, WebP or SVG (by its first bytes;
+an SVG also by its name) of at most 10 MB. The daemon checks this when the form is pushed and
+again when the page asks for the picture (`form_image`), which it answers only for a path the form
+names; the page shows it as a `data:` URL, so an SVG runs nothing.
+
+`document` and `diff` follow in milestones 3 and 4, as the design describes them: the agent
+names files and desl reads them, so a form stays small and the user sees the file as it is.
 
 **Lifecycle.**
 1. `show_form` (or `desl form new`): the daemon checks the form, keeps its JSON as a blob, gives it
@@ -290,12 +311,13 @@ the agents. Every rule below follows from that.
 4. **Agent text is never HTML.** Forms, replies and titles reach the page only as text nodes or
    through the page's Markdown renderer, which makes elements and never HTML. The
    Content-Security-Policy is `default-src 'self'` with nothing inline, styles included. The
-   `preview` widget (milestone 5) shows agent HTML and CSS in a sandboxed frame with scripts off;
-   that is the one place agent markup is drawn.
+   `preview` widget shows agent HTML and CSS in a frame sandboxed without scripts, filled by the
+   page with what could run or load removed; that is the one place agent markup is drawn.
+   Pictures reach the page as `data:` URLs, never as files it can name.
 5. **The MCP server acts on its own thread only:** `desl mcp` is started with the thread's id and
    can push and withdraw that thread's forms, nothing else.
-6. **Files stay in the project.** A `document`, `diff` or `images` widget (milestones 3 to 5)
-   reads only files inside the thread's directory once links are resolved, of the kinds and sizes
+6. **Files stay in the project.** An `images` widget, and the `document` and `diff` widgets
+   (milestones 3 and 4), read only files inside the thread's directory once links are resolved, of the kinds and sizes
    the design lists; a document save writes only the section the card opened, and only if it is
    unchanged on disk.
 7. **Secrets.** The environment denylist and the key scan in `SPEC.md` apply unchanged. The
@@ -309,7 +331,7 @@ the agents. Every rule below follows from that.
 | 2 | Forms | Done 2026-11-22: `desl mcp`, the launch flags for Claude Code 2.1.330, Codex 0.171.0 and Copilot 1.0.114, the events, the protocol, `desl form`, and the seven widgets of milestone 2 in the conversation and the right column. Each of the three agents called `show_form` without a dialog of its own and ended its turn; answers sent from the page and the shell reached Claude, Codex and Copilot as their next prompt; open forms and drafts survived daemon restarts. Two defects found on the way are fixed with tests: a migrating upgrade lost the new daemon's writes (`VACUUM INTO` for the backup), and a thread waiting on a form queued every prompt |
 | 3 | Document | A section of a Markdown file edited in place with comments; the conflict on save |
 | 4 | Diff review | Each hunk accepted, rejected or commented on |
-| 5 | Preview, table, images | The sandboxed preview with controls; a table to edit; pictures to choose from |
+| 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
 | 6 | Security review | Someone who didn't write it tries to run script from a form, read a file outside the project through a document, image or diff, and drive an agent from another site, and fails each time |
 
 Each milestone follows the definition of done in `SPEC.md`: spec match, tests, help text, error

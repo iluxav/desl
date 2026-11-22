@@ -32,6 +32,10 @@ struct FakeState {
     fail_resume: bool,
     /// `interrupt` ends the turn at once, as Codex does.
     interrupt_ends_turn: bool,
+    /// `write_session` copies a conversation into a session, as Claude Code's adapter does.
+    copies: bool,
+    /// The events of each conversation copied into a session.
+    copied: Vec<usize>,
 }
 
 struct Fake {
@@ -85,6 +89,14 @@ impl Adapter for Fake {
             model("fast", "Fast One", false, &["low", "medium"]),
             model("deep", "Deep One", false, &["low", "medium", "high", "max"]),
         ])
+    }
+    fn write_session(&self, cwd: &Path, events: &[EventKind]) -> Result<(String, PathBuf, u64), AdapterError> {
+        let mut s = self.state.lock().unwrap();
+        if !s.copies {
+            return Err(AdapterError(format!("{} cannot take a copied conversation.", self.id)));
+        }
+        s.copied.push(events.len());
+        Ok(("copied".into(), cwd.join("copied.jsonl"), 0))
     }
     fn start(&self, opts: StartOpts, sink: Sink) -> Result<Box<dyn Session>, AdapterError> {
         let mut s = self.state.lock().unwrap();
@@ -1498,4 +1510,21 @@ fn the_page_reads_only_the_images_a_form_names() {
     std::os::unix::fs::symlink(r.dir.join("secret.png"), cwd.join("b.png")).unwrap();
     let err = r.cmd(Command::FormImage { form_id, path: "b.png".into() }).unwrap_err();
     assert!(err.contains("outside"), "{err}");
+}
+
+#[test]
+fn a_thread_whose_only_history_is_forms_opens_a_new_session() {
+    // A script pushed a form to a thread before its agent ever ran: there is no conversation to
+    // copy, and a copy of none is a session the agent cannot resume.
+    let mut r = rig("form-fresh");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().copies = true;
+    show(&mut r, &t);
+    let i = r.engine.idx(&t).unwrap();
+    let fake = Fake { id: "claude", state: r.claude.clone() };
+    assert!(matches!(r.engine.open_for(i, &fake), Open::New { session_id: Some(_) }), "{:?}", r.engine.open_for(i, &fake));
+    assert!(r.claude.lock().unwrap().copied.is_empty(), "nothing copied");
+    // With a conversation, as a fork has, it is copied.
+    r.engine.append(&t, EventKind::UserMessage { text: "hello".into(), attachments: vec![] });
+    assert_eq!(r.engine.open_for(i, &fake), Open::Resume { session_id: "copied".into() });
 }

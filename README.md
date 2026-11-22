@@ -126,7 +126,8 @@ search and a prompt box under it (queued while the agent works).
 It is where your agents put **forms** in front of you: when a choice needs its trade-offs, a
 plan should be approved step by step, or a setting tuned, the agent calls desl's `show_form`
 tool and ends its turn, and the form appears as a card in its conversation: options, a
-checklist to untick and reorder, fields, a slider. Press Send, and your answer is the agent's
+checklist to untick and reorder, fields, a slider, a preview of a look to tune, a table to
+edit, pictures to pick from. Press Send, and your answer is the agent's
 next prompt. The right column lists every open form, and `ctrl+space v` on a waiting thread
 goes straight to it. desl gives the tool to Claude Code, Codex and Copilot when it starts them;
 nothing to configure.

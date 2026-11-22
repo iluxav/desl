@@ -1052,6 +1052,41 @@ impl Engine {
 
     // ---- agents' own interfaces (the native route) --------------------------------------------
 
+    /// How thread `i`'s active agent opens its session: the one it has, else a new one, holding
+    /// a copy of the thread's conversation when there is one.
+    fn open_for(&self, i: usize, adapter: &dyn Adapter) -> Open {
+        let t = &self.threads[i];
+        match t.bindings.get(&t.active_agent).and_then(|b| b.session_id.clone()) {
+            // A session that never had a turn has no file, and its agent cannot resume it.
+            Some(id) if adapter.session_file(Path::new(&t.cwd), Some(&id), UNIX_EPOCH).is_none() => Open::New { session_id: Some(id) },
+            Some(session_id) => Open::Resume { session_id },
+            // A thread with a conversation and no session of this agent yet, such as a fork: the
+            // conversation is copied into a new session, as a switch does. Forms alone, pushed
+            // before the agent ever ran, are no conversation to copy.
+            None if t.head > 0 => match self.copy_conversation(i, adapter) {
+                Ok(Some((session_id, _))) => Open::Resume { session_id },
+                Ok(None) => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
+                Err(e) => {
+                    tracing::warn!(thread = %t.id, agent = %t.active_agent, "could not copy the conversation into a new session: {e}");
+                    Open::New { session_id: Some(desl_ir::adapter::new_uuid()) }
+                }
+            },
+            None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
+        }
+    }
+
+    /// Thread `i`'s conversation copied into a new session of `adapter`'s agent: its id and
+    /// length. None when the thread has no conversation, as when forms are all it holds: a copy
+    /// of nothing is a session the agent cannot resume.
+    fn copy_conversation(&self, i: usize, adapter: &dyn Adapter) -> Result<Option<(String, u64)>, desl_ir::adapter::AdapterError> {
+        let t = &self.threads[i];
+        let kinds: Vec<EventKind> = self.store.all_events(&t.id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
+        if !kinds.iter().any(EventKind::conversational) {
+            return Ok(None);
+        }
+        adapter.write_session(Path::new(&t.cwd), &kinds).map(|(session_id, _, len)| Some((session_id, len)))
+    }
+
     /// Starts the thread's active agent in a PTY: resuming its session when it has one.
     fn start_pty(&mut self, i: usize, rows: u16, cols: u16) -> Result<(), String> {
         let t = &self.threads[i];
@@ -1068,26 +1103,7 @@ impl Engine {
             None if agent == TASKS => tasks_launch(&self.tasks_program, &t.cwd),
             None => shell_launch(),
             Some(adapter) => {
-                let open = match binding.and_then(|b| b.session_id.clone()) {
-                    // A session that never had a turn has no file, and its agent cannot resume it.
-                    Some(id) if adapter.session_file(Path::new(&t.cwd), Some(&id), UNIX_EPOCH).is_none() => {
-                        Open::New { session_id: Some(id) }
-                    }
-                    Some(session_id) => Open::Resume { session_id },
-                    // A thread with history and no session of this agent yet, such as a fork:
-                    // its conversation is copied into a new session, as a switch does.
-                    None if t.head > 0 => {
-                        let kinds: Vec<EventKind> = self.store.all_events(&t.id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
-                        match adapter.write_session(Path::new(&t.cwd), &kinds) {
-                            Ok((session_id, _, _)) => Open::Resume { session_id },
-                            Err(e) => {
-                                tracing::warn!(thread = %t.id, agent = %agent, "could not copy the conversation into a new session: {e}");
-                                Open::New { session_id: Some(desl_ir::adapter::new_uuid()) }
-                            }
-                        }
-                    }
-                    None => Open::New { session_id: Some(desl_ir::adapter::new_uuid()) },
-                };
+                let open = self.open_for(i, adapter.as_ref());
                 adapter.launch(&LaunchOpts {
                     cwd: t.cwd.clone().into(),
                     open,
@@ -1615,11 +1631,10 @@ impl Engine {
                 self.prefix()
             ));
         }
-        let t = &self.threads[i];
-        let cwd = t.cwd.clone();
-        let kinds: Vec<EventKind> = self.store.all_events(thread_id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
-        let (open, copied, brief) = match adapter.write_session(Path::new(&cwd), &kinds) {
-            Ok((session_id, _, len)) => (Open::Resume { session_id: session_id.clone() }, Some((session_id, len)), None),
+        let cwd = self.threads[i].cwd.clone();
+        let (open, copied, brief) = match self.copy_conversation(i, adapter.as_ref()) {
+            Ok(Some((session_id, len))) => (Open::Resume { session_id: session_id.clone() }, Some((session_id, len)), None),
+            Ok(None) => (Open::New { session_id: Some(desl_ir::adapter::new_uuid()) }, None, None),
             Err(e) => {
                 tracing::warn!(thread = %thread_id, to, "could not copy the conversation, sending the brief: {e}");
                 let brief = self.brief_for(i, to);

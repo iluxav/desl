@@ -18,6 +18,11 @@ All notable changes to desl are recorded here. The format follows
   open goes straight to it. A thread with a form open shows waiting, and talking to its agent
   meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
   from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
+- Three more form widgets: a **preview** of HTML and CSS the agent wrote, tuned with sliders,
+  colour pickers and lists that set its CSS variables, drawn in a frame where nothing runs; a
+  **table** whose cells you edit, sent back as just the cells you changed; and **pictures** of
+  the project to pick from, which desl reads only from inside the thread's directory. A choice
+  can now start on the option the agent recommends.
 - `desl web`: the workspace in a browser, the first milestone of `web-spec.md`. It prints an
   address on 127.0.0.1 with a key that is new each time, and the page lists every project and
   agent thread with the same marks and words as the terminal's sidebar: the agent logo as the
@@ -121,6 +126,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- An agent never started in a thread whose only history was something other than a
+  conversation, such as a form pushed from a shell before the first prompt: desl copied the
+  empty conversation into a session the agent could not resume. It now opens a new session, on
+  start and on a switch.
 - An install that upgraded the store lost what the new daemon wrote until its next restart.
   Before migrating, the daemon copied the store's file outside SQLite, which drops every lock
   the process holds on it; the daemon being replaced then took itself for the last one on its

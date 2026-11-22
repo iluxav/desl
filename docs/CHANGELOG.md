@@ -18,6 +18,11 @@ All notable changes to desl are recorded here. The format follows
   open goes straight to it. A thread with a form open shows waiting, and talking to its agent
   meanwhile works as usual. `desl form list`, `show`, `answer`, `close` and `new` do the same
   from a shell. See `web-spec.md` and `docs/design/2026-11-21-web-forms.md`.
+- The daemon and every agent leave the terminal that started them: the daemon moves itself,
+  its agents and their processes into a systemd scope of its own, `desl-<pid>.scope`, so
+  closing or killing that terminal's scope no longer ends them. A running daemon moves at the
+  next install, agents and all, without stopping one. With `loginctl enable-linger` they also
+  keep running when you log out; `desl doctor` says whether they do.
 - A form an agent pushes while no desl web page is open opens your browser on it, starting desl
   web if it must; `[web] open_on_form = false` turns that off. `desl web --open --thread <id>`
   does it by hand.

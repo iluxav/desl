@@ -179,6 +179,14 @@ fn take_over(paths: &Paths) -> Result<()> {
 
 fn run(mut engine: Engine, rx: Receiver<Msg>, tx: Sender<Msg>, listener: UnixListener, paths: &Paths) -> Result<()> {
     let own_socket = socket_file(paths);
+    // Out of the terminal's scope that started it, with every agent: a logout or a kill of that
+    // scope no longer ends them (crate::unit). A daemon that took over is in it already.
+    let agents = engine.agent_pids();
+    std::thread::spawn(move || match crate::unit::settle_in(&agents) {
+        Ok(Some(scope)) => tracing::info!(scope, agents = agents.len(), "moved into a scope of its own, with its agents"),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("could not move into a scope of its own, so it stays in the one that started it: {e}"),
+    });
     {
         let tx = tx.clone();
         std::thread::spawn(move || accept(listener, tx));

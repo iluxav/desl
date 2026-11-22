@@ -1330,6 +1330,11 @@ impl Engine {
         self.tails.clear();
     }
 
+    /// The process of each agent and shell this daemon runs.
+    pub fn agent_pids(&self) -> Vec<u32> {
+        self.ptys.values().filter_map(|(_, p)| p.pid()).collect()
+    }
+
     pub fn terminals(&self) -> usize {
         self.ptys.len()
     }
@@ -3142,11 +3147,25 @@ impl Engine {
         }
         let sessions: usize = self.live.values().map(|l| l.sessions.len()).sum();
         let working = (0..self.threads.len()).filter(|i| self.mid_turn(*i)).count();
+        let scope = crate::unit::current().map(|u| format!(", in {u}")).unwrap_or_default();
         checks.push(Check {
             name: "daemon".into(),
             ok: true,
-            detail: format!("pid {}, {sessions} agent sessions open, {working} threads working", std::process::id()),
+            detail: format!("pid {}{scope}, {sessions} agent sessions open, {working} threads working", std::process::id()),
         });
+        // Its scope ends with the user's systemd, which ends at logout unless it lingers.
+        if let Some(lingers) = crate::unit::lingers() {
+            checks.push(Check {
+                name: "logout".into(),
+                ok: lingers,
+                detail: if lingers {
+                    "the agents keep running when you log out".into()
+                } else {
+                    "the agents end when you log out. `loginctl enable-linger` keeps them running; a restart of the machine still ends them"
+                        .into()
+                },
+            });
+        }
         checks
     }
 

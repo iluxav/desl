@@ -5,7 +5,7 @@
 // in front of the user are drawn as cards in its conversation (forms.js).
 
 import { card } from '/forms.js';
-import { MORE, SEGMENTS, counts, drawList } from '/tasks.js';
+import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
@@ -839,7 +839,8 @@ function taskAction(t, project) {
     const who = state.startWith.agent ? agentName(state.startWith.agent) : "the project's default agent";
     main.title = `Start #${t.id} on ${who}, ${place === 'main' ? 'in the main checkout' : place === 'worktree' ? 'in its own worktree' : 'in the selected thread'}`;
     main.addEventListener('click', () => startTask(t, project, { agent: state.startWith.agent, place }));
-    const caret = el('button', 'primary caret', '▾');
+    const caret = el('button', 'primary split-more');
+    caret.append(icon('down'));
     caret.type = 'button';
     caret.setAttribute('aria-label', `Pick the agent and the place for #${t.id}`);
     caret.addEventListener('click', () => openStartPanel(t, project, caret));

@@ -458,25 +458,35 @@ body.wide .fw-doc-text { min-height: 60vh; }
 .seg b { font-weight: 500; color: var(--muted); margin-left: 4px; }
 .tasklist { display: flex; flex-direction: column; min-width: 0; }
 .tproject { margin: 10px 0 2px; font-size: 12.5px; font-weight: 600; }
-.trow { display: grid; grid-template-columns: 38px minmax(0, 1fr) auto; gap: 2px 8px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
+.trow { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 2px 8px; padding: 8px 4px; border-bottom: 1px solid var(--line); }
 .trow:hover { background: var(--hover); }
-.tid { color: var(--muted); font: 12px var(--mono); padding-top: 1px; }
-.ttitle { min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
-.tkind { font-size: 10.5px; padding: 0 6px; border-radius: 9px; border: 1px solid var(--line2); color: var(--dim); margin-right: 6px; white-space: nowrap; }
+.ico { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.tkind { grid-row: 1 / span 2; display: flex; justify-content: center; padding-top: 2px; color: var(--dim); }
+.tkind .ico { width: 18px; height: 18px; }
 .tkind.kind-bug { color: var(--crit); }
+.tkind.kind-feature { color: var(--accent); }
 .tkind.kind-idea { color: var(--branch); }
+.tkind.kind-docs, .tkind.kind-test, .tkind.kind-refactor { color: var(--dim); }
+.tnum { font: 11.5px var(--mono); color: var(--dim); }
+.tprio { display: inline-flex; vertical-align: -3px; margin: 0 4px; }
+.tprio .ico { width: 14px; height: 14px; }
+.prio-high { color: var(--crit); }
+.prio-medium { color: var(--warn); }
+.prio-low { color: var(--muted); }
+.ttitle { min-width: 0; overflow-wrap: anywhere; font-size: 13.5px; }
 .tmeta { grid-column: 2; color: var(--muted); font-size: 11.5px; min-width: 0; overflow-wrap: anywhere; }
 .tmeta .hi { color: var(--crit); }
 .tthread { border: 0; background: transparent; padding: 0; color: var(--accent); font: inherit; cursor: pointer; }
 .tthread:hover { text-decoration: underline; }
 .tact { grid-row: 1 / span 2; grid-column: 3; display: flex; gap: 6px; align-items: center; }
-.trow.status-in-progress .tid { color: var(--accent); }
-.trow.status-ready .tid { color: var(--ok); }
-.trow.status-issue .tid { color: var(--warn); }
+.trow.status-in-progress .tnum { color: var(--accent); }
+.trow.status-ready .tnum { color: var(--ok); }
+.trow.status-issue .tnum { color: var(--warn); }
 .trow { position: relative; }
 .split { display: inline-flex; }
 .split .primary { min-height: 30px; font-size: 12.5px; padding: 0 12px; border-radius: 8px 0 0 8px; }
-.split .caret { border-radius: 0 8px 8px 0; padding: 0 8px; border-left: 1px solid rgb(0 0 0 / 0.18); }
+.split .split-more { border-radius: 0 8px 8px 0; padding: 0 7px; border-left: 1px solid rgb(0 0 0 / 0.18); display: inline-flex; align-items: center; }
+.split .split-more .ico { width: 14px; height: 14px; stroke-width: 2.4; }
 .tstate { font-size: 12px; white-space: nowrap; }
 .tstate.working { color: var(--accent); }
 .tstate.ready { color: var(--ok); }

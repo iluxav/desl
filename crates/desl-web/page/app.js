@@ -288,6 +288,12 @@ function drawSide(cur) {
         b.append(wt);
       }
       if (t.age) b.append(el('span', 'age', t.age));
+      // Its latest highlight, to catch up on every agent without opening one.
+      if (t.latest) {
+        const line = el('span', 'latest', t.latest);
+        b.append(line);
+        b.title = `${t.title} · ${t.word} · ${t.id}\n${t.latest}`;
+      }
       b.addEventListener('click', () => select(t.id));
       section.append(b);
     }

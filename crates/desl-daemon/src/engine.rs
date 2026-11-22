@@ -402,6 +402,16 @@ impl Engine {
                 }
             }
         }
+        // Threads from before highlights get their latest line once, from their last events.
+        for t in threads.iter_mut().filter(|t| t.head > 0 && t.latest.is_none() && is_agent(&t.active_agent)) {
+            let tail = store.events(&t.id, t.head.saturating_sub(200).max(1), t.head).unwrap_or_default();
+            t.latest = desl_proto::highlights::latest_of(&tail);
+            if t.latest.is_some()
+                && let Err(e) = store.put_thread(t)
+            {
+                tracing::error!(thread = %t.id, "could not keep the latest highlight: {e:#}");
+            }
+        }
         for (thread_id, form) in open_forms {
             if let Some(t) = threads.iter_mut().find(|t| t.id == thread_id) {
                 t.open_forms.push(form);
@@ -706,6 +716,10 @@ impl Engine {
         }
         self.threads[i].head = event.index;
         self.broadcast(Change::Appended { event: event.clone() });
+        // The thread's latest highlight, for the page's left column.
+        if desl_proto::highlights::step(&mut self.threads[i].latest, &event.kind) {
+            self.persist(thread_id);
+        }
         Some(event)
     }
 
@@ -827,6 +841,7 @@ impl Engine {
             subagents: Vec::new(),
             open_forms: Vec::new(),
             screen_asks: false,
+            latest: None,
         };
         let id = thread.id.clone();
         self.threads.push(thread);
@@ -3189,6 +3204,7 @@ impl Engine {
             subagents: Vec::new(),
             open_forms: Vec::new(),
             screen_asks: false,
+            latest: parent.latest.clone(),
             // The copy's agent may title it apart from the parent.
             named: false,
             // `yolo` is set per thread, by hand; a fork does not inherit it.

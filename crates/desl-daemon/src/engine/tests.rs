@@ -1418,6 +1418,22 @@ fn a_form_too_big_or_for_no_agent_is_refused() {
 }
 
 #[test]
+fn a_threads_latest_highlight_follows_its_turns_and_reaches_the_clients() {
+    let mut r = rig("latest");
+    let t = r.t.clone();
+    r.prompt(&t, "Why is the pane empty?");
+    assert_eq!(r.thread(&t).latest.as_deref(), Some("reply to: Why is the pane empty?"));
+    // Sent as a client does, so the changes it makes are read here and not by `cmd`.
+    r.changes();
+    let highlight = Command::Highlight { thread_id: t.clone(), question: "Who asks?".into(), answer: "Only prefix t.".into() };
+    r.engine.handle(Msg::Request { client: 1, request: Request { id: 900, command: highlight } });
+    assert_eq!(r.thread(&t).latest.as_deref(), Some("Only prefix t."));
+    let told =
+        r.changes().into_iter().any(|c| matches!(c, Change::Thread { thread } if thread.latest.as_deref() == Some("Only prefix t.")));
+    assert!(told, "clients hear of it");
+}
+
+#[test]
 fn an_agents_highlight_goes_in_the_log_and_a_long_one_is_refused() {
     let mut r = rig("highlight");
     let t = r.t.clone();

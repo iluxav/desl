@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -167,6 +167,10 @@ impl Store {
                  COMMIT;",
             )?;
         }
+        if version < 8 {
+            // Highlights (docs/design/2026-11-22-highlights.md): each thread's latest line.
+            self.conn.execute_batch("BEGIN; ALTER TABLE threads ADD COLUMN latest TEXT; PRAGMA user_version = 8; COMMIT;")?;
+        }
         Ok(())
     }
 
@@ -261,7 +265,7 @@ impl Store {
             }
         }
         let mut st = self.conn.prepare(
-            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named
+            "SELECT id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named, latest
              FROM threads ORDER BY created_at, id",
         )?;
         let rows = st.query_map([], |r| {
@@ -288,6 +292,7 @@ impl Store {
                 open_forms: Vec::new(),
                 screen_asks: false,
                 named: r.get(13)?,
+                latest: r.get(14)?,
                 git: GitState::default(),
                 id,
             })
@@ -298,14 +303,15 @@ impl Store {
     /// Writes a thread's row and its bindings. The queue and the events have their own writes.
     pub fn put_thread(&self, t: &Thread) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12, subagents = ?13, named = ?14",
+            "INSERT INTO threads (id, project_id, name, cwd, worktree, parent_id, fork_point, active_agent, status, permission_mode, created_at, updated_at, subagents, named, latest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+             ON CONFLICT (id) DO UPDATE SET project_id = ?2, name = ?3, cwd = ?4, worktree = ?5, active_agent = ?8, status = ?9, permission_mode = ?10, updated_at = ?12, subagents = ?13, named = ?14, latest = ?15",
             params![
                 t.id, t.project_id, t.name, t.cwd, t.worktree, t.parent_id, t.fork_point, t.active_agent,
                 t.status.word(), t.permission_mode.word(), t.created_at, t.updated_at,
                 serde_json::to_string(&t.subagents).unwrap_or_else(|_| "[]".into()),
-                t.named
+                t.named,
+                t.latest
             ],
         )?;
         self.conn.execute("DELETE FROM bindings WHERE thread_id = ?1", params![t.id])?;
@@ -603,6 +609,7 @@ mod tests {
             subagents: Vec::new(),
             open_forms: Vec::new(),
             screen_asks: false,
+            latest: None,
             git: GitState::default(),
         }
     }
@@ -662,6 +669,9 @@ mod tests {
         t.subagents.clear();
         s.put_thread(&t).unwrap();
         assert!(s.threads().unwrap()[0].subagents.is_empty());
+        t.latest = Some("Only prefix t asked for the list.".into());
+        s.put_thread(&t).unwrap();
+        assert_eq!(s.threads().unwrap()[0].latest, t.latest, "the latest highlight is kept with its thread");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

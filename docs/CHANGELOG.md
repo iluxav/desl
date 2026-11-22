@@ -13,6 +13,8 @@ All notable changes to desl are recorded here. The format follows
   while it works. A click opens the conversation at that moment. desl runs no model for it.
   Agents add their own: desl's MCP tool `highlight` takes a question they settled and its
   answer, two sentences each at most, and the entry sits under the turn it came up in.
+  The left column shows each thread's latest line under its title, to catch up on every
+  agent without opening one; threads from before fill it once when the daemon starts.
 - Forms on desl web: an agent puts a form in front of you, and your answer is its next
   prompt. Claude Code, Codex and Copilot get desl's MCP tool `show_form` when desl starts them,
   through their own flags, with your configuration untouched. A form is drawn as a card in the

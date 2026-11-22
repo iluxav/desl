@@ -181,6 +181,8 @@ pub struct ThreadRow {
     pub age: String,
     /// It works in a git worktree of its own.
     pub worktree: bool,
+    /// Its latest highlight, for catching up at a glance; empty before its first prompt.
+    pub latest: String,
     pub subagents: Vec<SubRow>,
     pub header: Header,
 }
@@ -238,6 +240,7 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
             word: t.status.word(),
             age: if is_agent(&t.active_agent) { age(now, t.updated_at) } else { String::new() },
             worktree: own,
+            latest: t.latest.clone().unwrap_or_default(),
             subagents: subagents_shown(t)
                 .map(|k| &t.subagents[k])
                 .map(|s| SubRow { id: s.id.clone(), label: sub_label(s), state: sub_state(s, t) })
@@ -320,9 +323,11 @@ mod tests {
     #[test]
     fn the_sidebar_lists_projects_in_their_order_and_threads_oldest_first() {
         let projects = [project("desl", Some("main"), 2), project("rebrand", None, 0)];
+        let mut waiting = thread("t-2", "desl", 2, "claude", Status::Waiting);
+        waiting.latest = Some("Only prefix t asked for the list.".into());
         let threads = [
             thread("t-3", "rebrand", 1, "codex", Status::Working),
-            thread("t-2", "desl", 2, "claude", Status::Waiting),
+            waiting,
             thread("t-1", "desl", 1, "shell", Status::Idle),
             thread("t-4", "desl", 3, "copilot", Status::Idle),
         ];
@@ -335,6 +340,8 @@ mod tests {
         assert_eq!(p.hue, hue("/src/desl"));
         // A shell has no age; agents do.
         assert_eq!((p.threads[0].age.as_str(), p.threads[1].age.as_str()), ("", "now"));
+        // Each thread's latest highlight, for catching up at a glance.
+        assert_eq!((p.threads[0].latest.as_str(), p.threads[1].latest.as_str()), ("", "Only prefix t asked for the list."));
         // The browser leaves the shell out, and so a project with nothing else to show.
         let page = sidebar(&projects, &threads[1..2], 0, on_page);
         assert_eq!(page.projects.len(), 1);

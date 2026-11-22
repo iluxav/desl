@@ -205,6 +205,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row[aria-current="true"] .title { font-weight: 500; }
 .row[aria-current="true"] .age { color: var(--dim); }
+/* A thread's latest highlight, on a line of its own under its title. */
+.row:has(.latest) { flex-wrap: wrap; row-gap: 1px; padding-bottom: 5px; }
+.row .latest { flex: 0 0 100%; padding-left: 22px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row[aria-current="true"] .latest { color: var(--dim); }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
 .wt { color: var(--branch); }
 

@@ -65,6 +65,31 @@ pub fn highlights(events: &[Event]) -> Vec<Entry> {
     out
 }
 
+/// Moves a thread's latest line on with event `kind`: a question asked, the answer so far, an
+/// agent's highlight. Whether it changed.
+pub fn step(latest: &mut Option<String>, kind: &EventKind) -> bool {
+    let line = match kind {
+        EventKind::UserMessage { text, .. } => asked(text).1,
+        EventKind::AssistantMessage { text, .. } => two_sentences(text),
+        EventKind::Highlight { answer, .. } => answer.trim().to_string(),
+        _ => return false,
+    };
+    if line.is_empty() || latest.as_deref() == Some(line.as_str()) {
+        return false;
+    }
+    *latest = Some(line);
+    true
+}
+
+/// The latest line of a thread with `events`.
+pub fn latest_of(events: &[Event]) -> Option<String> {
+    let mut latest = None;
+    for e in events {
+        step(&mut latest, &e.kind);
+    }
+    latest
+}
+
 /// Who asked, and the question in at most two sentences.
 fn asked(prompt: &str) -> (By, String) {
     let text = form::strip_notes(prompt);
@@ -282,6 +307,19 @@ mod tests {
         let h = highlights(&events);
         let got: Vec<(By, &str, &str, u64)> = h.iter().map(|e| (e.by, e.question.as_str(), e.answer.as_str(), e.event)).collect();
         assert_eq!(got, [(By::You, "Why is the pane empty?", "Fixed.", 1), (By::Agent, "Who asks for the list?", "Only prefix t.", 2)]);
+    }
+
+    #[test]
+    fn the_latest_line_follows_the_question_then_the_answer() {
+        let mut latest = None;
+        assert!(step(&mut latest, &user(1, "Why is the pane empty?").kind));
+        assert_eq!(latest.as_deref(), Some("Why is the pane empty?"), "asked, no answer yet");
+        assert!(step(&mut latest, &reply(2, "Checking where the TUI draws.").kind));
+        assert!(step(&mut latest, &ev(3, EventKind::Highlight { question: "Who asks?".into(), answer: "Only prefix t.".into() }).kind));
+        assert_eq!(latest.as_deref(), Some("Only prefix t."));
+        assert!(!step(&mut latest, &ev(4, EventKind::Interrupt).kind), "nothing else moves it");
+        assert!(!step(&mut latest, &reply(5, "Only prefix t.").kind), "the same line is no change");
+        assert_eq!(latest_of(&[user(1, "Hi"), reply(2, "Hello there. How are you? Fine.")]).as_deref(), Some("Hello there. How are you?"));
     }
 
     #[test]

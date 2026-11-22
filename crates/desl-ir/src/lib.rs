@@ -455,6 +455,10 @@ pub struct Thread {
     /// form it has open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub screen_asks: bool,
+    /// Its latest highlight in a line or two, for catching up at a glance: the answer, or the
+    /// question while none came yet (docs/design/2026-11-22-highlights.md).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest: Option<String>,
 }
 
 /// A form the thread's agent put in front of the user that is not answered yet.

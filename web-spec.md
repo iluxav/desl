@@ -381,9 +381,8 @@ description teaches the rest: an agent needs nothing else to use it.
 1. **When.** Phase 3, beside remote TCP mode, or right after the phase 1 gate?
 2. **Answering in the TUI.** The TUI shows that a thread waits on a form and sends the user to
    the page. Should simple forms (one `choice`) be answerable in the TUI too, without a modal?
-3. **Codex's own MCP approval dialog.** The Codex adapter does not recognise Codex's "Allow the …
-   MCP server to run tool …?" dialog, so such a thread shows `working`. desl's own tools no longer
-   ask; other servers' calls still do.
+3. **Codex's own MCP approval dialog.** Settled 2026-11-22: the Codex adapter knows Codex 0.171's
+   "Allow the … MCP server to run tool …?" dialog, so such a thread shows `waiting`.
 4. **Prompt wording.** The answer and dismissal lines are tested with each agent; are they the
    words that serve agents best over time?
 

@@ -58,6 +58,25 @@ fn only_its_own_address_and_its_own_page_get_in() {
     assert!(!origin_ok(&headers("127.0.0.1:7428", None), 7428), "no Origin: not a browser page");
 }
 
+#[tokio::test]
+async fn a_binary_replaced_in_place_is_noticed_once_it_is_whole() {
+    let dir = std::env::temp_dir().join(format!("desl-web-bin-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let exe = dir.join("desl");
+    std::fs::write(&exe, b"old").unwrap();
+    let watch = tokio::spawn({
+        let exe = exe.clone();
+        async move { replaced(&exe, Duration::from_millis(40)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!watch.is_finished(), "nothing changed yet");
+    // As an install does: a new file renamed over the old one.
+    std::fs::write(dir.join("desl.new"), b"new binary").unwrap();
+    std::fs::rename(dir.join("desl.new"), &exe).unwrap();
+    tokio::time::timeout(Duration::from_secs(2), watch).await.expect("noticed in time").unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_key_is_32_hex_digits_and_new_each_time() {
     let (a, b) = (key().unwrap(), key().unwrap());
@@ -175,6 +194,8 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     let sub = request(&mut rig.got).await;
     assert!(matches!(sub.command, Command::Subscribe { cwd: None }), "{sub:?}");
     rig.give.send(ServerFrame::Reply { id: sub.id, ok: Some(Reply::Workspace(Box::new(workspace()))), error: None }).await.unwrap();
+    let ready = next(&mut c).await;
+    assert_eq!((ready["state"].as_str(), ready["build"].as_str()), (Some("ready"), Some(build())), "{ready}");
     let view = next(&mut c).await;
     assert_eq!(view["type"], "view", "the bridge's own replies stay with it: {view}");
     assert_eq!(view["view"]["projects"][0]["threads"][0]["title"], "Web client");

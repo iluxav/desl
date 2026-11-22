@@ -116,6 +116,11 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- `desl web` runs the new build after an install. It kept running the binary it was started
+  from, so the page stayed the old one, and `ctrl+space v` reopened it. Now it notices its
+  binary was replaced, starts again from the new one on the same address and key, and an open
+  page reloads itself. `ctrl+c` and `desl web --stop` also stop it at once with a page open;
+  they waited for the page to go.
 - A Claude thread whose prompt held a pasted image stayed idle in the sidebar for the whole
   turn: Claude Code writes such a prompt as a list of blocks, which desl did not read as a
   prompt. It now does, and the lines Claude Code adds in the user's place (`isMeta`: a skill's

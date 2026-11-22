@@ -132,6 +132,11 @@ function handle(msg) {
       else render();
       break;
     case 'bridge':
+      // desl web started again from a new install: this page is the old one.
+      if (msg.state === 'ready' && msg.build) {
+        if (state.build && state.build !== msg.build) location.reload();
+        state.build = msg.build;
+      }
       if (msg.state === 'no_daemon') setLink('no-daemon', 'no daemon');
       if (msg.error) notice(msg.error, true);
       break;

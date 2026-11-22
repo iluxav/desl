@@ -2,7 +2,7 @@
 //! the screen. Every command takes `--json` and exits non-zero on failure.
 
 use crate::conn::Conn;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use desl_ir::{Decision, Event, EventKind, PermissionMode, Status, Thread, tool_target, tool_verb};
 use desl_proto::paths::Paths;
 use desl_proto::{Change, Command, Reply, ServerFrame, StreamDelta, Workspace};
@@ -34,28 +34,56 @@ pub fn web(paths: &Paths, out: &Out, port: Option<u16>, open: bool, stop: bool) 
             eprintln!("{why} Open the address above yourself.");
         }
     };
-    if let Some(url) = crate::web::running(paths).filter(|_| port.is_none()) {
+    // Started again from a new binary by the desl web before it, in this same process: its
+    // key comes along, and nothing is printed or opened a second time.
+    let handed = std::env::var(WEB_KEY_VAR).ok().filter(|k| !k.is_empty());
+    let again = handed.is_some();
+    if !again && let Some(url) = crate::web::running(paths).filter(|_| port.is_none()) {
         done(out, json!({ "url": url, "running": true }), format!("desl web is already running: {url}"));
         opened(&url);
         return Ok(());
     }
     drop(connect(paths, true)?);
-    let served = desl_web::run(&paths.socket, port, |url| {
+    let exe = own_binary().ok();
+    let ended = desl_web::run(&paths.socket, port, handed, exe.clone(), |url| {
         if let Err(e) = crate::web::record(paths, url) {
             eprintln!("desl web could not note where it runs ({e}); `desl web --stop` and ctrl+space v will not find it.");
         }
-        if out.json {
-            out.value(&json!({ "url": url }));
-        } else {
-            println!("desl web: {url}");
-            println!("Open it in a browser on this machine. ctrl+c stops desl web; the agents keep working.");
+        if again {
+            return;
         }
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        // Started in the background, nobody may read this any more: never fail over it.
+        let mut stdout = std::io::stdout();
+        let _ = if out.json {
+            writeln!(stdout, "{}", json!({ "url": url }))
+        } else {
+            writeln!(stdout, "desl web: {url}\nOpen it in a browser on this machine. ctrl+c stops desl web; the agents keep working.")
+        };
+        let _ = stdout.flush();
         opened(url);
     });
-    crate::web::forget(paths);
-    served
+    match ended {
+        Ok(desl_web::Ended::Replaced { port, key }) => {
+            // The same process goes on as the new binary: its note, its port and its key stay.
+            use std::os::unix::process::CommandExt;
+            let exe = exe.context("desl web lost track of its own binary, so it cannot start again from the new one")?;
+            let err = std::process::Command::new(&exe).args(["web", "--port", &port.to_string()]).env(WEB_KEY_VAR, key).exec();
+            crate::web::forget(paths);
+            bail!("desl web could not start again from {} ({err}). Run `desl web` for a new address.", exe.display())
+        }
+        Ok(desl_web::Ended::Stopped) => {
+            crate::web::forget(paths);
+            Ok(())
+        }
+        Err(e) => {
+            crate::web::forget(paths);
+            Err(e)
+        }
+    }
 }
+
+/// The key a desl web hands the next one when it starts again from a new binary.
+const WEB_KEY_VAR: &str = "DESL_WEB_KEY";
 
 /// Connects to the daemon. With `start`, a daemon that is not running is started: every thread
 /// is in the store, so any command can be answered from a cold start.

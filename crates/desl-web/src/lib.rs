@@ -14,9 +14,11 @@ use axum::extract::ws::WebSocketUpgrade;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use std::future::IntoFuture;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// The port `desl web` listens on unless told otherwise. When it is taken, the next free one.
 pub const PORT: u16 = 7428;
@@ -45,21 +47,90 @@ pub(crate) struct Shared {
     socket: Arc<PathBuf>,
 }
 
-/// Serves the page until ctrl+c. `ready` gets the address to open, the key included, as soon as
-/// the page can be served. `port` 0 takes any free port.
-pub fn run(socket: &Path, port: Option<u16>, ready: impl FnOnce(&str)) -> Result<()> {
+/// How [`run`] ended.
+pub enum Ended {
+    /// ctrl+c, or `desl web --stop`.
+    Stopped,
+    /// An install replaced the binary it was started from: it is to start again from the new
+    /// one, on the same port with the same key, so that open pages connect again and carry on.
+    Replaced { port: u16, key: String },
+}
+
+/// How often desl web looks at its binary for a new one.
+const BINARY_CHECK: Duration = Duration::from_secs(2);
+
+/// Serves the page until ctrl+c, or until `exe`, the binary it runs from, is replaced. `ready`
+/// gets the address to open, the key included, as soon as the page can be served. `port` 0
+/// takes any free port; `key`, when given, is the one desl web had before it started again.
+pub fn run(socket: &Path, port: Option<u16>, key: Option<String>, exe: Option<PathBuf>, ready: impl FnOnce(&str)) -> Result<Ended> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().context("desl web could not start its runtime")?;
+    let again = key.is_some();
     rt.block_on(async move {
-        let (listener, port) = listen(port).await?;
-        let token: Arc<str> = key()?.into();
+        let (listener, port) = if again { listen_again(port).await? } else { listen(port).await? };
+        let token: Arc<str> = match key.filter(|k| k.len() == 32 && k.bytes().all(|c| c.is_ascii_hexdigit())) {
+            Some(k) => k.into(),
+            None => self::key()?.into(),
+        };
         ready(&format!("http://127.0.0.1:{port}/#t={token}"));
-        let shared = Shared { token, port, socket: Arc::new(socket.to_path_buf()) };
-        axum::serve(listener, app(shared))
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
-            .await
-            .context("desl web stopped")
+        let shared = Shared { token: token.clone(), port, socket: Arc::new(socket.to_path_buf()) };
+        let replaced = async {
+            match exe {
+                Some(exe) => replaced(&exe, BINARY_CHECK).await,
+                None => std::future::pending().await,
+            }
+        };
+        // Not a graceful stop: an open page keeps its socket open for as long as it is open.
+        tokio::select! {
+            served = axum::serve(listener, app(shared)).into_future() => {
+                served.context("desl web stopped")?;
+                Ok(Ended::Stopped)
+            }
+            _ = tokio::signal::ctrl_c() => Ok(Ended::Stopped),
+            () = replaced => Ok(Ended::Replaced { port, key: token.to_string() }),
+        }
+    })
+}
+
+/// Resolves once the file at `exe` is another one than at the start, and has stayed the same
+/// for one more look: an install that writes it in place is finished by then.
+async fn replaced(exe: &Path, every: Duration) {
+    use std::os::unix::fs::MetadataExt;
+    let id = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino(), m.mtime(), m.mtime_nsec(), m.len()));
+    let first = id(exe);
+    let mut last = first;
+    loop {
+        tokio::time::sleep(every).await;
+        let now = id(exe);
+        if now.is_some() && now != first && now == last {
+            return;
+        }
+        last = now;
+    }
+}
+
+/// The port desl web had before it started again from a new binary, taken again: the old
+/// listener closed with the old program, a moment ago.
+async fn listen_again(port: Option<u16>) -> Result<(tokio::net::TcpListener, u16)> {
+    let p = port.context("desl web started again without its port")?;
+    for _ in 0..30 {
+        if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", p)).await {
+            return Ok((l, p));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("Port {p} stayed taken, so desl web could not start again there. Run `desl web` for a new address.")
+}
+
+/// What tells one build of the page from another: a hash of its files. A page that finds it
+/// changed loads itself again.
+pub(crate) fn build() -> &'static str {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUILD.get_or_init(|| {
+        let h = FILES
+            .iter()
+            .flat_map(|(_, _, body)| body.bytes())
+            .fold(0xcbf2_9ce4_8422_2325_u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3));
+        format!("{h:016x}")
     })
 }
 

@@ -75,6 +75,10 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
         let _ = say(&mut ws, json!({ "type": "bridge", "state": "no_daemon" })).await;
         return;
     }
+    // Which page this is: one loaded before an install reloads itself.
+    if say(&mut ws, json!({ "type": "bridge", "state": "ready", "build": crate::build() })).await.is_err() {
+        return;
+    }
     let (tx, mut frames) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
     let reader = tokio::spawn(async move {
         while let Ok(Some(f)) = read_frame(&mut rd).await {

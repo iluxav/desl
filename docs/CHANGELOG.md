@@ -140,6 +140,8 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- A Codex thread whose agent asked "Allow the … MCP server to run tool?" for an MCP server
+  of your own showed working, with no mark and no bell; it shows waiting now.
 - The TUI's history line for a form named the key as "prefix v" and said nothing of the answer;
   it now names your prefix, shows the answer on one line, and says a form copied into a fork
   was asked in the thread it was forked from. `desl send` names your prefix too.

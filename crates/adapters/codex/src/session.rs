@@ -203,12 +203,15 @@ impl SessionReader for Reader {
 }
 
 /// Codex's own questions at the bottom of its screen: an approval, the folder-trust question,
-/// or which directory a resumed session works in.
+/// which directory a resumed session works in, or whether an MCP server's tool may run. That
+/// last one is told by its title or, when long arguments push the title up, by its choices.
 pub fn waiting(tail: &str) -> bool {
     tail.contains("Would you like to")
         || tail.contains("Trust this folder")
         || tail.contains("Use session directory")
         || tail.contains("Allow") && tail.contains("1. Yes")
+        || tail.contains("MCP server to run tool")
+        || tail.contains("1. Allow") && tail.contains("Cancel this tool call")
 }
 
 /// The shell command Codex would have run for a neutral call; None when there is none.
@@ -458,6 +461,25 @@ pub fn subagent_events(cwd: &Path, agent_id: &str) -> Vec<EventKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codexs_mcp_approval_is_a_question_on_its_screen() {
+        // Codex 0.171's dialog when an MCP server's tool needs the user's yes (seen 2026-11-22).
+        let dialog = r#"  Field 1/1
+  Allow the dtest MCP server to run tool "show_form"?
+  title: Test
+  widgets: [{"kind": "toggle", "id": "a", "label": "A"}]
+  › 1. Allow                   Run the tool and continue
+    2. Allow for this session  Run the tool and remember this choice for this session
+    3. Always allow            Run the tool and remember this choice for future tool calls
+    4. Cancel                  Cancel this tool call
+  enter to submit | esc to cancel"#;
+        assert!(waiting(dialog));
+        // Long arguments push its first line out of the rows desl reads: its choices still say it.
+        let bottom: String = dialog.lines().skip(4).collect::<Vec<_>>().join("\n");
+        assert!(waiting(&bottom), "{bottom}");
+        assert!(!waiting("• Called Evaluating expression\n• The result is 2.\n› Ask Codex to do anything"));
+    }
 
     #[test]
     fn a_turn_reads_as_prompt_command_result_reply_and_end() {

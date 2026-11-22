@@ -122,9 +122,11 @@ it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
 Open the address it prints. The page lists every project and agent thread with the same marks
 and words as the sidebar, shows who is waiting, and draws the agent's own screen for the thread
 you pick, keys and all, or its whole conversation with a search, with a prompt box under it
-(queued while the agent works). Stop in the thread's header ends its turn. It listens on 127.0.0.1 only, and the key after
-`#t=` is new each time desl web starts. `ctrl+c` stops it; the agents keep working. Questions to
-click, the waiting list's cards and the live document come next (see `web-spec.md`).
+(queued while the agent works). Stop in the thread's header ends its turn. A thread waiting on
+a dialog, an approval or a folder trust, has a card in the waiting list with the dialog's text
+and **Open its screen**, which shows the agent's screen to answer it in. It listens on 127.0.0.1
+only, and the key after `#t=` is new each time desl web starts. `ctrl+c` stops it; the agents
+keep working. Questions to click and the live document come next (see `web-spec.md`).
 
 ## From a script
 

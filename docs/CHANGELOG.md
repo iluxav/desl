@@ -7,6 +7,9 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- desl web's waiting list shows what each waiting agent asks: the dialog its screen shows, an
+  approval or a folder trust, as text on the thread's card, and **Open its screen** takes you to
+  the agent's screen with the keys in it to answer. Works with Claude Code, Codex and Copilot.
 - `desl web`: the workspace in a browser, the first milestone of `web-spec.md`. It prints an
   address on 127.0.0.1 with a key that is new each time, and the page lists every project and
   agent thread with the same marks and words as the terminal's sidebar: the agent logo as the

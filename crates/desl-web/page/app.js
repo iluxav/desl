@@ -309,6 +309,24 @@ function drawHead(cur) {
   head.append(left, right);
 }
 
+/** A dialog as an agent drew it, for a card: without its boxes, a box in a box too, and its
+    rules, and without the margin its rows share. */
+function dialog(text) {
+  const rows = text
+    .split('\n')
+    .map((l) => l.replace(/^(?:\s*[│┃])+\s?/, '').replace(/\s?(?:[│┃]\s*)+$/, '').replace(/\s+$/, ''))
+    .filter((l) => !/^[\s─━═╌┄╭╮╰╯┌┐└┘-]*$/.test(l));
+  const margin = Math.min(...rows.filter((l) => l.trim()).map((l) => l.length - l.trimStart().length));
+  return rows.map((l) => l.slice(Number.isFinite(margin) ? margin : 0)).join('\n');
+}
+
+/** The waiting thread's own screen, with the keys: it is answered there. */
+function openScreen(id) {
+  select(id);
+  showTab('screen');
+  if (screen.term) screen.term.focus();
+}
+
 function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
@@ -329,11 +347,14 @@ function drawWaiting() {
     top.append(mark(t.agent, t.status, 13), el('span', '', `${t.title} · ${p.name}`));
     if (t.age) top.append(el('span', 'age', t.age));
     const actions = el('div', 'actions');
-    const show = el('button', 'secondary', 'Show');
+    const show = el('button', 'secondary', 'Open its screen');
     show.type = 'button';
-    show.addEventListener('click', () => select(t.id));
+    show.addEventListener('click', () => openScreen(t.id));
     actions.append(show);
-    card.append(top, el('p', '', 'It asks you something on its screen.'), actions);
+    card.append(top);
+    if (t.asking) card.append(el('pre', 'asking', dialog(t.asking)));
+    else card.append(el('p', '', 'It asks you something on its screen.'));
+    card.append(actions);
     list.append(card);
   }
 }

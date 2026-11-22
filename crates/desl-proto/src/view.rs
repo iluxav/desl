@@ -157,6 +157,8 @@ pub struct ThreadRow {
     pub worktree: bool,
     pub subagents: Vec<SubRow>,
     pub header: Header,
+    /// What its screen asks, while it waits on it: the waiting list shows it.
+    pub asking: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -216,6 +218,7 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
                 .map(|k| &t.subagents[k])
                 .map(|s| SubRow { id: s.id.clone(), label: sub_label(s), state: sub_state(s, t) })
                 .collect(),
+            asking: t.asking.clone().filter(|_| t.status == Status::Waiting),
             header: Header {
                 project: project.name.clone(),
                 branch: if own { t.git.branch.clone() } else { None },
@@ -278,6 +281,13 @@ mod tests {
         assert_eq!(p.hue, hue("/src/desl"));
         // A shell has no age; agents do.
         assert_eq!((p.threads[0].age.as_str(), p.threads[1].age.as_str()), ("", "now"));
+        // What a thread's screen asks goes with it while it waits, and only then.
+        let mut asked = threads.clone();
+        asked[1].asking = Some("Do you want to proceed?".into());
+        asked[3].asking = Some("left over".into());
+        let rows = sidebar(&projects, &asked, 0, |_| true);
+        let asking: Vec<Option<&str>> = rows.projects[0].threads.iter().map(|t| t.asking.as_deref()).collect();
+        assert_eq!(asking, [None, Some("Do you want to proceed?"), None]);
         // The browser leaves the shell out, and so a project with nothing else to show.
         let page = sidebar(&projects, &threads[1..2], 0, on_page);
         assert_eq!(page.projects.len(), 1);

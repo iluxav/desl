@@ -359,6 +359,19 @@ body.resizing { cursor: col-resize; user-select: none; }
 .card h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .card p { margin: 0; font-size: 13px; color: var(--dim); }
 .card .actions { display: flex; justify-content: flex-end; }
+/* The dialog as the agent drew it: a terminal's text, so a terminal's colours. */
+.card pre.asking {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow: auto;
+  border-radius: 6px;
+  background: #0b0c10;
+  color: #d6d9e0;
+  font: 11.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .quiet { margin: 0; color: var(--muted); font-size: 12.5px; }
 
 /* Buttons. */

@@ -1300,3 +1300,10 @@ fn a_tui_keeps_its_size_and_a_page_draws_at_it() {
     r.engine.handle(Msg::Disconnected { client: 1 });
     assert_eq!(size(&r), (40, 160));
 }
+
+#[test]
+fn what_a_screen_asks_is_its_rows_without_the_blank_ones_around_them() {
+    let screen = "\n   \n  Do you want to proceed?   \n\n  1. Yes\n  2. No  \n\n \n";
+    assert_eq!(trimmed(screen), "  Do you want to proceed?\n\n  1. Yes\n  2. No");
+    assert_eq!(trimmed("\n  \n"), "", "a blank screen asks nothing");
+}

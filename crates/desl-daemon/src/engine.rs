@@ -174,6 +174,14 @@ const TURN_START_LIMIT: Duration = Duration::from_secs(30);
 /// The lines of the screen's bottom that are checked for a question from the agent.
 const ASKING_ROWS: usize = 14;
 
+/// The rows of a screen without the blanks at their ends, and the blank rows above and below.
+fn trimmed(text: &str) -> String {
+    let rows: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let first = rows.iter().position(|r| !r.trim().is_empty()).unwrap_or(rows.len());
+    let last = rows.iter().rposition(|r| !r.trim().is_empty()).map_or(first, |i| i + 1);
+    rows[first..last].join("\n")
+}
+
 /// What exists only while the daemon runs.
 #[derive(Default)]
 struct Live {
@@ -567,6 +575,10 @@ impl Engine {
     fn persist(&mut self, thread_id: &str) {
         let Ok(i) = self.idx(thread_id) else { return };
         self.threads[i].updated_at = now();
+        if self.threads[i].status != Status::Waiting {
+            // Answered, or the turn ended some other way: nothing is asked any more.
+            self.threads[i].asking = None;
+        }
         if let Err(e) = self.store.put_thread(&self.threads[i]) {
             tracing::error!(thread = thread_id, "could not write the thread: {e:#}");
         }
@@ -711,6 +723,7 @@ impl Engine {
             bindings: Default::default(),
             queued: Vec::new(),
             pending_approval: None,
+            asking: None,
             subagents: Vec::new(),
         };
         let id = thread.id.clone();
@@ -1515,13 +1528,15 @@ impl Engine {
             }
             Some(_) => {}
             None if pty.ready() => {
-                let asking = self.adapters.iter().find(|a| a.id() == pty.agent).is_some_and(|a| a.waiting(&pty.tail_text(ASKING_ROWS)));
+                let tail = pty.tail_text(ASKING_ROWS);
+                let asking = self.adapters.iter().find(|a| a.id() == pty.agent).is_some_and(|a| a.waiting(&tail));
                 if asking {
                     // Its own question comes first: the thread waits for the user.
                     if let Ok(i) = self.idx(thread_id)
                         && self.threads[i].status != Status::Waiting
                     {
                         self.threads[i].status = Status::Waiting;
+                        self.threads[i].asking = Some(trimmed(&tail));
                         self.persist(thread_id);
                     }
                     return;
@@ -1569,16 +1584,26 @@ impl Engine {
         let Ok(i) = self.idx(thread_id) else { return };
         let Some((_, pty)) = self.ptys.get(thread_id) else { return };
         let Some(adapter) = self.adapter(&pty.agent) else { return };
-        let asking = adapter.waiting(&pty.tail_text(ASKING_ROWS));
+        let tail = pty.tail_text(ASKING_ROWS);
+        let asking = adapter.waiting(&tail);
         let status = self.threads[i].status;
         let next = match status {
             Status::Working if asking => Status::Waiting,
             Status::Waiting if !asking => Status::Working,
             other => other,
         };
+        // What it asks, while the thread waits on its screen: the waiting list shows it.
+        let shown = (asking && next == Status::Waiting).then(|| trimmed(&tail));
         if next != status {
             self.threads[i].status = next;
+            self.threads[i].asking = shown;
             self.persist(thread_id);
+        } else if self.threads[i].asking != shown {
+            // The dialog changed, as when a cursor moves in it: said, not stored, and the
+            // thread's age stays.
+            self.threads[i].asking = shown;
+            let thread = self.threads[i].clone();
+            self.broadcast(Change::Thread { thread: Box::new(thread) });
         }
     }
 
@@ -2578,6 +2603,7 @@ impl Engine {
                 .collect(),
             queued: Vec::new(),
             pending_approval: None,
+            asking: None,
             subagents: Vec::new(),
             // The copy's agent may title it apart from the parent.
             named: false,

@@ -429,6 +429,10 @@ pub struct Thread {
     /// agents' files while they run, and stored with the thread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<Subagent>,
+    /// What the agent's screen asks while the thread waits on it: the bottom of what it drew, as
+    /// text, for the clients to show (web-spec.md "The waiting list"). The screen's, not stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asking: Option<String>,
 }
 
 /// A helper agent that a thread's agent started.

@@ -2077,3 +2077,21 @@ fn a_task_whose_main_moved_on_is_not_merged_and_its_agent_can_be_asked_to_rebase
     let asked = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
     assert!(asked.contains("Rebase") && asked.contains("main") && asked.contains("--status ready"), "{asked}");
 }
+
+#[test]
+fn a_thread_names_its_projects_task_list() {
+    // `desl mcp` knows its thread, not its project.
+    let mut r = rig("tasks-by-thread");
+    let t = r.t.clone();
+    let (_, root) = r.project_of(&t);
+    let add = Command::TaskAdd {
+        project_id: t.clone(),
+        title: "Park this".into(),
+        kind: desl_proto::tasks::Kind::Idea,
+        status: desl_proto::tasks::Status::Parked,
+        priority: desl_proto::tasks::Priority::Low,
+        body: String::new(),
+    };
+    assert!(matches!(r.cmd(add), Ok(Reply::Task { .. })));
+    assert!(std::fs::read_to_string(root.join(".tasks.md")).unwrap().contains("## Park this"));
+}

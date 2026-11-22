@@ -285,6 +285,29 @@ browser ──WebSocket──▶ desl web (tokio, axum) ─┘
 **Cost:** the stripped release binary grew from 8.2 MB to 10.1 MB with xterm.js in milestone 1;
 without it, 9.8 MB.
 
+**Tasks** (docs/design/2026-11-22-tasks-first-class.md). The left column lists agent threads
+only. The right column shows Waiting, then the project's task list, live as the daemon sends
+`tasks` changes:
+- **Filters:**
+  - the project (the selected thread's by default, one by name, or all, grouped);
+  - Find;
+  - More: Issue, Parked, Bugs only;
+  - the status as one segmented control with counts: Open, To do, In progress, Ready, Done.
+- **Rows:** each task is a row of two lines, the id, kind and title, then priority, status,
+  thread and branch, with its action on the right. Parked and Done fold at the bottom of Open.
+- **Starting work:** a task to start has a split button, **Fix now** for a bug and **Work on it**
+  for the rest. It starts with the last pick; its ▾ opens a panel:
+  - **Agent:** the project's default or any installed agent.
+  - **Where:** a new thread in its own worktree (the default), a new thread in the main
+    checkout, or the selected thread.
+  - The pick is remembered per browser.
+- **A ready task:**
+  - **Merge** fast-forwards main.
+  - **Diff** shows its branch against main over the conversation.
+  - A merge refused because main moved on adds **Ask to rebase**.
+- **Agents:** every agent desl starts has `list_tasks`, `add_task` and `update_task`, and parks
+  ideas the user defers as `parked` tasks.
+
 **Opening the page.** One `desl web` serves each workspace. While it runs it notes its process
 and address in `<socket>.web`, beside the daemon's socket and readable by the user alone. `desl`
 starts it in the background as it attaches when none runs, without opening a browser, so a form

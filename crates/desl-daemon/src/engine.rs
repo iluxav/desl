@@ -280,12 +280,13 @@ fn task_brief(task: &desl_proto::tasks::Task, branch: Option<&str>, main: &str) 
     match branch {
         Some(branch) => s.push_str(&format!(
             "\nYou work in a git worktree of your own, on the branch {branch}. Commit your work on it and run the project's tests. \
-When it is done, rebase {branch} onto {main} and mark the task ready: `desl task set {n} --status ready`. If you get stuck, \
-mark it issue with a note saying why: `desl task set {n} --status issue --note \"…\"`. Then stop: the user merges the branch."
+When it is done, rebase {branch} onto {main} and mark the task ready with the update_task tool (or \
+`desl task set {n} --status ready`). If you get stuck, mark it issue with a note saying why. Then stop: the user merges \
+the branch."
         )),
         None => s.push_str(&format!(
-            "\nWhen it is done, commit it and mark the task done: `desl task set {n} --status done`. If you get stuck, mark it issue \
-with a note saying why: `desl task set {n} --status issue --note \"…\"`."
+            "\nWhen it is done, commit it and mark the task done with the update_task tool (or `desl task set {n} --status done`). \
+If you get stuck, mark it issue with a note saying why."
         )),
     }
     s
@@ -1954,7 +1955,11 @@ impl Engine {
         }
     }
 
+    /// A project's task list, named by the project's id or a thread's, for its project: an
+    /// agent's `desl mcp` knows its thread.
     fn task_store(&self, project_id: &str) -> Result<desl_proto::tasks::Store, String> {
+        let of_thread = self.idx(project_id).ok().map(|i| self.threads[i].project_id.clone());
+        let project_id = of_thread.as_deref().unwrap_or(project_id);
         let p = self.projects.iter().find(|p| p.id == project_id).ok_or_else(|| format!("There is no project {project_id}."))?;
         Ok(desl_proto::tasks::Store::of(Path::new(&p.path)))
     }

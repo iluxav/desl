@@ -118,9 +118,12 @@ desl web
 # desl web: http://127.0.0.1:7428/#t=<key>
 ```
 
-The page lists every project and agent thread with the same marks and words as the sidebar,
+The page lists every project's agent threads with the same marks and words as the sidebar,
 and shows the whole conversation of the thread you pick, with a search and a prompt box under
-it (queued while the agent works).
+it (queued while the agent works). Its right column holds the project's task list, live:
+**Fix now** or **Work on it** puts an agent on a task in a worktree of its own, and **Merge**
+brings its branch in when the agent marks it ready. Agents add and update tasks with tools
+desl gives them, and park ideas you defer.
 
 It is where your agents put **forms** in front of you. When a choice needs its trade-offs, a
 plan should be approved step by step or a look tuned, the agent calls desl's `show_form` tool

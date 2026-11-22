@@ -82,6 +82,13 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `form_get` | `form_id` | `form {form_id, thread_id, form, draft?, answer?, closed_by?}` | A form, with its draft while open and its answer once answered. |
 | `form_image` | `form_id`, `path` | `image {mime, data}` | A picture an `images` widget of the form names, read again from inside its thread's directory (links followed; PNG, JPEG, GIF, WebP or SVG; at most 10 MB), `data` in base64. A path the form does not name is refused, so a client cannot read other files through it. |
 | `form_section` | `form_id`, `widget` | `section {text?}` | The section a `document` widget of the form edits, as it is on disk now, from inside its thread's directory; no `text` when its heading is gone. The page asks when a save was refused because the file changed, to show both versions. |
+| `tasks` | `project_id` | `tasks {project_id, tasks}` | A project's task list, from its `.tasks.md`. `project_id` may name a thread, for its project. A task is `{id, title, type, status, priority, body, thread?, branch?}`. |
+| `task_add` | `project_id`, `title`, `kind`, `status`, `priority`, `body` | `task {project_id, task}` | Adds a task. Every change to a list is made under a lock on the project's folder, as `desl task` makes it. |
+| `task_set` | `project_id`, `task`, `edit` | `task {project_id, task}` | Changes task number `task`: `edit` has any of `title`, `kind`, `status`, `priority`, `body`, `note`, `thread`, `branch` (empty clears the last two). A command's own fields never use the name `id`, the request's. |
+| `task_start` | `project_id`, `task`, `agent?`, `place` | `task {project_id, task}` | Puts an agent on a task: `place` is `worktree`, `main` or `thread:<id>`. The task goes in progress, linked to its thread and branch, and the agent gets the task with a brief. |
+| `task_merge` | `project_id`, `task` | `task {project_id, task}`, or `merge_refused {reason, rebase}` | Fast-forwards the main checkout's branch to a ready task's branch; then the task is done and its thread's worktree goes. `rebase` is true when main moved on. |
+| `task_diff` | `project_id`, `task` | `diff {base, text, more}` | A task's branch against the main checkout's branch, at most 2,000 lines. |
+| `task_rebase` | `project_id`, `task` | `task {project_id, task}` | Asks the task's agent to rebase onto main and mark it ready again. |
 | `shutdown` | | `done` | Ends every agent, then the daemon. The connection closes when it has finished. |
 | `handover` | `exe` | `handed_over {pid, kept}` | The daemon starts again from the desl binary at `exe` and hands it the terminal of every running agent and shell, so nothing ends. The reply comes from the daemon that leaves, once the new one serves on the same socket: `pid` is the new daemon's, `kept` how many terminals it took. An error means the daemon that was running stays as it was. A daemon from a build without this command closes the connection instead of answering. |
 
@@ -97,6 +104,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | --- | --- | --- |
 | `project` | `project` | A project was registered, or the branch checked out in its folder or its count of uncommitted paths changed (read every five seconds while a client is attached). |
 | `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval, branch or open forms changed. `thread.open_forms` lists its forms not answered yet, `{id, title, at}`, oldest first. `thread.screen_asks` is true while its agent asks something in its own screen, a form open beside it or not. |
+| `tasks` | `project_id`, `tasks` | A project's task list changed, in its file (checked every second) or through desl: the whole list as it is now. |
 | `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |

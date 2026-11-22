@@ -134,7 +134,7 @@ when asked, without a dialog of its own, and ended its turn.
 
 | Agent | Flags |
 | --- | --- |
-| Claude Code | `--mcp-config '{"mcpServers":{"desl":{"type":"stdio","command":…,"args":[…]}}}' --allowedTools mcp__desl__show_form,mcp__desl__close_form` |
+| Claude Code | `--mcp-config '{"mcpServers":{"desl":{"type":"stdio","command":…,"args":[…]}}}' --allowedTools mcp__desl__show_form,mcp__desl__close_form,mcp__desl__list_tasks,mcp__desl__add_task,mcp__desl__update_task` |
 | Codex | `-c mcp_servers.desl.command="…" -c mcp_servers.desl.args=[…] -c mcp_servers.desl.default_tools_approval_mode="approve"`, before `resume`. Without the last one Codex asks "Allow the desl MCP server to run tool…?" each time (its values are `auto`, `prompt`, `writes`, `approve`). Codex 0.171 draws that dialog as `Allow the <server> MCP server to run tool "<tool>"?`, the arguments, then `1. Allow`, `2. Allow for this session`, `3. Always allow`, `4. Cancel  Cancel this tool call`; the adapter's `waiting` knows it by its title or by those choices, so a thread whose Codex asks for any MCP server's tool shows waiting. In `auto`, Codex runs tools it takes for read-only without asking (seen with `osfeed` search and `node_repl`); it calls the tool from its JavaScript tool runner as `tools.mcp__desl__show_form` |
 | GitHub Copilot CLI | `--additional-mcp-config '{"mcpServers":{"desl":{"type":"local","command":…,"args":[…],"tools":["*"]}}}' --allow-tool=desl` |
 

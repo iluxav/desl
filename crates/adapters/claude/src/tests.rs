@@ -243,6 +243,10 @@ fn desls_form_tool_comes_with_the_launch_and_is_allowed() {
         cfg,
         serde_json::json!({"mcpServers": {"desl": {"type": "stdio", "command": "/bin/desl", "args": ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"]}}})
     );
-    assert_eq!(l.args[at + 2..], ["--allowedTools", "mcp__desl__show_form,mcp__desl__close_form"]);
+    assert_eq!(
+        l.args[at + 2..],
+        ["--allowedTools", "mcp__desl__show_form,mcp__desl__close_form,mcp__desl__list_tasks,mcp__desl__add_task,mcp__desl__update_task"],
+        "every tool of desl's server runs without Claude asking"
+    );
     assert!(!Claude.launch(&opts(None)).args.iter().any(|a| a == "--mcp-config"));
 }

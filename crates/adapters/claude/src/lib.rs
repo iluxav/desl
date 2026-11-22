@@ -192,7 +192,7 @@ impl Adapter for Claude {
                 "--mcp-config".into(),
                 config.to_string(),
                 "--allowedTools".into(),
-                "mcp__desl__show_form,mcp__desl__close_form".into(),
+                "mcp__desl__show_form,mcp__desl__close_form,mcp__desl__list_tasks,mcp__desl__add_task,mcp__desl__update_task".into(),
             ]);
         }
         let session_id = match &opts.open {

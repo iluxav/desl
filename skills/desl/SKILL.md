@@ -34,10 +34,12 @@ Never run bare `desl`: it attaches the full-screen interface. Add `--json` to an
 
 ## The project's task list
 
-A project can keep a task list: `.tasks.md` at its root, which the user watches and edits in a tasks thread of desl while you work. Each task has an id (`#12`), a title, a type (`feature`, `bug`, `task`, `refactor`, `test`, `docs`, `idea`), a status (`todo`, `in-progress`, `issue`, `done`, `ignored`), a priority (`high`, `medium`, `low`) and a description in Markdown. `desl task` works from any directory of the project, in a worktree too, and inside desl or not.
+A project can keep a task list: `.tasks.md` at its root, which the user watches on desl web's right column and in a tasks thread while you work. Each task has an id (`#12`), a title, a type (`feature`, `bug`, `task`, `refactor`, `test`, `docs`, `idea`), a status (`todo`, `in-progress`, `issue`, `ready`, `done`, `ignored`, `parked`), a priority (`high`, `medium`, `low`) and a description in Markdown.
+
+Inside desl you have the tools `list_tasks`, `add_task` and `update_task` for it: use them first. `desl task` does the same from a shell, from any directory of the project, in a worktree too, and inside desl or not.
 
 ```bash
-desl task list                         # the open tasks: todo, in-progress, issue
+desl task list                         # the open tasks: todo, in-progress, issue, ready
 desl task list --status all --json     # every task, with its description
 desl task show 12                      # one task and its description
 desl task add "Fix the flaky login test" --type bug --priority high --body "Fails one run in ten on CI."
@@ -50,10 +52,11 @@ desl task set 12 --status issue --note "Blocked: the staging database is down."
 
 Work with it strictly:
 
-- **Change it only with `desl task`.** Never edit `.tasks.md` by hand, and never start another list (`TODO.md`, a list in a comment, a file of your own). The commands keep its shape, and change only what they name, so nothing the user or another agent did meanwhile is lost.
+- **Change it only with the task tools or `desl task`.** Never edit `.tasks.md` by hand, and never start another list (`TODO.md`, a list in a comment, a file of your own). The commands keep its shape, and change only what they name, so nothing the user or another agent did meanwhile is lost.
 - **When the user names a task** ("do #12", "the next task"), read it with `desl task show` first. With no task named, the next one is the open task of the highest priority, in the list's order.
-- **Say where you are.** Set a task `in-progress` when you start on it, and `done` only when the work is finished and checked, with a `--note` saying what was done. When you cannot go on, set it `issue` with a `--note` saying why, and tell the user.
-- **Write down what is found on the way.** A bug or a piece of work you notice that is outside the task at hand becomes a task (`desl task add`) rather than a change you make unasked.
+- **Say where you are.** Set a task `in-progress` when you start on it, and `done` only when the work is finished and checked, with a note saying what was done. On a branch of your own (desl started you on the task in a worktree), finish with `ready` instead, once the branch is rebased onto main: the user merges it. When you cannot go on, set it `issue` with a note saying why, and tell the user.
+- **Write down what is found on the way.** A bug or a piece of work you notice that is outside the task at hand becomes a task (`add_task`) rather than a change you make unasked.
+- **Park what waits.** When the user says not now, later or park it about an idea or a suggestion, add it as a task with status `parked`, saying what it is and why it waits. It stays out of the open list until the user takes it up.
 - **The priority, the order and `ignored` are the user's.** Change them, or remove a task (`desl task rm`), only when the user says so.
 - Your own plan for a turn (a todo tool of your own) is separate: the task list holds the project's work, which outlives your session.
 

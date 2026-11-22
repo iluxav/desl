@@ -26,6 +26,9 @@ enum Msg {
     Stdin(Vec<u8>),
     Frame(ServerFrame),
     DaemonGone,
+    /// `prefix v`: desl web's address, and whether the browser opened on it; or why there is
+    /// no desl web.
+    Web(std::result::Result<(String, std::result::Result<(), String>), String>),
 }
 
 fn out(b: &[u8]) {
@@ -239,6 +242,9 @@ fn clipboard(text: &str) {
 }
 
 struct Client {
+    /// For work done off the interface's thread, such as starting desl web.
+    tx: mpsc::Sender<Msg>,
+    paths: desl_proto::paths::Paths,
     link: Link,
     /// The panes on screen, one or two, left to right or top to bottom; `focus` has the keys.
     panes: Vec<Pane>,
@@ -517,6 +523,35 @@ impl Client {
         } else {
             // A click that went nowhere marks nothing.
             self.panes[i].select = None;
+        }
+    }
+
+    /// `prefix v`: the browser on desl web, which is started in the background when it is not
+    /// running. Starting it takes a moment, so it happens off the interface's thread.
+    fn open_web(&mut self) {
+        self.notice("Opening desl web…");
+        let (tx, paths) = (self.tx.clone(), self.paths.clone());
+        std::thread::spawn(move || {
+            let r = crate::web::ensure(&paths).map_err(|e| format!("{e:#}")).map(|url| {
+                let opened = crate::web::open(&url);
+                (url, opened)
+            });
+            let _ = tx.send(Msg::Web(r));
+        });
+    }
+
+    fn web_opened(&mut self, r: std::result::Result<(String, std::result::Result<(), String>), String>) {
+        match r {
+            Ok((url, Ok(()))) => self.notice(&format!(
+                "desl web is open in your browser, at {}. It runs on when desl closes; `desl web --stop` ends it.",
+                crate::web::place(&url)
+            )),
+            // Over SSH, or with no way to open a browser: the address, on the clipboard.
+            Ok((url, Err(why))) => {
+                clipboard(&url);
+                self.notice(&format!("{why} desl web's address is on your clipboard: {}.", crate::web::place(&url)));
+            }
+            Err(why) => self.notice(&why),
         }
     }
 
@@ -901,6 +936,10 @@ impl Client {
         self.dirty = true;
         match a {
             Action::Detach => return Some("Detached. The agents keep working; run desl to come back.".to_string()),
+            Action::Web => {
+                self.open_web();
+                return None;
+            }
             Action::Help => {
                 self.help = if self.help.is_some() { None } else { Some(Palette::default()) };
                 return None;
@@ -1071,7 +1110,7 @@ impl Client {
             },
             Action::SplitBeside | Action::SplitStacked => self.split(a == Action::SplitStacked, None),
             Action::Zoom => self.zoom(),
-            Action::Detach | Action::Help | Action::Sidebar | Action::OtherPane => {}
+            Action::Detach | Action::Web | Action::Help | Action::Sidebar | Action::OtherPane => {}
         }
         None
     }
@@ -1900,7 +1939,7 @@ impl Client {
 
 /// Shows the workspace's thread for `cwd` until the user detaches. Returns the line to print
 /// once the terminal is back to normal.
-pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -> Result<End> {
+pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config, paths: desl_proto::paths::Paths) -> Result<End> {
     let ws = match conn.call(Command::Subscribe { cwd: Some(cwd.to_string_lossy().into_owned()) })? {
         Reply::Workspace(ws) => ws,
         other => bail!("The desl daemon answered with {other:?}. Run `desl daemon restart`"),
@@ -1959,6 +1998,8 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
     let saved_focus = saved.get("focus").and_then(|f| f.as_u64()).unwrap_or(0) as usize;
     let saved_stacked = saved.get("stacked").and_then(|s| s.as_bool()).unwrap_or(false);
     let mut c = Client {
+        tx: tx.clone(),
+        paths,
         link,
         panes: vec![Pane::new(thread_id, agent, pane)],
         focus: 0,
@@ -2036,6 +2077,10 @@ pub fn run(mut conn: Conn, cwd: PathBuf, settings: desl_proto::config::Config) -
             Some(Msg::Frame(f)) => c.frame(f),
             Some(Msg::DaemonGone) => {
                 Some("The desl daemon closed the connection. Run desl to reconnect; the thread resumes where it was.".to_string())
+            }
+            Some(Msg::Web(r)) => {
+                c.web_opened(r);
+                None
             }
             None => None,
         };

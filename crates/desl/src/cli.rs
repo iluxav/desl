@@ -21,9 +21,29 @@ impl Out {
 
 /// `desl web` (web-spec.md): starts the daemon when it is not running, prints the address to
 /// open, key included, and serves the page until ctrl+c. The agents keep working without it.
-pub fn web(paths: &Paths, out: &Out, port: Option<u16>) -> Result<()> {
+/// One serves each workspace: when one already does, this says where, and `--stop` ends it.
+pub fn web(paths: &Paths, out: &Out, port: Option<u16>, open: bool, stop: bool) -> Result<()> {
+    if stop {
+        let stopped = crate::web::stop(paths)?;
+        let sentence = if stopped { "Stopped desl web. The agents keep working." } else { "desl web is not running." };
+        done(out, json!({ "stopped": stopped }), sentence.to_string());
+        return Ok(());
+    }
+    let opened = |url: &str| {
+        if open && let Err(why) = crate::web::open(url) {
+            eprintln!("{why} Open the address above yourself.");
+        }
+    };
+    if let Some(url) = crate::web::running(paths).filter(|_| port.is_none()) {
+        done(out, json!({ "url": url, "running": true }), format!("desl web is already running: {url}"));
+        opened(&url);
+        return Ok(());
+    }
     drop(connect(paths, true)?);
-    desl_web::run(&paths.socket, port, |url| {
+    let served = desl_web::run(&paths.socket, port, |url| {
+        if let Err(e) = crate::web::record(paths, url) {
+            eprintln!("desl web could not note where it runs ({e}); `desl web --stop` and ctrl+space v will not find it.");
+        }
         if out.json {
             out.value(&json!({ "url": url }));
         } else {
@@ -31,7 +51,10 @@ pub fn web(paths: &Paths, out: &Out, port: Option<u16>) -> Result<()> {
             println!("Open it in a browser on this machine. ctrl+c stops desl web; the agents keep working.");
         }
         let _ = std::io::Write::flush(&mut std::io::stdout());
-    })
+        opened(url);
+    });
+    crate::web::forget(paths);
+    served
 }
 
 /// Connects to the daemon. With `start`, a daemon that is not running is started: every thread

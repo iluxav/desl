@@ -41,6 +41,7 @@ pub enum Action {
     Sidebar,
     Close,
     Detach,
+    Web,
     Help,
 }
 
@@ -79,6 +80,7 @@ pub const KEYS: &[Bind] = &[
     bind("Panes", "z", "Zoom: back to one pane, this one", Some(Action::Zoom)),
     bind("desl", "b", "Hide or show the sidebar", Some(Action::Sidebar)),
     bind("desl", "d", "Detach; the agents keep working", Some(Action::Detach)),
+    bind("desl", "v", "View the workspace in the browser (desl web)", Some(Action::Web)),
     bind("desl", "?", "This list; typing filters it, enter runs the row", Some(Action::Help)),
     bind("desl", "prefix", "Send the prefix key itself to the agent", None),
 ];

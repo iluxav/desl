@@ -16,6 +16,10 @@ All notable changes to desl are recorded here. The format follows
   works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
+- `ctrl+space v` opens the workspace in your browser: it starts `desl web` in the background
+  when none runs for this workspace, and it runs on after desl closes. Over SSH the address goes
+  to the clipboard instead. `desl web --open` does the same from a shell, `desl web` says where
+  one already runs instead of starting a second, and `desl web --stop` ends it.
 - The page's left and right columns resize: drag the line beside one, double-click it for the
   usual width, or give it the focus and use the arrows. The browser keeps the widths.
 - A project's task list shows in the sidebar by itself once `.tasks.md` exists, also when an

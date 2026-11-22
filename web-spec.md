@@ -264,6 +264,8 @@ browser ──WebSocket, JSON frames──▶ desl web (tokio, axum) ──Unix 
 
 **Cost, measured in milestone 1:** the stripped release binary grew from 8.2 MB to 10.1 MB, and a clean release build from 42 s to 44 s, on the author's machine.
 
+**Opening the page.** One `desl web` serves each workspace. While it runs it notes its process and address in `<socket>.web`, beside the daemon's socket and readable by the user alone, and takes the note away when it stops. `prefix v` in the TUI (the author's call on 2026-11-21) opens the browser on it, and starts it in the background when none runs: in a session of its own, so it runs on after the TUI and its terminal close. Over SSH, or with no `xdg-open` (`open` on macOS), the address goes to the clipboard instead, and the key line says why. From a shell, `desl web --open` does the same in the foreground; `desl web` while one runs says where it is instead of starting another; `desl web --stop` ends it, wherever it was started.
+
 **The bridge's own messages.** Besides the daemon's frames, the bridge sends the page:
 - `{"type": "view", "view": {waiting, projects}}`: the sidebar as `desl_proto::view::Sidebar` words it, each project with its threads, each thread with its status, glyph, word, age, worktree mark, subagents and header (project, branch, count, model, permission mode, `yolo`). It is sent when the workspace changes, and every 15 seconds when an age moved on; never twice the same.
 - `{"type": "bridge", "state": "no_daemon" | "daemon_gone"}` when the daemon cannot be reached or closed the connection; the page connects again, with growing waits up to 5 seconds.

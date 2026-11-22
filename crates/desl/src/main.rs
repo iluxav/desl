@@ -15,6 +15,7 @@ mod rawkeys;
 mod tasks;
 mod theme;
 mod ui;
+mod web;
 
 use clap::{Parser, Subcommand};
 use desl_ir::Decision;
@@ -54,6 +55,12 @@ enum Cmd {
         /// The port on 127.0.0.1 (default: 7428, or the next free one)
         #[arg(long)]
         port: Option<u16>,
+        /// Open the browser on it too
+        #[arg(long)]
+        open: bool,
+        /// Stop the desl web that serves this workspace, wherever it was started
+        #[arg(long, conflicts_with_all = ["port", "open"])]
+        stop: bool,
     },
     /// List, show, rename or remove threads
     Thread {
@@ -269,7 +276,7 @@ fn attach(paths: &Paths) -> anyhow::Result<()> {
     };
     let settings = desl_proto::config::load(&paths.config, desl_proto::config::find_project(&cwd).as_deref());
     // Leaving the client is never a failure: detaching, or the last agent quitting.
-    match native::run(conn, cwd, settings)? {
+    match native::run(conn, cwd, settings, paths.clone())? {
         native::End::Line(Some(line)) => println!("{line}"),
         native::End::Line(None) => {}
         native::End::Again => {
@@ -289,7 +296,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
     match cli.command.unwrap_or(Cmd::Attach) {
         Cmd::Attach => attach(paths),
         Cmd::Status => cli::status(paths, &out),
-        Cmd::Web { port } => cli::web(paths, &out, port),
+        Cmd::Web { port, open, stop } => cli::web(paths, &out, port, open, stop),
         Cmd::Thread { command } => match command {
             ThreadCmd::List => cli::thread_list(paths, &out),
             ThreadCmd::Show { thread } => cli::thread_show(paths, &out, &thread),

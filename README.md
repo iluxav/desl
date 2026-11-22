@@ -97,6 +97,7 @@ desl owns one key, the prefix `ctrl+space`. Every other key goes to the agent.
 | `,` `x` | Rename this thread, close it |
 | `%` `"` `z` | Split: another thread beside or under this one; zoom back to one pane |
 | `b` `d` `?` | Hide the sidebar, detach, the key list |
+| `v` | View the workspace in the browser: starts `desl web` when it is not running, and opens it |
 
 Without the prefix: `alt+j` / `alt+k` move between threads, `alt+h` / `alt+l` between panes
 while two are open, and a click opens a thread or focuses a pane. In a shell pane and in the
@@ -114,6 +115,9 @@ the agent.
 desl web
 # desl web: http://127.0.0.1:7428/#t=<key>
 ```
+
+Or press `ctrl+space v` in desl, which starts it in the background and opens your browser on
+it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
 
 Open the address it prints. The page lists every project and agent thread with the same marks
 and words as the sidebar, shows who is waiting, and sends a prompt to the thread you pick

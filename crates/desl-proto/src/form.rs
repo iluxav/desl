@@ -532,6 +532,9 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
             let mut seen: Vec<&str> = Vec::new();
             for (r, row) in rows.iter().enumerate() {
                 let r = r + 1;
+                if row.get("id").is_some_and(|v| !v.is_string() && !v.is_null()) {
+                    return Err(format!("Widget {n} (\"{id}\"): row {r}'s id is text, as \"12\", not {}.", row["id"]));
+                }
                 let Some(rid) = row.get("id").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) else {
                     return Err(format!("Widget {n} (\"{id}\"): row {r} has no id. Give each row one: the answer names rows by it."));
                 };
@@ -1092,6 +1095,7 @@ mod tests {
         refused(columns(), json!([]), "1 to 200 rows");
         refused(columns(), Value::Array((0..201).map(|i| json!({"id": format!("r{i}")})).collect()), "1 to 200 rows");
         refused(columns(), json!([{"title": "no id"}]), "has no id");
+        refused(columns(), json!([{"id": 12}]), "id is text");
         refused(columns(), json!([{"id": "r1"}, {"id": "r1"}]), "\"r1\" twice");
         refused(columns(), json!([{"id": "r1", "owner": "me"}]), "\"owner\", which is no column");
         refused(columns(), json!([{"id": "r1", "title": {"a": 1}}]), "text, a number, true or false");

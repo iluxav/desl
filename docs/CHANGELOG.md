@@ -110,6 +110,11 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- An install that upgraded the store lost what the new daemon wrote until its next restart.
+  Before migrating, the daemon copied the store's file outside SQLite, which drops every lock
+  the process holds on it; the daemon being replaced then took itself for the last one on its
+  way out and deleted the write-ahead log under the new one. The backup is now made through
+  SQLite (`VACUUM INTO`).
 - `desl web` runs the new build after an install. It kept running the binary it was started
   from, so the page stayed the old one, and `ctrl+space v` reopened it. Now it notices its
   binary was replaced, starts again from the new one on the same address and key, and an open

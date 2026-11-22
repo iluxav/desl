@@ -56,8 +56,6 @@ impl Store {
         if version == 0 || version >= SCHEMA_VERSION {
             return Ok(());
         }
-        // Fold the write-ahead log into the file so the copy is whole.
-        let _: (i64, i64, i64) = self.conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         let name = db.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "workspace.db".into());
         if let Some(dir) = db.parent() {
             for old in std::fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -67,7 +65,12 @@ impl Store {
                 }
             }
             let backup = dir.join(format!("{name}.v{version}.bak"));
-            std::fs::copy(db, &backup).with_context(|| format!("backing up the store to {}", backup.display()))?;
+            // Through SQLite, never by opening the file: closing another handle on it drops every
+            // lock this process holds on it, and then the daemon an upgrade replaces, on its way
+            // out, takes itself for the last one and deletes the write-ahead log under this one.
+            self.conn
+                .execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
+                .with_context(|| format!("backing up the store to {}", backup.display()))?;
         }
         Ok(())
     }
@@ -730,6 +733,84 @@ mod tests {
         s.delete_thread("t-1").unwrap();
         assert!(s.form("f-2").unwrap().is_none(), "a removed thread's forms go with it");
         assert!(s.form("f-9").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Run by the next test in a process of its own, as the daemon an upgrade replaces: with
+    /// `DESL_TEST_STORE=hold:<db>` it opens the store, says so and closes it when stdin closes;
+    /// with `count:<db>` it says how many forms the store has.
+    #[test]
+    #[ignore = "a helper process of a_store_migrated_beside_the_daemon_before_it_keeps_what_it_writes"]
+    fn store_in_another_process() {
+        let Ok(what) = std::env::var("DESL_TEST_STORE") else { return };
+        let (mode, db) = what.split_once(':').unwrap();
+        let c = Connection::open(db).unwrap();
+        c.pragma_update(None, "journal_mode", "WAL").unwrap();
+        if mode == "count" {
+            let n: i64 = c.query_row("SELECT count(*) FROM forms", [], |r| r.get(0)).unwrap();
+            println!("forms={n}");
+            return;
+        }
+        let _: i64 = c.query_row("SELECT count(*) FROM threads", [], |r| r.get(0)).unwrap();
+        println!("open");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+        drop(c);
+    }
+
+    fn another_process(mode: &str, db: &Path) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["store::tests::store_in_another_process", "--exact", "--ignored", "--nocapture", "--test-threads=1"])
+            .env("DESL_TEST_STORE", format!("{mode}:{}", db.display()))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// An upgrade: the daemon before it still has the store open while the new one backs it up
+    /// and migrates it, then closes it. What the new daemon writes after that must reach the
+    /// file. A backup made by copying the file outside SQLite dropped this process's locks on
+    /// it, so the daemon that left took itself for the last one, folded and deleted the
+    /// write-ahead log, and every later write went to the deleted file.
+    #[test]
+    fn a_store_migrated_beside_the_daemon_before_it_keeps_what_it_writes() {
+        use std::io::{BufRead, Write};
+        let dir = std::env::temp_dir().join(format!("desl-store-beside-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("workspace.db");
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.pragma_update(None, "journal_mode", "WAL").unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE projects (id TEXT PRIMARY KEY, path TEXT NOT NULL UNIQUE, default_agent TEXT, created_at INTEGER NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE threads (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL, cwd TEXT NOT NULL, worktree TEXT, parent_id TEXT, fork_point INTEGER, active_agent TEXT NOT NULL, status TEXT NOT NULL, permission_mode TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL) WITHOUT ROWID;
+                 CREATE TABLE bindings (thread_id TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT, seen_up_to INTEGER NOT NULL, model TEXT, last_used_at INTEGER NOT NULL, PRIMARY KEY (thread_id, agent)) WITHOUT ROWID;
+                 CREATE TABLE events (thread_id TEXT NOT NULL, idx INTEGER NOT NULL, ts INTEGER NOT NULL, agent TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, PRIMARY KEY (thread_id, idx)) WITHOUT ROWID;
+                 CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, thread_id TEXT NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        let mut before = another_process("hold", &db);
+        let mut said = String::new();
+        let mut out = std::io::BufReader::new(before.stdout.take().unwrap());
+        while !said.contains("open") {
+            said.clear();
+            assert!(out.read_line(&mut said).unwrap() > 0, "the other process opened the store");
+        }
+        let s = Store::open(&db, &dir.join("blobs")).unwrap();
+        // The daemon before it leaves.
+        before.stdin.take().unwrap().write_all(b"\n").unwrap();
+        before.wait().unwrap();
+        s.form_put("f-1", "t-1", "Pick", 10, "ab").unwrap();
+        let counted = another_process("count", &db).wait_with_output().unwrap();
+        let text = String::from_utf8_lossy(&counted.stdout);
+        assert!(text.contains("forms=1"), "another process sees the write: {text}");
+        assert!(dir.join("workspace.db.v1.bak").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

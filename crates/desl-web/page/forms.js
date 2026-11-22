@@ -194,14 +194,7 @@ const DRAW = {
   preview(w, into, ctx, value) {
     const top = el('div', 'fw-preview-top');
     heading(w, top);
-    const wide = el('button', 'fw-wide', 'Wide');
-    wide.type = 'button';
-    wide.title = 'Give the preview the width of the waiting list too';
-    wide.addEventListener('click', () => {
-      const on = document.body.classList.toggle('wide');
-      for (const b of document.querySelectorAll('.fw-wide')) b.textContent = on ? 'Narrow' : 'Wide';
-    });
-    top.append(wide);
+    top.append(wideButton());
     into.append(top);
     const controls = w.controls || [];
     const start = (c) => {
@@ -377,6 +370,101 @@ const DRAW = {
     into.append(wrap);
   },
 
+  document(w, into, ctx, value) {
+    const top = el('div', 'fw-preview-top');
+    const where = el('div', 'fw-doc-where');
+    if (w.label) where.append(el('span', 'fw-label', w.label));
+    where.append(el('span', 'fw-doc-path', w.section ? `${w.path} · ${w.section.replace(/^#+\s*/, '')}` : w.path));
+    top.append(where, wideButton());
+    into.append(top);
+    const original = w.original || '';
+    // Answered: what the agent got, the diff and the comments.
+    if (ctx.answered && value && typeof value === 'object' && 'saved' in value) {
+      into.append(el('p', 'fw-doc-state', value.saved ? `Saved into ${w.path}.` : 'Sent without a change; nothing was saved.'));
+      if (value.saved && value.diff) into.append(diffBlock(value.diff, value.more));
+      for (const c of value.comments || []) {
+        const row = el('div', 'fw-comment done');
+        row.append(el('blockquote', 'fw-comment-quote', c.quote), el('p', 'fw-comment-said', c.note));
+        into.append(row);
+      }
+      return;
+    }
+    const draft = value && typeof value === 'object' ? value : {};
+    into.deslBase = typeof draft.base === 'string' ? draft.base : original;
+    const tabs = el('div', 'fw-tabs');
+    tabs.setAttribute('role', 'tablist');
+    const editTab = el('button', 'fw-tab', 'Edit');
+    const viewTab = el('button', 'fw-tab', 'Preview');
+    const comment = el('button', 'fw-tab fw-comment-add', 'Comment');
+    comment.title = 'Comment on the selected text, or on the paragraph at the caret';
+    for (const b of [editTab, viewTab, comment]) b.type = 'button';
+    editTab.setAttribute('aria-selected', 'true');
+    viewTab.setAttribute('aria-selected', 'false');
+    tabs.append(editTab, viewTab, comment);
+    const area = el('textarea', 'fw-doc-text');
+    area.value = typeof draft.text === 'string' ? draft.text : original;
+    area.rows = Math.max(8, Math.min(28, area.value.split('\n').length + 1));
+    area.spellcheck = true;
+    area.setAttribute('aria-label', `The text of ${w.path}`);
+    const view = el('div', 'fw-doc-view');
+    view.hidden = true;
+    const show = (editing) => {
+      area.hidden = !editing;
+      view.hidden = editing;
+      editTab.setAttribute('aria-selected', String(editing));
+      viewTab.setAttribute('aria-selected', String(!editing));
+      if (!editing) view.replaceChildren(ctx.markdown(area.value));
+    };
+    editTab.addEventListener('click', () => show(true));
+    viewTab.addEventListener('click', () => show(false));
+    const list = el('div', 'fw-comments');
+    for (const c of Array.isArray(draft.comments) ? draft.comments : []) list.append(commentRow(c.quote, c.note, list));
+    comment.addEventListener('click', () => {
+      show(true);
+      const picked = area.value.slice(area.selectionStart, area.selectionEnd).trim();
+      const quote = picked || paragraphAt(area.value, area.selectionStart);
+      if (!quote) return;
+      const row = commentRow(quote, '', list);
+      list.append(row);
+      row.querySelector('.fw-comment-note').focus();
+      list.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const conflict = el('div', 'fw-conflict');
+    conflict.hidden = true;
+    into.append(tabs, area, view, list, conflict);
+    // After a refused Send: when the section on disk is not what this edit started from, both
+    // versions, and the user picks.
+    into.deslRecheck = async () => {
+      if (!ctx.section) return;
+      const got = await ctx.section(w.id);
+      if (got.error || got.text === into.deslBase) return;
+      conflict.replaceChildren();
+      conflict.hidden = false;
+      if (got.text === null) {
+        conflict.append(el('p', '', `The heading of this section is gone from ${w.path}, so desl cannot save into it. Copy your text out, then Dismiss.`));
+        return;
+      }
+      conflict.append(el('p', '', `${w.path} changed since this form was shown. In the file now:`), el('pre', 'fw-conflict-text', got.text));
+      const theirs = el('button', 'secondary', "Use the file's version");
+      const mine = el('button', 'primary', 'Save mine over it');
+      for (const b of [theirs, mine]) b.type = 'button';
+      theirs.addEventListener('click', () => {
+        into.deslBase = got.text;
+        area.value = got.text;
+        conflict.hidden = true;
+        area.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      mine.addEventListener('click', () => {
+        into.deslBase = got.text;
+        conflict.replaceChildren(el('p', '', 'Press Send to save your text over the file\'s.'));
+        area.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      const bar = el('div', 'form-actions');
+      bar.append(theirs, mine);
+      conflict.append(bar);
+    };
+  },
+
   images(w, into, ctx, value) {
     heading(w, into);
     const name = uid();
@@ -416,6 +504,58 @@ const DRAW = {
     into.append(grid);
   },
 };
+
+/** The button that gives a preview or a document the waiting list's width too, and back. */
+function wideButton() {
+  const wide = el('button', 'fw-wide', document.body.classList.contains('wide') ? 'Narrow' : 'Wide');
+  wide.type = 'button';
+  wide.title = 'Give this the width of the waiting list too';
+  wide.addEventListener('click', () => {
+    const on = document.body.classList.toggle('wide');
+    for (const b of document.querySelectorAll('.fw-wide')) b.textContent = on ? 'Narrow' : 'Wide';
+  });
+  return wide;
+}
+
+/** A unified diff, its added and removed lines marked. */
+function diffBlock(text, more) {
+  const pre = el('pre', 'fw-diff');
+  for (const l of text.replace(/\n$/, '').split('\n')) {
+    const kind = l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : l.startsWith('@@') ? 'hunk' : '';
+    pre.append(el('span', kind, `${l}\n`));
+  }
+  if (more) pre.append(el('span', 'more', `… ${more} more lines; the file itself has them all.`));
+  return pre;
+}
+
+/** The paragraph around `at` in `text`: the lines between the blank lines on either side. */
+function paragraphAt(text, at) {
+  const before = text.lastIndexOf('\n\n', Math.max(0, at - 1));
+  const start = before < 0 ? 0 : before + 2;
+  const after = text.indexOf('\n\n', at);
+  return text.slice(start, after < 0 ? text.length : after).trim();
+}
+
+function commentRow(quote, note, list) {
+  const row = el('div', 'fw-comment');
+  row.dataset.quote = quote;
+  const q = el('blockquote', 'fw-comment-quote', quote.length > 280 ? `${quote.slice(0, 280)}…` : quote);
+  const input = el('textarea', 'fw-comment-note');
+  input.rows = 2;
+  input.placeholder = 'Your note on this';
+  input.value = note || '';
+  input.setAttribute('aria-label', 'Note on the quoted text');
+  const drop = el('button', 'fw-move', '✕');
+  drop.type = 'button';
+  drop.title = 'Remove this comment';
+  drop.setAttribute('aria-label', 'Remove this comment');
+  drop.addEventListener('click', () => {
+    row.remove();
+    list.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  row.append(q, drop, input);
+  return row;
+}
 
 /** What a control sets its variable to: a range's number with its unit. */
 function cssValue(c, v) {
@@ -505,6 +645,17 @@ function read(w, box) {
       const v = box.querySelector('select').value;
       return v === '' ? undefined : v;
     }
+    case 'document': {
+      const area = box.querySelector('.fw-doc-text');
+      if (!area) return undefined;
+      const out = { text: area.value, comments: [] };
+      for (const row of box.querySelectorAll('.fw-comment')) {
+        const note = row.querySelector('.fw-comment-note').value.trim();
+        if (note) out.comments.push({ quote: row.dataset.quote, note });
+      }
+      if (typeof box.deslBase === 'string' && box.deslBase !== (w.original || '')) out.base = box.deslBase;
+      return out;
+    }
     case 'images': {
       const chosen = [...box.querySelectorAll('.fw-image input')].filter((i) => i.checked).map((i) => i.value);
       if (w.multi) return chosen.length ? chosen : undefined;
@@ -568,7 +719,8 @@ const CLOSED = {
 /**
  * A form's card. `got` is the daemon's `form` reply: the form, its draft, its answer, how it
  * closed. `opts`: `markdown(text)` renders Markdown as nodes; `image(path)` resolves to `{url}` or
- * `{error}` for a picture the form shows; `readOnly` and `note` for a card
+ * `{error}` for a picture the form shows; `section(widget)` to `{text}` (null when gone) or
+ * `{error}`, a document's section as it is on disk now; `readOnly` and `note` for a card
  * that cannot be answered here; `onDraft(values)`, `onSend(answer)` (resolves to an error
  * sentence or null) and `onDismiss()` for a live one.
  */
@@ -584,7 +736,7 @@ export function card(got, opts) {
   top.append(el('span', 'form-id', got.form_id));
   root.append(top);
   const values = closed === 'user' ? got.answer || {} : got.draft || {};
-  const ctx = { markdown: opts.markdown, image: opts.image };
+  const ctx = { markdown: opts.markdown, image: opts.image, section: opts.section, answered: closed === 'user' };
   for (const w of form.widgets || []) {
     const box = el('div', `fw fw-kind-${w.kind}`);
     box.dataset.widget = w.id;
@@ -628,6 +780,8 @@ export function card(got, opts) {
     if (why) {
       err.textContent = why;
       send.disabled = false;
+      // A document whose file changed meanwhile shows both versions.
+      for (const b of root.querySelectorAll('[data-widget]')) if (b.deslRecheck) await b.deslRecheck();
     }
   });
   dismiss.addEventListener('click', async () => {

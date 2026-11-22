@@ -16,6 +16,9 @@ All notable changes to desl are recorded here. The format follows
   works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
+- On desl web's Screen tab the agent's own input is the only one: the page's prompt box shows
+  under the Conversation tab and at phone width, and Stop moved to the thread's header, there
+  while it works. desl's sentences show under the page for a few seconds.
 - desl web shows a thread's whole conversation beside its screen, the same one `prefix [`
   shows in the terminal: every prompt with its time, the replies as Markdown, tool calls folded
   to a line you can open, a rule at each new day. A search box finds a word (enter for the next,

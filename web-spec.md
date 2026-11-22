@@ -49,7 +49,7 @@ The page serves feel-bar moments 5 (waiting is impossible to miss), 6 (the agent
 6. **Any thread's screen:** the agent's own interface, drawn by xterm.js, with keys, paste and resize.
 7. **Any thread's conversation:** every prompt, reply and tool call since the thread began, from desl's log, as `prefix [` shows it in the TUI, with search.
 
-Below the three columns are a prompt to the selected thread (queued while its agent is working) and a stop button.
+On the Screen tab the agent's own input takes the keys, so the page adds no prompt of its own there (the author's call on 2026-11-21). Under the Conversation tab, and at phone width, where a terminal is hard to type in, a prompt to the selected thread sits below the columns: it goes through the `prompt` path, so it waits while the agent works and while its screen asks something. While the thread works, a Stop button in its header ends the turn.
 
 Shell and file-manager threads are left out of the page. The browser adds nothing to a terminal, and the TUI keeps them.
 
@@ -92,7 +92,7 @@ Shell and file-manager threads are left out of the page. The browser adds nothin
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode |
 | Middle, tabs | The open document (named after its file), the thread's whole conversation (Conversation) and its own screen (Screen) |
 | Right | The waiting list: every pending approval and open question, oldest first |
-| Bottom | The prompt to the selected thread, and the stop button |
+| Bottom | The prompt to the selected thread, under the Conversation tab and at phone width; a sentence from desl, for a few seconds |
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI does. The page has a light and a dark version, following the browser's setting.
 

@@ -293,6 +293,14 @@ function drawHead(cur) {
   right.append(el('span', `status-${t.status}`, `${t.glyph} ${t.word}`));
   if (!h.yolo) right.append(el('span', 'mode', h.mode));
   right.append(el('span', 'tid', t.id));
+  // Ends the turn, as esc does in the agent's own screen; there while there is a turn to end.
+  if (t.status === 'working' && $('link').dataset.state === 'connected') {
+    const b = el('button', 'stop', 'Stop');
+    b.type = 'button';
+    b.title = 'Stop this turn';
+    b.addEventListener('click', stop);
+    right.append(b);
+  }
   head.append(left, right);
 }
 
@@ -341,13 +349,29 @@ function drawChrome(cur) {
   input.disabled = !ready;
   input.placeholder = cur ? `Prompt to ${cur.t.title} (${cur.t.agent}). Queued while it works.` : 'Pick a thread';
   $('send').disabled = !ready;
-  $('stop').disabled = !ready || !cur || cur.t.status !== 'working';
+  composer();
 }
 
+// On the Screen tab the agent's own input takes the keys: the page's prompt shows only where
+// there is none, the Conversation tab, and at phone width, where a terminal is hard to type in.
+const NARROW = window.matchMedia('(max-width: 899px)');
+
+function composer() {
+  const form = state.tab === 'conv' || NARROW.matches;
+  $('prompt-form').hidden = !form;
+  $('composer').hidden = !form && !$('notice').textContent;
+}
+
+let noticeTimer = null;
+
+/** A sentence under the thread, for a few seconds: longer when something went wrong. */
 function notice(text, error = false) {
   const n = $('notice');
   n.textContent = text;
   n.classList.toggle('error', error);
+  composer();
+  clearTimeout(noticeTimer);
+  if (text) noticeTimer = setTimeout(() => notice(''), error ? 15000 : 8000);
 }
 
 // ---- the agent's screen ------------------------------------------------------------------------
@@ -929,7 +953,7 @@ function main() {
   setupScreen();
   setupConversation();
   $('prompt-form').addEventListener('submit', sendPrompt);
-  $('stop').addEventListener('click', stop);
+  NARROW.addEventListener('change', composer);
   showTab(read('desl-web-tab') === 'conv' ? 'conv' : 'screen');
   connect(key);
 }

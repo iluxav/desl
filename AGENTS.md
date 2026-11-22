@@ -10,9 +10,9 @@ The experience is the product. Every tool in this space already has the technolo
 
 ## Rules
 
-1. **Vocabulary is fixed.** Use only the words in the "Naming and vocabulary" table: workspace, project, thread, agent, session, pane, worktree, brief, switch, fork, attach, detach. Status words are working, waiting, idle, failed, detached. Never say "session" for a desl thread or "thread" for an agent's native session. "Engine" and "fuel" appear only in brand copy, never in the UI.
+1. **Vocabulary is fixed.** Use only the words in the "Naming and vocabulary" table: workspace, project, thread, agent, session, pane, worktree, brief, switch, fork, attach, detach, task, question, comment, waiting list. Status words are working, waiting, idle, failed, detached. Never say "session" for a desl thread or "thread" for an agent's native session. "Engine" and "fuel" appear only in brand copy, never in the UI.
 2. **Borrow, never invent.** Keys, commands and layout come from tmux, lazygit, fzf, Claude Code and Codex, as listed in "Commands, keybindings and CLI". A new concept gets a new word only when no community word fits.
-3. **Non-goals are final.** No model API calls, no plugin runtime, no workflow engine, no dashboard, no IDE features, no cloud, no agents beyond Claude Code and Codex before phase 3, no configuration required for anything. If a task asks for one of these, stop and say so.
+3. **Non-goals are final.** No model API calls, no plugin runtime, no workflow engine, no dashboard (`desl web`, specified in `web-spec.md`, is the one browser client), no IDE features, no cloud, no agents beyond Claude Code and Codex before phase 3, no configuration required for anything. If a task asks for one of these, stop and say so.
 4. **Adapters are the only code that knows a native format.** Nothing outside `adapters/<id>/` may parse Claude Code or Codex output, flags or session files. Each adapter ships with `fixtures/` of real captured output per agent version and a replay test; an adapter that fails its fixtures does not merge.
 5. **Verify every CLI flag.** Flag names in `SPEC.md` for `claude` and `codex` are from memory. Before using one, run `claude --help` or `codex exec --help` against the pinned version and record what you found in `docs/adapters.md`.
 6. **Every error is a complete sentence** that says what happened and what to do next, with a key to press where one applies. No stack traces or bare codes reach the user.
@@ -34,6 +34,7 @@ crates/
   desl-daemon/     thread engine, store, projector, approval broker, git service, PTY host, event bus
   desl-proto/      the daemon protocol (versioned, documented in docs/protocol.md)
   desl-ir/         the event IR and Thread/Binding types
+  desl-web/        planned: `desl web`, the browser client (tokio, axum; see web-spec.md)
   adapters/
     claude/        fixtures/, replay tests, the Claude Code adapter
     codex/         fixtures/, replay tests, the Codex adapter
@@ -43,7 +44,7 @@ skills/
 docs/
   protocol.md  adapters.md  CHANGELOG.md
 .github/workflows/ ci.yml (make check), release.yml (builds and publishes on a v* tag)
-SPEC.md  AGENTS.md  CLAUDE.md  README.md  install.sh  Makefile
+SPEC.md  web-spec.md  AGENTS.md  CLAUDE.md  README.md  install.sh  Makefile
 ```
 
 ## How to work

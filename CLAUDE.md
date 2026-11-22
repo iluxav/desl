@@ -1,6 +1,6 @@
 # desl
 
-Read `AGENTS.md` first, then `SPEC.md`. Both apply in full to every task in this repository.
+Read `AGENTS.md` first, then `SPEC.md`. Both apply in full to every task in this repository. Work on `desl web`, the browser client, also follows `web-spec.md`.
 
 Short version: desl (say *diesel*) is a terminal workspace for coding agents, judged on experience, not technology. The vocabulary, keys, non-goals, adapter boundary and performance budgets in `SPEC.md` are fixed; a change that needs them to move updates `SPEC.md` in the same commit.
 

@@ -31,8 +31,9 @@ const DRAW = {
   choice(w, into, ctx, value) {
     heading(w, into);
     const name = uid();
-    // A draft or an answer wins; else where the agent said it starts.
-    const given = value === undefined || value === null ? w.value : value;
+    // A draft or an answer wins; else where the agent said it starts. An answered card shows
+    // the answer alone: nothing picked is nothing picked.
+    const given = ctx.answered || (value !== undefined && value !== null) ? value : w.value;
     const picked = new Set(Array.isArray(given) ? given : given === undefined || given === null ? [] : [given]);
     const labels = (w.options || []).map((o) => o.label);
     for (const o of w.options || []) {
@@ -132,7 +133,7 @@ const DRAW = {
     else input.type = 'text';
     input.id = id;
     input.placeholder = w.placeholder || '';
-    input.value = typeof value === 'string' ? value : w.value || '';
+    input.value = typeof value === 'string' ? value : ctx.answered ? '' : w.value || '';
     into.append(label, input);
   },
 
@@ -167,7 +168,7 @@ const DRAW = {
     const box = el('input');
     box.type = 'checkbox';
     box.setAttribute('role', 'switch');
-    box.checked = typeof value === 'boolean' ? value : Boolean(w.value);
+    box.checked = typeof value === 'boolean' ? value : !ctx.answered && Boolean(w.value);
     row.append(box, el('span', 'fw-option-label', w.label));
     into.append(row);
   },
@@ -187,7 +188,7 @@ const DRAW = {
       opt.value = o.label;
       sel.append(opt);
     }
-    sel.value = typeof value === 'string' ? value : w.value || '';
+    sel.value = typeof value === 'string' ? value : ctx.answered ? '' : w.value || '';
     into.append(label, sel);
   },
 
@@ -318,8 +319,9 @@ const DRAW = {
       tr.dataset.row = row.id;
       const now = changed.get(row.id) || {};
       for (const c of columns) {
-        const was = row[c.id];
-        const cur = c.id in now ? now[c.id] : was;
+        // Own keys only: a column named constructor or __proto__ is a column like any other.
+        const was = Object.hasOwn(row, c.id) ? row[c.id] : undefined;
+        const cur = Object.hasOwn(now, c.id) ? now[c.id] : was;
         const td = el('td');
         const name = `${c.label || c.id}, ${row.id}`;
         if (c.edit === 'check') {
@@ -453,9 +455,13 @@ const DRAW = {
     into.deslRecheck = async () => {
       if (!ctx.section) return;
       const got = await ctx.section(w.id);
-      if (got.error || got.text === into.deslBase) return;
+      if (!got.error && got.text === into.deslBase) return;
       conflict.replaceChildren();
       conflict.hidden = false;
+      if (got.error) {
+        conflict.append(el('p', '', `${got.error} desl cannot save into it now. Copy your text out, then Dismiss.`));
+        return;
+      }
       if (got.text === null) {
         conflict.append(el('p', '', `The heading of this section is gone from ${w.path}, so desl cannot save into it. Copy your text out, then Dismiss.`));
         return;
@@ -484,7 +490,7 @@ const DRAW = {
   images(w, into, ctx, value) {
     heading(w, into);
     const name = uid();
-    const given = value === undefined || value === null ? w.value : value;
+    const given = ctx.answered || (value !== undefined && value !== null) ? value : w.value;
     const picked = new Set(Array.isArray(given) ? given : given === undefined || given === null ? [] : [given]);
     const grid = el('div', 'fw-images');
     for (const p of w.images || []) {
@@ -600,7 +606,9 @@ function fill(frame, w) {
   for (const e of parsed.querySelectorAll('*')) {
     for (const a of [...e.attributes]) {
       const name = a.name.toLowerCase();
-      if (name.startsWith('on') || name === 'srcdoc' || /^[\s\u0000-\u001f]*(javascript|vbscript):/i.test(a.value)) {
+      // A URL is read with its whitespace and control characters gone, as the browser reads it.
+      const url = a.value.replace(/[\s\u0000-\u001f]/g, '');
+      if (name.startsWith('on') || ['srcdoc', 'ping', 'action', 'formaction'].includes(name) || /^(javascript|vbscript):/i.test(url)) {
         e.removeAttribute(a.name);
       } else if (name === 'style') {
         e.removeAttribute(a.name);
@@ -625,19 +633,23 @@ function fill(frame, w) {
   }
   // A link would take the frame away from the preview; it stays where it is.
   doc.addEventListener('click', (e) => {
-    if (e.target instanceof doc.defaultView.Element && e.target.closest('a, area')) e.preventDefault();
+    if (e.target instanceof doc.defaultView.Element && e.target.closest('a, area, [href]')) e.preventDefault();
   });
 }
 
-/** What a widget holds now: undefined when nothing is given. */
-function read(w, box) {
+/**
+ * What a widget holds now: undefined when nothing is given. For a draft (`keep`), an emptied
+ * field or list stays, so a reload shows it empty rather than where the agent started it, and a
+ * comment with no note yet stays too.
+ */
+function read(w, box, keep) {
   switch (w.kind) {
     case 'choice': {
       const chosen = [...box.querySelectorAll('input[type=radio], input[type=checkbox]')]
         .filter((i) => i.checked)
         .map((i) => (i.dataset.other ? box.querySelector('.fw-other-text').value.trim() : i.value))
         .filter((v) => v !== '');
-      if (w.multi) return chosen.length ? chosen : undefined;
+      if (w.multi) return chosen.length || keep ? chosen : undefined;
       return chosen[0];
     }
     case 'checklist':
@@ -649,7 +661,7 @@ function read(w, box) {
       });
     case 'text': {
       const t = box.querySelector('.fw-text').value;
-      return t.trim() === '' ? undefined : t;
+      return t.trim() === '' && !keep ? undefined : t;
     }
     case 'number': {
       const n = Number(box.querySelector('.fw-number-box').value);
@@ -659,7 +671,7 @@ function read(w, box) {
       return box.querySelector('input').checked;
     case 'select': {
       const v = box.querySelector('select').value;
-      return v === '' ? undefined : v;
+      return v === '' && !keep ? undefined : v;
     }
     case 'document': {
       const area = box.querySelector('.fw-doc-text');
@@ -667,14 +679,14 @@ function read(w, box) {
       const out = { text: area.value, comments: [] };
       for (const row of box.querySelectorAll('.fw-comment')) {
         const note = row.querySelector('.fw-comment-note').value.trim();
-        if (note) out.comments.push({ quote: row.dataset.quote, note });
+        if (note || keep) out.comments.push({ quote: row.dataset.quote, note });
       }
       if (typeof box.deslBase === 'string' && box.deslBase !== (w.original || '')) out.base = box.deslBase;
       return out;
     }
     case 'images': {
       const chosen = [...box.querySelectorAll('.fw-image input')].filter((i) => i.checked).map((i) => i.value);
-      if (w.multi) return chosen.length ? chosen : undefined;
+      if (w.multi) return chosen.length || keep ? chosen : undefined;
       return chosen[0];
     }
     case 'table': {
@@ -703,14 +715,17 @@ function read(w, box) {
   }
 }
 
-/** Every widget's value as the card holds it, keyed by widget id; nothing for what is empty. */
-export function valuesOf(form, cardEl) {
+/**
+ * Every widget's value as the card holds it, keyed by widget id; nothing for what is empty,
+ * unless `keep` asks for a draft, which keeps what was emptied.
+ */
+export function valuesOf(form, cardEl, keep = false) {
   const out = {};
   for (const w of form.widgets || []) {
     if (w.kind === 'markdown') continue;
     const box = cardEl.querySelector(`[data-widget="${CSS.escape(w.id)}"]`);
     if (!box) continue;
-    const v = read(w, box);
+    const v = read(w, box, keep);
     if (v !== undefined) out[w.id] = v;
   }
   return out;
@@ -784,7 +799,7 @@ export function card(got, opts) {
   let timer = null;
   // A draft desl would not keep is said on the card, not lost in silence.
   const keep = async () => {
-    const reply = await opts.onDraft(valuesOf(form, root));
+    const reply = await opts.onDraft(valuesOf(form, root, true));
     if (reply && reply.error) err.textContent = `Not kept as a draft: ${reply.error}`;
     else if (err.textContent.startsWith('Not kept as a draft')) err.textContent = '';
   };

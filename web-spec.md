@@ -233,7 +233,8 @@ sent.
    starts. `close_form` withdraws one.
 5. **Drafts:** what the user fills in goes to the daemon a second after the last change and is
    kept beside the open form, so a reload, an install, a daemon restart or another tab finds the
-   card as it was. A draft desl refuses (over 1 MB) is said on the card. A form closed unanswered,
+   card as it was, a field or list the user emptied empty, not back where the agent started it,
+   and a comment with no note yet. A draft desl refuses (over 1 MB) is said on the card. A form closed unanswered,
    dismissed or withdrawn, keeps its last draft: its card shows what the user wrote, read-only, to
    copy; an answered one drops it.
 

@@ -441,10 +441,16 @@ function markdown(text) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (/^\s*```/.test(line)) {
+    const fence = line.match(/^\s*(`{3,}|~{3,})/);
+    if (fence) {
+      // Closed by a run of the same mark, at least as long, alone on its line.
+      const close = (l) => {
+        const t = l.trim();
+        return t.length >= fence[1].length && [...t].every((c) => c === fence[1][0]);
+      };
       const code = [];
       i++;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+      while (i < lines.length && !close(lines[i])) code.push(lines[i++]);
       i++;
       const pre = el('pre');
       pre.append(el('code', '', code.join('\n')));
@@ -493,7 +499,7 @@ function markdown(text) {
       continue;
     }
     const para = [];
-    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*([-*+]|\d+[.)])\s|>|\s*\|)/.test(lines[i])) para.push(lines[i++]);
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*~~~|\s*([-*+]|\d+[.)])\s|>|\s*\|)/.test(lines[i])) para.push(lines[i++]);
     // A line break in a reply stays one: agents break lines on purpose.
     const p = el('p');
     para.forEach((l, k) => {

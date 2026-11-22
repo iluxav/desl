@@ -132,6 +132,14 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- Forms: a field or list you emptied came back filled after a reload, and an answered card showed
+  the agent's starting value for what you left empty. A comment with no note yet was lost on a
+  reload. A table column named `constructor` broke its cells. A document's file that could no
+  longer be read after a refused Send left the card silent; it now says why. The document
+  preview shows `~~~` code fences.
+- Forms, in the daemon: pictures are read off the engine's thread; a save's diff gives up after
+  3 seconds; a save that fails after another one tells the agent which were saved; a section's
+  headings are found as Markdown reads them (front matter, comments, `## C#`, inline code).
 - An agent never started in a thread whose only history was something other than a
   conversation, such as a form pushed from a shell before the first prompt: desl copied the
   empty conversation into a session the agent could not resume. It now opens a new session, on

@@ -58,6 +58,34 @@ pub fn worktree_remove(path: &Path) -> Result<(), String> {
 }
 
 /// The repository a directory belongs to, or the directory itself when it is not in one.
+/// Whether `a` is an ancestor of `b`: `b` fast-forwards from `a`. None when git cannot say.
+pub fn is_ancestor(cwd: &Path, a: &str, b: &str) -> Option<bool> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(cwd)
+        .args(["merge-base", "--is-ancestor", a, b])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()?;
+    match out.code() {
+        Some(0) => Some(true),
+        Some(1) => Some(false),
+        _ => None,
+    }
+}
+
+/// Fast-forwards the branch checked out in `cwd` to `branch`: a sentence from git when it will not.
+pub fn fast_forward(cwd: &Path, branch: &str) -> Result<(), String> {
+    git_or_why(cwd, &["merge", "--ff-only", "--quiet", branch]).map(|_| ())
+}
+
+/// `git diff a...b`: what `b` changed since it left `a`.
+pub fn diff_range(cwd: &Path, a: &str, b: &str) -> Result<String, String> {
+    git_or_why(cwd, &["diff", "--no-color", "--no-ext-diff", &format!("{a}...{b}")])
+}
+
 /// The branch checked out in `cwd`; None on a detached head or outside a repository.
 pub fn current_branch(cwd: &Path) -> Option<String> {
     git(cwd, &["symbolic-ref", "--quiet", "--short", "HEAD"]).map(|b| b.trim().to_string()).filter(|b| !b.is_empty())

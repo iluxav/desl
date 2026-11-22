@@ -2012,3 +2012,68 @@ fn a_task_started_in_the_main_checkout_or_a_thread_is_marked_done_by_its_agent()
     let refused = r.cmd(Command::TaskStart { project_id: project, task: 1, agent: None, place: "nowhere".into() }).unwrap_err();
     assert!(refused.contains("worktree, main"), "{refused}");
 }
+
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "user.email=t@t", "-c", "user.name=t"])
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Task #1 started in its own worktree, one commit made there, and marked ready.
+fn ready_task(r: &mut Rig) -> (String, PathBuf, desl_proto::tasks::Task) {
+    let (project, root) = task_repo(r);
+    let task = started(r, &project, "worktree");
+    let wt = PathBuf::from(r.thread(task.thread.as_deref().unwrap()).cwd);
+    std::fs::write(wt.join("wheel.rs"), "// fixed\n").unwrap();
+    git_in(&wt, &["add", "wheel.rs"]);
+    git_in(&wt, &["commit", "-q", "-m", "Fix the wheel"]);
+    let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::Ready), ..Default::default() };
+    r.cmd(Command::TaskSet { project_id: project.clone(), task: 1, edit }).unwrap();
+    (project, root, task)
+}
+
+#[test]
+fn merging_a_ready_task_fast_forwards_main_and_ends_its_worktree() {
+    let mut r = rig("task-merge");
+    let (project, root, task) = ready_task(&mut r);
+    let Ok(Reply::Diff { text, .. }) = r.cmd(Command::TaskDiff { project_id: project.clone(), task: 1 }) else { panic!("a diff") };
+    assert!(text.contains("+// fixed"), "{text}");
+    let thread = task.thread.clone().unwrap();
+    let wt = PathBuf::from(r.thread(&thread).cwd);
+    let Ok(Reply::Task { task: done, .. }) = r.cmd(Command::TaskMerge { project_id: project, task: 1 }) else { panic!("merged") };
+    assert_eq!(done.status, desl_proto::tasks::Status::Done);
+    assert_eq!(git_in(&root, &["log", "-1", "--format=%s"]), "Fix the wheel", "main has the work");
+    assert!(root.join("wheel.rs").is_file());
+    assert!(!wt.exists(), "the worktree went");
+    assert_eq!(
+        git_in(&root, &["branch", "--list", task.branch.as_deref().unwrap()]).trim_start_matches(['*', ' ']),
+        task.branch.unwrap(),
+        "the branch stays"
+    );
+    let t = r.thread(&thread);
+    assert_eq!((t.cwd, t.worktree), (root.to_string_lossy().into_owned(), None), "the thread stays, in the main checkout");
+}
+
+#[test]
+fn a_task_whose_main_moved_on_is_not_merged_and_its_agent_can_be_asked_to_rebase() {
+    let mut r = rig("task-merge-moved");
+    let (project, root, _) = ready_task(&mut r);
+    std::fs::write(root.join("other.rs"), "// main moved\n").unwrap();
+    git_in(&root, &["add", "other.rs"]);
+    git_in(&root, &["commit", "-q", "-m", "Main moved"]);
+    let Ok(Reply::MergeRefused { reason, rebase }) = r.cmd(Command::TaskMerge { project_id: project.clone(), task: 1 }) else {
+        panic!("refused")
+    };
+    assert!(rebase && reason.contains("rebase"), "{reason}");
+    assert_eq!(git_in(&root, &["log", "-1", "--format=%s"]), "Main moved", "main untouched");
+    let Ok(Reply::Task { task, .. }) = r.cmd(Command::TaskRebase { project_id: project, task: 1 }) else { panic!("asked") };
+    assert_eq!(task.status, desl_proto::tasks::Status::InProgress);
+    let asked = r.claude.lock().unwrap().payloads.last().cloned().unwrap();
+    assert!(asked.contains("Rebase") && asked.contains("main") && asked.contains("--status ready"), "{asked}");
+}

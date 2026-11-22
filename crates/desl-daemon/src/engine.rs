@@ -2019,6 +2019,75 @@ impl Engine {
         self.task_change(project_id, &desl_proto::tasks::Change::Set { id: task_id, edit })
     }
 
+    /// A task as the file has it now, with its project's root and the main checkout's branch.
+    fn task_on_branch(&self, project_id: &str, task_id: u32) -> Result<(desl_proto::tasks::Task, PathBuf, String, String), String> {
+        let list = self.task_store(project_id)?.read().map_err(|e| format!("desl could not read the task list ({e})."))?;
+        let task = list.get(task_id).cloned().ok_or_else(|| format!("There is no task #{task_id} in this project's list."))?;
+        let branch = task.branch.clone().ok_or_else(|| {
+            format!("#{task_id} has no branch of its own: its agent commits to the checkout it works in, so there is nothing to merge.")
+        })?;
+        let root = self.projects.iter().find(|p| p.id == project_id).map(|p| PathBuf::from(&p.path)).ok_or("The project is gone.")?;
+        let main = git::current_branch(&root).ok_or_else(|| {
+            format!("The main checkout, {}, is not on a branch, so desl has nothing to merge into.", tilde(&root.to_string_lossy()))
+        })?;
+        Ok((task, root, main, branch))
+    }
+
+    /// Merges a ready task (docs/design/2026-11-22-tasks-first-class.md, Goals, Ready).
+    fn task_merge(&mut self, project_id: &str, task_id: u32) -> Outcome {
+        let (task, root, main, branch) = self.task_on_branch(project_id, task_id)?;
+        if task.status != desl_proto::tasks::Status::Ready {
+            return Err(format!("#{task_id} is {}, not ready: its agent marks it ready when its work is done.", task.status.word()));
+        }
+        if git::is_ancestor(&root, &main, &branch) != Some(true) {
+            let reason = format!("{main} moved on since {branch} left it, so it needs a rebase before it can be merged.");
+            return Ok(Reply::MergeRefused { reason, rebase: true });
+        }
+        if let Err(why) = git::fast_forward(&root, &branch) {
+            return Ok(Reply::MergeRefused { reason: format!("git did not merge {branch}: {why}"), rebase: false });
+        }
+        // The worktree goes when nothing in it would be lost; the thread stays, on the main
+        // checkout, and its next prompt carries its conversation into a new session there.
+        if let Some(thread) = task.thread.as_deref()
+            && let Ok(i) = self.idx(thread)
+            && self.threads[i].worktree.is_some()
+        {
+            let path = PathBuf::from(&self.threads[i].cwd);
+            if self.ptys.contains_key(thread) {
+                let _ = self.end_agent(thread);
+            }
+            if git::worktree_remove(&path).is_ok() {
+                let t = &mut self.threads[i];
+                t.worktree = None;
+                t.cwd = root.to_string_lossy().into_owned();
+                t.bindings.clear();
+                t.git = git::state(&root);
+                self.persist(thread);
+            }
+        }
+        let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::Done), ..Default::default() };
+        self.task_change(project_id, &desl_proto::tasks::Change::Set { id: task_id, edit })
+    }
+
+    fn task_diff(&self, project_id: &str, task_id: u32) -> Outcome {
+        let (_, root, main, branch) = self.task_on_branch(project_id, task_id)?;
+        let text = git::diff_range(&root, &main, &branch)?;
+        let lines: Vec<&str> = text.lines().collect();
+        let shown = lines.len().min(2000);
+        Ok(Reply::Diff { base: main, text: lines[..shown].join("\n"), more: lines.len() - shown })
+    }
+
+    fn task_rebase(&mut self, project_id: &str, task_id: u32) -> Outcome {
+        let (task, _, main, branch) = self.task_on_branch(project_id, task_id)?;
+        let thread = task.thread.clone().ok_or_else(|| format!("#{task_id} has no thread to ask."))?;
+        let ask = format!(
+            "desl: {main} moved on since {branch} left it. Rebase {branch} onto {main}, run the tests again, and mark task #{task_id} ready again: `desl task set {task_id} --status ready`."
+        );
+        self.prompt(&thread, &ask)?;
+        let edit = desl_proto::tasks::Edit { status: Some(desl_proto::tasks::Status::InProgress), ..Default::default() };
+        self.task_change(project_id, &desl_proto::tasks::Change::Set { id: task_id, edit })
+    }
+
     fn task_lists(&mut self) {
         let missing: Vec<String> = self
             .projects
@@ -2218,6 +2287,9 @@ impl Engine {
                 self.task_change(&project_id, &desl_proto::tasks::Change::Set { id: task, edit })
             }
             Command::TaskStart { project_id, task, agent, place } => self.task_start(&project_id, task, agent.as_deref(), &place),
+            Command::TaskMerge { project_id, task } => self.task_merge(&project_id, task),
+            Command::TaskDiff { project_id, task } => self.task_diff(&project_id, task),
+            Command::TaskRebase { project_id, task } => self.task_rebase(&project_id, task),
             Command::FormImage { form_id, path } => match self.form_image(&form_id, &path) {
                 // Read and encoded by a worker: up to 10 MB a picture must not hold the engine.
                 Ok((dir, path)) => {

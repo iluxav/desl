@@ -24,6 +24,8 @@ const state = {
   tasks: new Map(),
   /** The projects whose list was asked for on this connection. */
   tasksAsked: new Set(),
+  /** Ready tasks whose merge was refused because main moved on: `project#task`. */
+  needsRebase: new Set(),
   /** The agents installed and logged in, for the task panel's Agent list. */
   agents: [],
   /** The last pick in the task panel: the agent ('' for the project's default) and the place. */
@@ -845,11 +847,76 @@ function taskAction(t, project) {
     return split;
   }
   if (t.status === 'in-progress') return el('span', 'tstate working', '✻ in progress');
-  if (t.status === 'ready') return el('span', 'tstate ready', 'ready');
+  if (t.status === 'ready') {
+    const bar = el('span', 'tready');
+    const key = `${project.id}#${t.id}`;
+    if (state.needsRebase.has(key)) {
+      const ask = el('button', 'secondary', 'Ask to rebase');
+      ask.type = 'button';
+      ask.title = 'Main moved on since its branch left it';
+      ask.addEventListener('click', async () => {
+        const reply = await request('task_rebase', { project_id: project.id, task: t.id });
+        if (reply.error) return notice(reply.error, true);
+        state.needsRebase.delete(key);
+        notice(`Asked ${t.thread} to rebase #${t.id} onto main; it comes back ready.`);
+      });
+      bar.append(ask);
+    }
+    {
+      // Merge stays: after a rebase made by hand it goes through.
+      const merge = el('button', 'primary merge', 'Merge');
+      merge.type = 'button';
+      merge.title = `Fast-forward main to ${t.branch}`;
+      merge.addEventListener('click', async () => {
+        merge.disabled = true;
+        const reply = await request('task_merge', { project_id: project.id, task: t.id });
+        merge.disabled = false;
+        if (reply.error) return notice(reply.error, true);
+        if (reply.ok.reply === 'merge_refused') {
+          if (reply.ok.rebase) state.needsRebase.add(key);
+          else state.needsRebase.delete(key);
+          notice(reply.ok.reason, true);
+          drawTasks();
+          return;
+        }
+        state.needsRebase.delete(key);
+        notice(`Merged #${t.id}: ${t.branch} is in the main checkout's branch now, and #${t.id} is done.`);
+      });
+      bar.append(merge);
+    }
+    const diff = el('button', 'secondary', 'Diff');
+    diff.type = 'button';
+    diff.addEventListener('click', () => showDiff(t, project));
+    bar.append(diff);
+    return bar;
+  }
   return null;
 }
 
+/** A task's changes against main, read-only, over the conversation. */
+async function showDiff(t, project) {
+  const reply = await request('task_diff', { project_id: project.id, task: t.id });
+  if (reply.error) return notice(reply.error, true);
+  $('diff-title').textContent = `#${t.id} ${t.title} · ${t.branch} against ${reply.ok.base}`;
+  const body = $('diff-body');
+  body.replaceChildren();
+  const text = reply.ok.text || '(no change against main)';
+  for (const l of text.split('\n')) {
+    const kind = l.startsWith('+') && !l.startsWith('+++') ? 'add' : l.startsWith('-') && !l.startsWith('---') ? 'del' : l.startsWith('@@') ? 'hunk' : '';
+    body.append(el('span', kind, `${l}\n`));
+  }
+  if (reply.ok.more) body.append(el('span', 'more', `… ${reply.ok.more} more lines`));
+  $('diffview').hidden = false;
+  $('diff-close').focus();
+}
+
 function setupTasks() {
+  $('diff-close').addEventListener('click', () => {
+    $('diffview').hidden = true;
+  });
+  $('diffview').addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') $('diffview').hidden = true;
+  });
   $('t-project').addEventListener('change', (e) => {
     state.tf.project = e.target.value;
     saveFilters();

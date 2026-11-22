@@ -315,6 +315,24 @@ pub enum Command {
         agent: Option<String>,
         place: String,
     },
+    /// Merges a ready task's branch: fast-forwards the branch the main checkout is on to it,
+    /// then the task is done and its worktree goes. Replied with `task`, or `merge_refused`.
+    TaskMerge {
+        project_id: String,
+        task: u32,
+    },
+    /// A task's branch against the main checkout's branch, as `git diff main...branch`.
+    /// Replied with `diff`.
+    TaskDiff {
+        project_id: String,
+        task: u32,
+    },
+    /// Asks the agent on a task to rebase its branch onto main and mark it ready again.
+    /// Replied with `task`.
+    TaskRebase {
+        project_id: String,
+        task: u32,
+    },
     /// The section a `document` widget of the form edits, as it is on disk now, read from inside
     /// its thread's directory. Replied with `section`.
     FormSection {
@@ -433,6 +451,17 @@ pub enum Reply {
     Task {
         project_id: String,
         task: tasks::Task,
+    },
+    /// A merge desl did not make, and why; `rebase` when main moved on and a rebase is the way.
+    MergeRefused {
+        reason: String,
+        rebase: bool,
+    },
+    /// A diff against `base`: its first lines, and how many more there were.
+    Diff {
+        base: String,
+        text: String,
+        more: usize,
     },
     /// A document's section as it is on disk; None when its heading is gone from the file.
     Section {

@@ -11,7 +11,13 @@ pub const MAX_WIDGETS: usize = 30;
 /// The most a form may weigh, as JSON. The daemon refuses a larger one before reading it.
 pub const MAX_BYTES: usize = 256 * 1024;
 
-const KINDS: [&str; 10] = ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table", "images"];
+const KINDS: [&str; 11] =
+    ["markdown", "choice", "checklist", "text", "number", "toggle", "select", "preview", "table", "images", "document"];
+
+/// The most a document's section may weigh, as the card edits it.
+pub const MAX_SECTION_BYTES: usize = 256 * 1024;
+/// The most comments one document takes.
+const MAX_COMMENTS: usize = 50;
 
 /// The most pictures one form shows, in all its `images` widgets.
 pub const MAX_IMAGES: usize = 12;
@@ -135,6 +141,23 @@ pub enum Widget {
         #[serde(default)]
         optional: bool,
     },
+    /// A Markdown file of the project, or one section of it, to edit in place and comment on.
+    /// desl reads it when the form is pushed and saves the user's edit into the file on Send.
+    Document {
+        id: String,
+        #[serde(default)]
+        label: Option<String>,
+        /// A Markdown file inside the thread's directory, relative to it or absolute.
+        path: String,
+        /// A heading of the file: its section is what is edited. The whole file without one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        section: Option<String>,
+        /// The section as desl read it when the form was pushed; desl fills it in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original: Option<String>,
+        #[serde(default)]
+        optional: bool,
+    },
     /// Pictures of the project to pick from, named by path. desl reads them, inside the thread's
     /// directory only.
     Images {
@@ -159,6 +182,17 @@ pub struct Pic {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub caption: Option<String>,
+}
+
+/// Every document a form names, by its path as the agent gave it.
+pub fn document_paths(form: &Form) -> Vec<&str> {
+    form.widgets
+        .iter()
+        .filter_map(|w| match w {
+            Widget::Document { path, .. } => Some(path.as_str()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Every picture a form names, by its path as the agent gave it.
@@ -297,7 +331,8 @@ impl Widget {
             | Widget::Select { id, .. }
             | Widget::Preview { id, .. }
             | Widget::Table { id, .. }
-            | Widget::Images { id, .. } => id,
+            | Widget::Images { id, .. }
+            | Widget::Document { id, .. } => id,
         }
     }
 
@@ -312,7 +347,8 @@ impl Widget {
             | Widget::Select { optional, .. }
             | Widget::Preview { optional, .. }
             | Widget::Table { optional, .. }
-            | Widget::Images { optional, .. } => *optional,
+            | Widget::Images { optional, .. }
+            | Widget::Document { optional, .. } => *optional,
         }
     }
 }
@@ -372,6 +408,10 @@ pub fn check(form: &Value) -> Result<Form, String> {
         return Err(format!("The form has \"{extra}\", which desl does not know. A form has a title, widgets and a send_label."));
     }
     let form = Form { title: title.to_string(), widgets: parsed, send_label };
+    let docs = document_paths(&form);
+    if let Some(p) = docs.iter().enumerate().find(|(i, p)| docs[..*i].contains(p)).map(|(_, p)| p) {
+        return Err(format!("The form names \"{p}\" twice. Show one section of a file per form; two saves to one file would race."));
+    }
     // Each is read from disk and sent to the page whole: a form keeps to a dozen.
     let images = image_paths(&form).len();
     if images > MAX_IMAGES {
@@ -526,6 +566,18 @@ fn sound(w: &Widget, n: usize) -> Result<(), String> {
             };
             if let Some(v) = starts.iter().find(|v| !v.as_str().is_some_and(|s| images.iter().any(|p| p.path == s))) {
                 return Err(format!("Widget {n} (\"{id}\") starts at {v}, which is not one of its images."));
+            }
+        }
+        Widget::Document { path, section, .. } => {
+            if path.trim().is_empty() || path.chars().any(char::is_control) {
+                return Err(format!("Widget {n} (\"{id}\") has an empty path, or one with a control character."));
+            }
+            let lower = path.to_ascii_lowercase();
+            if !lower.ends_with(".md") && !lower.ends_with(".markdown") {
+                return Err(format!("Widget {n} (\"{id}\") names \"{path}\"; a document is a Markdown file ending in .md."));
+            }
+            if section.as_ref().is_some_and(|h| h.trim().is_empty() || h.chars().any(char::is_control)) {
+                return Err(format!("Widget {n} (\"{id}\") has a section that is not one line of a heading's text."));
             }
         }
         Widget::Markdown { .. } | Widget::Toggle { .. } => {}
@@ -695,6 +747,38 @@ fn answers(w: &Widget, v: &Value) -> Result<(), String> {
             }
             Ok(())
         }
+        Widget::Document { .. } => {
+            let Some(obj) = v.as_object() else {
+                return Err(format!("The answer for \"{id}\" is {{text, base?, comments}}: the text as edited."));
+            };
+            if !obj.get("text").is_some_and(Value::is_string) {
+                return Err(format!("The answer for \"{id}\" has no text: the section as edited."));
+            }
+            if obj.get("text").and_then(Value::as_str).is_some_and(|t| t.len() > MAX_SECTION_BYTES) {
+                return Err(format!("The text for \"{id}\" is over 256 KB."));
+            }
+            if obj.get("base").is_some_and(|b| !b.is_string() && !b.is_null()) {
+                return Err(format!("The base for \"{id}\" is the text the edit started from."));
+            }
+            if let Some(k) = obj.keys().find(|k| !["text", "base", "comments"].contains(&k.as_str())) {
+                return Err(format!("The answer for \"{id}\" has \"{k}\"; it has text, base and comments."));
+            }
+            let comments = match obj.get("comments") {
+                None | Some(Value::Null) => &Vec::new(),
+                Some(Value::Array(list)) => list,
+                Some(_) => return Err(format!("The comments for \"{id}\" are a list of {{quote, note}}.")),
+            };
+            if comments.len() > MAX_COMMENTS {
+                return Err(format!("\"{id}\" has {} comments; desl takes at most 50.", comments.len()));
+            }
+            for c in comments {
+                let both = c.get("quote").is_some_and(Value::is_string) && c.get("note").is_some_and(Value::is_string);
+                if !both || c.as_object().is_some_and(|o| o.len() != 2) {
+                    return Err(format!("Each comment on \"{id}\" has a quote and a note, both text."));
+                }
+            }
+            Ok(())
+        }
         Widget::Images { images, multi, optional, .. } => {
             let one = |s: &str| {
                 if images.iter().any(|p| p.path == s) { Ok(()) } else { Err(format!("\"{s}\" is not one of the images of \"{id}\".")) }
@@ -802,6 +886,9 @@ options[css values], value?}]}: your HTML and CSS drawn without scripts; control
 {var: value}.
 - table {label?, columns[{id, label?, edit?: text|select|check, options?}], rows[{id, <column id>: value}]}: the \
 changed rows as [{id, <column>: new value}], only the changed cells.
+- document {label?, path, section?}: a Markdown file of the project (inside your working directory), or the section \
+under one heading, for the user to edit in place and comment on. On Send desl saves it, if unchanged on disk meanwhile. \
+{saved, diff, more?, comments[{quote, note}]}.
 - images {label?, images[{path, caption?}], multi?, value?}: pictures of the project (PNG, JPEG, GIF, WebP, SVG; \
 inside your working directory) to pick from. The path, or a list with multi.
 Every widget has an id, unique in the form, and may be optional. At most 30 widgets. Set value to what is true now \
@@ -820,6 +907,8 @@ pub fn input_schema() -> Value {
         "min": { "type": "number" }, "max": { "type": "number" }, "step": { "type": "number" }, "unit": { "type": "string" },
         "options": { "type": "array", "items": { "type": "string" } }, "value": {} },
         "required": ["kind", "var"] } });
+    let images = json!({ "type": "array", "items": { "type": "object", "properties": {
+        "path": { "type": "string" }, "caption": { "type": "string" } }, "required": ["path"] } });
     let columns = json!({ "type": "array", "items": { "type": "object", "properties": {
         "id": { "type": "string" }, "label": { "type": "string" }, "edit": { "type": "string", "enum": ["text", "select", "check"] },
         "options": { "type": "array", "items": { "type": "string" } } }, "required": ["id"] } });
@@ -854,8 +943,9 @@ pub fn input_schema() -> Value {
                     "css": s("preview: its CSS; var(--x) for each control."),
                     "controls": controls,
                     "columns": columns,
-                    "images": { "type": "array", "items": { "type": "object", "properties": {
-                        "path": { "type": "string" }, "caption": { "type": "string" } }, "required": ["path"] } },
+                    "path": s("document: a Markdown file of the project."),
+                    "section": s("document: a heading; its section is edited."),
+                    "images": images,
                     "rows": { "type": "array", "items": { "type": "object", "description": "table: {id, <column id>: value}" } }
                 },
                 "required": ["kind", "id"]
@@ -1048,6 +1138,34 @@ mod tests {
         let widget = |id: &str| json!({"kind": "images", "id": id, "images": (0..7).map(|i| json!({"path": format!("{id}{i}.png")})).collect::<Vec<_>>()});
         let err = check(&json!({"title": "t", "widgets": [widget("a"), widget("b")]})).unwrap_err();
         assert!(err.contains("14 images") && err.contains("at most 12"), "{err}");
+    }
+
+    fn document(extra: Value) -> Value {
+        let mut w = json!({"kind": "document", "id": "doc", "path": "docs/guide.md", "section": "Install"});
+        w.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        json!({"title": "t", "widgets": [w]})
+    }
+
+    #[test]
+    fn a_document_names_a_markdown_file() {
+        let f = check(&document(json!({}))).unwrap();
+        assert_eq!(document_paths(&f), ["docs/guide.md"]);
+        assert!(check(&document(json!({"path": "notes.txt"}))).unwrap_err().contains(".md"));
+        assert!(check(&document(json!({"path": "a\u{1b}.md"}))).unwrap_err().contains("control"));
+        let two = json!({"title": "t", "widgets": [
+            {"kind": "document", "id": "a", "path": "x.md"}, {"kind": "document", "id": "b", "path": "x.md", "section": "B"}]});
+        assert!(check(&two).unwrap_err().contains("\"x.md\" twice"), "one file once per form: two saves would race");
+    }
+
+    #[test]
+    fn a_document_answer_from_the_page_is_text_and_comments() {
+        let f = check(&document(json!({"original": "## Install\n"}))).unwrap();
+        let answer = |v: Value| check_answer(&f, &json!({ "doc": v }));
+        assert!(answer(json!({"text": "## Install\n\nNew.\n", "comments": [{"quote": "New.", "note": "shorter"}]})).is_ok());
+        assert!(answer(json!({"text": "x", "base": "## Install\n"})).is_ok(), "comments may be left out");
+        assert!(answer(json!({"comments": []})).unwrap_err().contains("text"));
+        assert!(answer(json!({"text": "x", "comments": [{"quote": "a"}]})).unwrap_err().contains("quote and a note"));
+        assert!(answer(json!({"text": "x", "base": 3})).unwrap_err().contains("base"));
     }
 
     #[test]

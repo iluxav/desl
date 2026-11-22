@@ -10,6 +10,7 @@ pub mod b64;
 pub mod config;
 pub mod conversation;
 pub mod form;
+pub mod markdown;
 pub mod paths;
 pub mod reflow;
 pub mod replay;

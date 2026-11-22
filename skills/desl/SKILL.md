@@ -1,13 +1,19 @@
 ---
 name: desl
-description: "Drive desl, the terminal workspace this agent runs in: keep the project's task list (.tasks.md) with `desl task`, open threads on Claude Code, Codex or GitHub Copilot, prompt them and read the reply, fork this conversation to another agent for a second opinion, and wait on threads working in parallel. Use when the user mentions tasks, the task list, a task number such as #12, what to work on next, or desl; when a .tasks.md is in the project; or when the user asks to hand work to another agent or thread, or to run work in parallel. Requires DESL_THREAD to be set, except for `desl task`."
+description: "Drive desl, the terminal workspace this agent runs in: keep the project's task list (.tasks.md) with `desl task`, open threads on Claude Code, Codex or GitHub Copilot, prompt them and read the reply, fork this conversation to another agent for a second opinion, and wait on threads working in parallel. Use when the user mentions tasks, the task list, a task number such as #12, what to work on next, or desl; when a .tasks.md is in the project; or when the user asks to hand work to another agent or thread, or to run work in parallel. Requires DESL_THREAD to be set, except for `desl task`. A form for the user is the `show_form` tool, called directly."
 ---
 
 # desl
 
 desl (say *diesel*) runs Claude Code, Codex and GitHub Copilot side by side in one terminal workspace. Each conversation is a **thread**; a thread is on one **agent** at a time (`claude`, `codex` or `copilot`) and belongs to a **project** (a repository). desl owns the conversation, so a thread can be **forked** into a copy on another agent with everything said so far. `desl agents` lists the agents installed on this machine.
 
+## Put a form in front of the user
+
+Call the `show_form` tool directly, as your first step: its description lists the widgets, and it needs no check and no command from this skill. Use it when the user should edit, review, reorder or compare something, or choose with room for a note; for a yes or no, ask in your own way. Then end your turn: the answer arrives as your next prompt, starting `desl: answer to f-…`. From a shell, `desl form new` takes the same JSON on stdin.
+
 ## Check that you are inside desl
+
+Everything below drives desl from the shell, and starts here.
 
 ```bash
 test -n "${DESL_THREAD:-}"
@@ -95,10 +101,6 @@ desl restart <thread>                  # ends its agent and starts it again on t
 After `desl interrupt`, `desl wait <thread>` returns once the turn has ended. After `desl exit`, the next `desl send` to the thread starts its agent again on the same conversation. Use `exit` when a thread's work is done or it has gone off track, so it stops using the user's limits. Use `restart` when a thread's agent should pick up something installed since it started, such as a new MCP server or a new version of itself; it comes back on the same conversation.
 
 When `desl send` reports that the agent is asking something before it goes on, such as whether to trust a new folder, desl has not typed your prompt; tell the user, who answers in desl's screen.
-
-## Put a form in front of the user
-
-When the user should edit, review, reorder or compare something, or choose with room for a note, use desl's MCP tool `show_form` (desl gives it to every agent it starts; its description lists the widgets), then end your turn: the answer arrives as your next prompt, starting `desl: answer to f-…`. From a shell, `desl form new` takes the same JSON on stdin. For a yes or no, ask in your own way.
 
 ## Rules
 

@@ -531,8 +531,15 @@ impl Client {
     fn open_web(&mut self) {
         self.notice("Opening desl web…");
         let (tx, paths) = (self.tx.clone(), self.paths.clone());
+        // A thread with a form open: the page opens on it, at the form.
+        let id = self.thread_id().to_string();
+        let on = self.threads.iter().find(|t| t.id == id && !t.open_forms.is_empty()).map(|t| t.id.clone());
         std::thread::spawn(move || {
             let r = crate::web::ensure(&paths).map_err(|e| format!("{e:#}")).map(|url| {
+                let url = match &on {
+                    Some(thread) => crate::web::url_for(&url, thread),
+                    None => url,
+                };
                 let opened = crate::web::open(&url);
                 (url, opened)
             });

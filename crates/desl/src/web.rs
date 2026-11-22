@@ -156,6 +156,11 @@ pub fn stop(paths: &Paths) -> Result<bool> {
     Ok(true)
 }
 
+/// The page's address, opened on one thread: the page selects it and goes to its open form.
+pub fn url_for(url: &str, thread: &str) -> String {
+    format!("{url}&thread={thread}")
+}
+
 /// Where the page is, without its key: what a sentence on screen names.
 pub fn place(url: &str) -> &str {
     let rest = url.strip_prefix("http://").unwrap_or(url);
@@ -199,6 +204,14 @@ mod tests {
         assert!(!note(&p).exists(), "this process's note goes");
         assert!(!stop(&p).unwrap(), "nothing to stop");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_address_can_name_the_thread_to_open() {
+        assert_eq!(
+            url_for("http://127.0.0.1:7428/#t=0123456789abcdef0123456789abcdef", "t-7f3a"),
+            "http://127.0.0.1:7428/#t=0123456789abcdef0123456789abcdef&thread=t-7f3a"
+        );
     }
 
     #[test]

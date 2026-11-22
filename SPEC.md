@@ -202,7 +202,7 @@ Two surfaces, one command set: prefixed keys and the CLI. desl has no prompt of 
 | `prefix x` | Close this thread after a `y` in the key line: its agent or shell ends and it leaves the sidebar; the agent's own history keeps the conversation (`desl thread rm` from the CLI) | tmux |
 | `prefix b` | Hide or show the sidebar | desl |
 | `prefix d` | Detach | tmux |
-| `prefix v` | View the workspace in the browser: opens `desl web` for this workspace, started in the background when none runs; over SSH, the address goes to the clipboard instead | gh (`--web`) |
+| `prefix v` | View the workspace in the browser: opens `desl web` for this workspace, started in the background when none runs, on this thread at its form when it has one open; over SSH, the address goes to the clipboard instead | gh (`--web`) |
 | `prefix ?` | The keys desl owns, in a list that runs the one picked: typing filters it, `↑`/`↓` move, `enter` runs, `esc` closes | lazygit, fzf |
 | `prefix prefix` | Send the prefix key to the agent | tmux |
 
@@ -215,6 +215,8 @@ desl                         attach to the workspace (starts the daemon if neede
 desl status                  the thread list as text
 desl web [--port N] [--open] [--stop]   the workspace in a browser, at 127.0.0.1 (see web-spec.md); one per workspace
 desl thread list|show|rename|rm
+desl form list|show <form>|answer <form> '<json>'|close <form>   the forms agents put in front of the user (docs/design/2026-11-21-web-forms.md)
+desl form new                form JSON on stdin, for the agent of DESL_THREAD: what desl's MCP tool show_form does
 desl new [-p project] [--agent claude] [--worktree] [-m "prompt"]   --agent shell, files or tasks opens the user's shell, their file manager or the task list
 desl send <thread> "prompt"  type the prompt into the thread's agent and print the reply when the turn ends
 desl switch <thread> <agent>

@@ -73,6 +73,11 @@ enum Cmd {
         #[arg(long)]
         socket: std::path::PathBuf,
     },
+    /// Forms the agents put in front of you: list, show, answer or dismiss them, or show one
+    Form {
+        #[command(subcommand)]
+        command: FormCmd,
+    },
     /// List, show, rename or remove threads
     Thread {
         #[command(subcommand)]
@@ -186,6 +191,24 @@ enum ThreadCmd {
     Rm {
         thread: String,
     },
+}
+
+#[derive(Subcommand)]
+enum FormCmd {
+    /// Put a form in front of the user for this thread's agent: its JSON on stdin (needs DESL_THREAD)
+    New,
+    /// The open forms, oldest first
+    List,
+    /// A form as JSON, with its draft and, once closed, its answer
+    Show { form: String },
+    /// Answer a form: the answer goes to its agent as its next prompt
+    Answer {
+        form: String,
+        /// The answer, a JSON object keyed by widget id
+        answer: String,
+    },
+    /// Dismiss a form unanswered; its agent hears so before its next prompt
+    Close { form: String },
 }
 
 #[derive(Subcommand)]
@@ -309,6 +332,13 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Status => cli::status(paths, &out),
         Cmd::Web { port, open, stop } => cli::web(paths, &out, port, open, stop),
         Cmd::Mcp { thread, socket } => mcp::run(&socket, &thread),
+        Cmd::Form { command } => match command {
+            FormCmd::New => cli::form_new(paths, &out),
+            FormCmd::List => cli::form_list(paths, &out),
+            FormCmd::Show { form } => cli::form_show(paths, &out, &form),
+            FormCmd::Answer { form, answer } => cli::form_answer(paths, &out, &form, &answer),
+            FormCmd::Close { form } => cli::form_close(paths, &out, &form),
+        },
         Cmd::Thread { command } => match command {
             ThreadCmd::List => cli::thread_list(paths, &out),
             ThreadCmd::Show { thread } => cli::thread_show(paths, &out, &thread),

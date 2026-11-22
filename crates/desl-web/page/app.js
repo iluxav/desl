@@ -29,6 +29,13 @@ function write(name, value) {
 /** The key from the address desl web printed, kept for this tab and taken out of the address bar. */
 function takeKey() {
   const m = location.hash.match(/(?:^#|&)t=([0-9a-f]{32})\b/);
+  // `prefix v` on a thread with a form open names the thread: the page opens on it, at the form.
+  const on = location.hash.match(/&thread=([\w/-]+)/);
+  if (on) {
+    state.selected = on[1];
+    state.toForm = true;
+    write(SELECTED, on[1]);
+  }
   if (m) {
     write(KEY, m[1]);
     history.replaceState(null, '', location.pathname + location.search);

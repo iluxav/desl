@@ -308,6 +308,81 @@ pub fn thread_show(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     Ok(())
 }
 
+// ---- forms (docs/design/2026-11-21-web-forms.md) --------------------------------------------
+
+/// `desl form new`: a form for the user from this thread's agent, its JSON on stdin. The CLI's
+/// way to what agents do with desl's MCP tool.
+pub fn form_new(paths: &Paths, out: &Out) -> Result<()> {
+    let Some(thread) = desl_proto::paths::own_thread() else {
+        bail!(
+            "`desl form new` puts a form in front of the user for the agent in this thread, and this terminal is in none (DESL_THREAD is not set)."
+        )
+    };
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text).context("reading the form from stdin")?;
+    let form: Value = serde_json::from_str(&text).map_err(|e| anyhow::anyhow!("The form on stdin is not JSON ({e})."))?;
+    let mut conn = connect(paths, true)?;
+    match conn.call(Command::FormNew { thread_id: thread, form })? {
+        Reply::FormShown { form_id } => done(out, json!({ "form_id": form_id }), desl_proto::form::shown(&form_id)),
+        other => bail!("The desl daemon answered with {other:?}."),
+    }
+    Ok(())
+}
+
+/// `desl form list`: every open form, oldest first.
+pub fn form_list(paths: &Paths, out: &Out) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let ws = workspace(&mut conn)?;
+    let mut open: Vec<(&Thread, &desl_ir::OpenForm)> = ws.threads.iter().flat_map(|t| t.open_forms.iter().map(move |f| (t, f))).collect();
+    open.sort_by_key(|(_, f)| f.at);
+    if out.json {
+        let rows: Vec<Value> =
+            open.iter().map(|(t, f)| json!({ "form_id": f.id, "thread_id": t.id, "title": f.title, "at": f.at })).collect();
+        out.value(&json!(rows));
+        return Ok(());
+    }
+    if open.is_empty() {
+        println!("No form is open.");
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+    for (t, f) in open {
+        println!("{}  {}  {:<5}  {}", f.id, t.id, desl_proto::view::age(now, f.at), f.title);
+    }
+    Ok(())
+}
+
+/// `desl form show`: the form, with its draft and its answer, as JSON.
+pub fn form_show(paths: &Paths, out: &Out, form: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let Reply::Form { form_id, thread_id, form, draft, answer, closed_by } = conn.call(Command::FormGet { form_id: form.to_string() })?
+    else {
+        bail!("The desl daemon did not return the form.")
+    };
+    let v = json!({ "form_id": form_id, "thread_id": thread_id, "form": form, "draft": draft, "answer": answer, "closed_by": closed_by });
+    if out.json {
+        out.value(&v);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&v)?);
+    }
+    Ok(())
+}
+
+pub fn form_answer(paths: &Paths, out: &Out, form: &str, answer: &str) -> Result<()> {
+    let answer: Value =
+        serde_json::from_str(answer).map_err(|e| anyhow::anyhow!("The answer is not JSON ({e}). Give an object keyed by widget id."))?;
+    let mut conn = connect(paths, true)?;
+    conn.call(Command::FormAnswer { form_id: form.to_string(), answer })?;
+    done(out, json!({ "form_id": form, "answered": true }), format!("Answered {form}; its agent gets the answer as its next prompt."));
+    Ok(())
+}
+
+pub fn form_close(paths: &Paths, out: &Out, form: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    conn.call(Command::FormClose { form_id: form.to_string(), by: "dismissed".into() })?;
+    done(out, json!({ "form_id": form, "dismissed": true }), format!("Dismissed {form}; its agent hears so before its next prompt."));
+    Ok(())
+}
+
 fn done(out: &Out, v: Value, text: String) {
     if out.json { out.value(&v) } else { println!("{text}") }
 }
@@ -416,6 +491,12 @@ pub fn send(paths: &Paths, out: &Out, thread: &str, prompt: &str) -> Result<()> 
                         eprintln!(
                             "{} is waiting for approval: {what}. `desl approve {}` or `desl deny {}` answers it.",
                             thread.active_agent, t.id, t.id
+                        );
+                    } else if let Some(f) = thread.open_forms.last() {
+                        // It put a form in front of the user: that is answered on the page.
+                        eprintln!(
+                            "{} put a form in front of you: {} \"{}\". Answer it in the browser (ctrl+space v in desl, or `desl web --open`), or with `desl form answer {} '<json>'`.",
+                            thread.active_agent, f.id, f.title, f.id
                         );
                     } else {
                         // The agent asks in its own interface: that is where it is answered.

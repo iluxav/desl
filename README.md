@@ -148,6 +148,8 @@ desl restart t-7f3a                        # reload the agent after an update or
 desl task add "Fix the flaky login test" --type bug --priority high
 desl task set 12 --status done --note "Fixed in a1b2c3d"
 desl task list                             # the open tasks of this project
+desl form list                             # forms the agents put in front of you
+desl form answer f-4b1e '{"next": "M5"}'   # answer one; its agent gets it as its next prompt
 desl doctor                                # agents, logins, the daemon, the store
 desl daemon restart                        # the daemon starts again from the build installed now; agents keep running
 desl daemon stop                           # ends the agents; every thread is kept

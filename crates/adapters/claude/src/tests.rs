@@ -221,3 +221,28 @@ fn each_permission_mode_has_its_flag_and_yolo_still_asks_the_host() {
     // Claude Code can ask before each call: every mode holds as written.
     assert!(PermissionMode::CHOICES.into_iter().all(|mode| Claude.permission_note(mode).is_none()));
 }
+
+#[test]
+fn desls_form_tool_comes_with_the_launch_and_is_allowed() {
+    use desl_ir::adapter::{LaunchOpts, McpServer, Open};
+    let opts = |mcp| LaunchOpts {
+        cwd: "/p".into(),
+        open: Open::Resume { session_id: "s1".into() },
+        model: None,
+        effort: None,
+        permission_mode: PermissionMode::Edits,
+        mcp,
+    };
+    let l = Claude.launch(&opts(Some(McpServer {
+        command: "/bin/desl".into(),
+        args: ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"].map(String::from).to_vec(),
+    })));
+    let at = l.args.iter().position(|a| a == "--mcp-config").expect("the flag");
+    let cfg: serde_json::Value = serde_json::from_str(&l.args[at + 1]).unwrap();
+    assert_eq!(
+        cfg,
+        serde_json::json!({"mcpServers": {"desl": {"type": "stdio", "command": "/bin/desl", "args": ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"]}}})
+    );
+    assert_eq!(l.args[at + 2..], ["--allowedTools", "mcp__desl__show_form,mcp__desl__close_form"]);
+    assert!(!Claude.launch(&opts(None)).args.iter().any(|a| a == "--mcp-config"));
+}

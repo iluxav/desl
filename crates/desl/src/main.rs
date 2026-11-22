@@ -9,6 +9,7 @@ mod finder;
 mod history;
 mod icons;
 mod layout;
+mod mcp;
 mod model;
 mod native;
 mod rawkeys;
@@ -61,6 +62,16 @@ enum Cmd {
         /// Stop the desl web that serves this workspace, wherever it was started
         #[arg(long, conflicts_with_all = ["port", "open"])]
         stop: bool,
+    },
+    /// The MCP server an agent desl starts is given, for its forms (run by the agent, not by hand)
+    #[command(hide = true)]
+    Mcp {
+        /// The thread whose agent this serves
+        #[arg(long)]
+        thread: String,
+        /// The daemon's socket
+        #[arg(long)]
+        socket: std::path::PathBuf,
     },
     /// List, show, rename or remove threads
     Thread {
@@ -297,6 +308,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
         Cmd::Attach => attach(paths),
         Cmd::Status => cli::status(paths, &out),
         Cmd::Web { port, open, stop } => cli::web(paths, &out, port, open, stop),
+        Cmd::Mcp { thread, socket } => mcp::run(&socket, &thread),
         Cmd::Thread { command } => match command {
             ThreadCmd::List => cli::thread_list(paths, &out),
             ThreadCmd::Show { thread } => cli::thread_show(paths, &out, &thread),

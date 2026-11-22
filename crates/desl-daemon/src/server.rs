@@ -130,6 +130,7 @@ pub fn serve(paths: &Paths, takeover: bool) -> Result<()> {
     let store = Store::open(&paths.db, &paths.blobs)?;
     let mut engine = Engine::new(store, adapters(), tx.clone())?;
     engine.set_config_file(paths.config.clone());
+    engine.set_socket(paths.socket.clone());
     tracing::info!(socket = %paths.socket.display(), store = %paths.db.display(), pid = std::process::id(), "desl daemon {} started", env!("CARGO_PKG_VERSION"));
     run(engine, rx, tx, listener, paths)
 }
@@ -146,6 +147,7 @@ fn take_over(paths: &Paths) -> Result<()> {
     let store = Store::open(&paths.db, &paths.blobs)?;
     let mut engine = Engine::taking_over(store, adapters(), tx.clone(), answers, given)?;
     engine.set_config_file(paths.config.clone());
+    engine.set_socket(paths.socket.clone());
     let mut beside = paths.socket.clone().into_os_string();
     beside.push(".next");
     let beside = std::path::PathBuf::from(beside);

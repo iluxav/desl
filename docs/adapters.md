@@ -125,6 +125,19 @@ folder it has not seen, in its own interface, before anything else.
 | Codex | `codex --no-daemon` (Codex names the session) | `codex --no-daemon … resume <id>` | `-s read-only -a on-request` (ask: Codex asks before anything that writes), `-s workspace-write -a on-request` (edits, worktree; asks before anything outside the project). 0.166 takes only `on-request` and `never` for `-a`; `untrusted` fails at start, `--dangerously-bypass-approvals-and-sandbox` (yolo); `-m`, `-c model_reasoning_effort="…"` when picked; all before `resume` |
 | GitHub Copilot CLI | `copilot --session-id=<uuid>` (desl picks the id; the flag names a new session) | the same flag, which opens the session when it exists | nothing (ask: Copilot's own "Manual Approval"), `--allow-tool=write` (edits), `--allow-all-tools` (worktree), `--allow-all` (yolo); `--model`, `--reasoning-effort` when picked |
 
+**desl's MCP server** (`docs/design/2026-11-21-web-forms.md`). Every launch also gives the agent
+`desl mcp --thread <id> --socket <path>`, desl's own stdio MCP server with the tools `show_form`
+and `close_form`, through the agent's own flags, its tools allowed so the agent does not ask
+before it calls one. The user's configuration files are never edited. Checked 2026-11-21 with
+Claude Code 2.1.330, Codex CLI 0.171.0 and GitHub Copilot CLI 1.0.114: each called `show_form`
+when asked, without a dialog of its own, and ended its turn.
+
+| Agent | Flags |
+| --- | --- |
+| Claude Code | `--mcp-config '{"mcpServers":{"desl":{"type":"stdio","command":…,"args":[…]}}}' --allowedTools mcp__desl__show_form,mcp__desl__close_form` |
+| Codex | `-c mcp_servers.desl.command="…" -c mcp_servers.desl.args=[…] -c mcp_servers.desl.default_tools_approval_mode="approve"`, before `resume`. Without the last one Codex asks "Allow the desl MCP server to run tool…?" each time (its values are `auto`, `prompt`, `writes`, `approve`); it calls the tool from its JavaScript tool runner as `tools.mcp__desl__show_form` |
+| GitHub Copilot CLI | `--additional-mcp-config '{"mcpServers":{"desl":{"type":"local","command":…,"args":[…],"tools":["*"]}}}' --allow-tool=desl` |
+
 Claude Code's interface sends a kitty graphics query (`ESC _ G … a=q … ESC \`) at start; tmux
 takes any APC as a pane title, so the client puts desl's title back after one. On `/exit` Claude
 Code prints its own `claude --resume <id>` line.

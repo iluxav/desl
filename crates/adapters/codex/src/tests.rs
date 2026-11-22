@@ -216,6 +216,7 @@ fn each_permission_mode_has_its_sandbox_and_a_note_where_codex_cannot_ask() {
                 model: None,
                 effort: None,
                 permission_mode: mode,
+                mcp: None,
             })
             .args
     };
@@ -248,4 +249,32 @@ fn codexs_title_is_the_newest_name_its_index_gives_the_session() {
     assert_eq!(indexed_title(&index, "s3"), None);
     assert_eq!(indexed_title(&dir.join("missing.jsonl"), "s1"), None);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn desls_form_tool_comes_with_the_launch_before_resume() {
+    use desl_ir::adapter::{LaunchOpts, McpServer, Open};
+    let l = Codex.launch(&LaunchOpts {
+        cwd: "/p".into(),
+        open: Open::Resume { session_id: "s1".into() },
+        model: None,
+        effort: None,
+        permission_mode: PermissionMode::Edits,
+        mcp: Some(McpServer {
+            command: "/bin/desl".into(),
+            args: ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"].map(String::from).to_vec(),
+        }),
+    });
+    let command = l.args.iter().position(|a| a == "mcp_servers.desl.command=\"/bin/desl\"").expect("the command");
+    assert_eq!(l.args[command - 1], "-c");
+    let args = l
+        .args
+        .iter()
+        .position(|a| a == "mcp_servers.desl.args=[\"mcp\",\"--thread\",\"t-1\",\"--socket\",\"/run/d.sock\"]")
+        .expect("the args");
+    assert_eq!(l.args[args - 1], "-c");
+    let approve = l.args.iter().position(|a| a == "mcp_servers.desl.default_tools_approval_mode=\"approve\"").expect("its tools approved");
+    assert_eq!(l.args[approve - 1], "-c");
+    let resume = l.args.iter().position(|a| a == "resume").unwrap();
+    assert!(command < resume && args < resume && approve < resume, "{:?}", l.args);
 }

@@ -412,7 +412,8 @@ interface Adapter {
   id():            "claude" | "codex" | ...
   detect():        { installed: bool, version, logged_in: bool, binary_path }
   capabilities():  { copy_in, fork, model_choice, permission_modes }
-  launch(opts: { session: New(id?) | Resume(id) | Fork(id), model?, effort?, permission_mode, cwd }) → argv
+  launch(opts: { session: New(id?) | Resume(id) | Fork(id), model?, effort?, permission_mode, cwd, mcp? }) → argv
+                                                         // mcp: desl's own server, added with the agent's flags
   session_file(cwd, session_id?, started_at) → path      // finds a session the agent named itself
   read(path, from) → [IREvent]                           // events after the ones already read
   write(events, cwd) → session_id                        // a new session holding exactly these events

@@ -66,6 +66,17 @@ pub struct LaunchOpts {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: PermissionMode,
+    /// desl's own MCP server, which each adapter adds to its agent's launch with the agent's own
+    /// flags, its tools allowed: the agent puts forms in front of the user through it
+    /// (docs/design/2026-11-21-web-forms.md). The user's own configuration is never edited.
+    pub mcp: Option<McpServer>,
+}
+
+/// A stdio MCP server: the program and its arguments.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpServer {
+    pub command: String,
+    pub args: Vec<String>,
 }
 
 /// The command that starts the agent's interface in a PTY.

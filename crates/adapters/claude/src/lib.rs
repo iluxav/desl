@@ -186,6 +186,15 @@ impl Adapter for Claude {
         if let Some(effort) = &opts.effort {
             args.extend(["--effort".into(), effort.clone()]);
         }
+        if let Some(m) = &opts.mcp {
+            let config = serde_json::json!({ "mcpServers": { "desl": { "type": "stdio", "command": m.command, "args": m.args } } });
+            args.extend([
+                "--mcp-config".into(),
+                config.to_string(),
+                "--allowedTools".into(),
+                "mcp__desl__show_form,mcp__desl__close_form".into(),
+            ]);
+        }
         let session_id = match &opts.open {
             Open::New { session_id } => session_id.clone(),
             Open::Resume { session_id } => Some(session_id.clone()),

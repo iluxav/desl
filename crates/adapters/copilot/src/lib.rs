@@ -129,6 +129,11 @@ impl Adapter for Copilot {
         if let Some(effort) = &opts.effort {
             args.extend(["--reasoning-effort".into(), effort.clone()]);
         }
+        if let Some(m) = &opts.mcp {
+            let config =
+                serde_json::json!({ "mcpServers": { "desl": { "type": "local", "command": m.command, "args": m.args, "tools": ["*"] } } });
+            args.extend(["--additional-mcp-config".into(), config.to_string(), "--allow-tool=desl".into()]);
+        }
         let session_id = match &opts.open {
             Open::Resume { session_id } => session_id.clone(),
             Open::New { session_id } => session_id.clone().unwrap_or_else(new_uuid),
@@ -160,7 +165,32 @@ mod tests {
             model: Some("gpt-6-luna".into()),
             effort: Some("low".into()),
             permission_mode: mode,
+            mcp: None,
         })
+    }
+
+    #[test]
+    fn desls_form_tool_comes_with_the_launch_and_is_allowed() {
+        use desl_ir::adapter::McpServer;
+        let l = Copilot.launch(&LaunchOpts {
+            cwd: "/w".into(),
+            open: Open::Resume { session_id: "s1".into() },
+            model: None,
+            effort: None,
+            permission_mode: PermissionMode::Edits,
+            mcp: Some(McpServer {
+                command: "/bin/desl".into(),
+                args: ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"].map(String::from).to_vec(),
+            }),
+        });
+        let at = l.args.iter().position(|a| a == "--additional-mcp-config").expect("the flag");
+        let cfg: serde_json::Value = serde_json::from_str(&l.args[at + 1]).unwrap();
+        assert_eq!(
+            cfg,
+            serde_json::json!({"mcpServers": {"desl": {"type": "local", "command": "/bin/desl", "args": ["mcp", "--thread", "t-1", "--socket", "/run/d.sock"], "tools": ["*"]}}})
+        );
+        assert!(l.args.iter().any(|a| a == "--allow-tool=desl"));
+        assert_eq!(l.args.last().map(String::as_str), Some("--session-id=s1"), "the session stays last");
     }
 
     #[test]

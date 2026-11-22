@@ -11,7 +11,9 @@ use crate::handover::{Given, Giving, Kept};
 use crate::pty::Pty;
 use crate::store::{Store, StoredForm};
 use crate::{git, projector};
-use desl_ir::adapter::{Adapter, AdapterEvent, Launch, LaunchOpts, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which};
+use desl_ir::adapter::{
+    Adapter, AdapterEvent, Launch, LaunchOpts, McpServer, Open, Reading, Session, SessionReader, Sink, StartOpts, Turn, which,
+};
 use desl_ir::{
     Binding, Decision, Event, EventKind, FILES, GitState, MAX_NAME, ModelInfo, OpenForm, PendingApproval, PermissionMode, Project, SHELL,
     Status, TASK_LIST, TASKS, Thread, derive_name, is_agent, program_word,
@@ -211,6 +213,8 @@ pub struct Engine {
     /// Threads whose `waiting` began with a dialog on their agent's screen; one waiting on a form
     /// is not here, and stays waiting while its screen asks nothing.
     asked_on_screen: HashSet<String>,
+    /// The socket this daemon serves; agents' `desl mcp` connect to it.
+    socket: Option<PathBuf>,
     /// A git worker is reading; the next refresh waits for its answer.
     git_busy: bool,
     /// The user's settings file; none in tests, which run on the defaults.
@@ -384,6 +388,7 @@ impl Engine {
             awaiting_turn: HashMap::new(),
             restarting: HashSet::new(),
             asked_on_screen: HashSet::new(),
+            socket: None,
             git_busy: false,
             config_file: None,
             file_manager: desl_ir::FILE_MANAGER.to_string(),
@@ -490,6 +495,20 @@ impl Engine {
     }
 
     /// Reads desl's settings from `file` (SPEC.md "Configuration") from now on.
+    /// The socket this daemon serves, which each agent's `desl mcp` connects to.
+    pub fn set_socket(&mut self, socket: PathBuf) {
+        self.socket = Some(socket);
+    }
+
+    /// `desl mcp` for a thread's agent: this daemon's own binary, on this daemon's socket. None
+    /// until the socket is known, as in tests.
+    fn mcp_for(&self, thread_id: &str) -> Option<McpServer> {
+        let socket = self.socket.as_ref()?;
+        let command = self.tasks_program.first()?.clone();
+        let args = ["mcp", "--thread", thread_id, "--socket", &socket.to_string_lossy()].map(String::from).to_vec();
+        Some(McpServer { command, args })
+    }
+
     pub fn set_config_file(&mut self, file: PathBuf) {
         for problem in config::load(&file, None).problems {
             tracing::warn!("{problem}");
@@ -1075,6 +1094,7 @@ impl Engine {
                     model: binding.and_then(|b| b.model_choice.clone()),
                     effort: binding.and_then(|b| b.effort_choice.clone()),
                     permission_mode: t.permission_mode,
+                    mcp: self.mcp_for(&thread_id),
                 })
             }
         };
@@ -1605,6 +1625,7 @@ impl Engine {
             model: binding.and_then(|b| b.model_choice.clone()),
             effort: binding.and_then(|b| b.effort_choice.clone()),
             permission_mode: t.permission_mode,
+            mcp: self.mcp_for(thread_id),
         });
         let (rows, cols) = self.ptys.get(thread_id).map_or((24, 80), |(_, p)| p.size());
         self.generation += 1;

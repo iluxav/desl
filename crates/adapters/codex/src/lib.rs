@@ -207,6 +207,20 @@ impl Adapter for Codex {
         if let Some(effort) = &opts.effort {
             args.extend(["-c".into(), format!("model_reasoning_effort=\"{effort}\"")]);
         }
+        if let Some(m) = &opts.mcp {
+            // `-c` values are TOML; a JSON string or list of strings reads the same in TOML.
+            let quoted = serde_json::to_string(&m.command).unwrap_or_default();
+            let list = serde_json::to_string(&m.args).unwrap_or_default();
+            // Its tools run without Codex asking each time: a form is the user's to answer anyway.
+            args.extend([
+                "-c".into(),
+                format!("mcp_servers.desl.command={quoted}"),
+                "-c".into(),
+                format!("mcp_servers.desl.args={list}"),
+                "-c".into(),
+                "mcp_servers.desl.default_tools_approval_mode=\"approve\"".into(),
+            ]);
+        }
         // Codex names a new session itself; the adapter finds it in its session files.
         let session_id = match &opts.open {
             Open::Resume { session_id } => {

@@ -24,8 +24,20 @@
   <div id="grip-side" class="grip" role="separator" aria-orientation="vertical" aria-controls="projects" aria-label="Width of the projects column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
   <main class="main">
     <div id="head" class="head"></div>
+    <div class="tabs" role="tablist" aria-label="What the thread shows">
+      <button id="tab-screen" type="button" role="tab" class="tab" aria-selected="true" aria-controls="screen-pane">Screen</button>
+      <button id="tab-conv" type="button" role="tab" class="tab" aria-selected="false" aria-controls="conv-pane">Conversation</button>
+    </div>
     <div class="pane">
-      <div id="screen-pane" class="screen-pane" aria-label="The agent's own screen">
+      <div id="conv-pane" class="conv-pane" role="tabpanel" aria-labelledby="tab-conv" hidden>
+        <div class="conv-tools">
+          <input id="conv-find" type="search" aria-label="Find in the conversation" placeholder="Find in the conversation">
+          <span id="conv-count" class="conv-count"></span>
+          <label class="conv-toggle"><input id="conv-tools" type="checkbox" checked> Tool calls</label>
+        </div>
+        <div id="conv" class="conv"></div>
+      </div>
+      <div id="screen-pane" class="screen-pane" role="tabpanel" aria-labelledby="tab-screen">
         <div id="screen" class="screen"></div>
       </div>
       <div id="screen-note" class="screen-note" role="status" hidden>

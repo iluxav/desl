@@ -4,11 +4,10 @@
 //! agent ran it and however often that agent compacted its context or was started again. So it
 //! shows what the agent's own screen no longer does after a restart.
 
-use crate::model::{Item, Thread};
 use crate::native::SKey;
 use crate::ui::transcript;
 use chrono::{DateTime, Local};
-use desl_ir::{Event, EventKind};
+use desl_ir::Event;
 use ratatui::text::Line;
 use unicode_width::UnicodeWidthChar;
 
@@ -29,35 +28,7 @@ impl Page {
     /// `events` as lines `width` wide, with a rule wherever a new day begins. Without `tools`
     /// only what was said is in it: the prompts and the replies.
     pub fn of(events: &[Event], width: usize, tools: bool) -> Page {
-        let mut m = Thread::new();
-        // Which item each prompt is.
-        let mut prompts: Vec<(usize, i64)> = Vec::new();
-        let mut day = None;
-        for e in events {
-            let tool = matches!(
-                e.kind,
-                EventKind::ToolCall { .. }
-                    | EventKind::ToolResult { .. }
-                    | EventKind::FileChange { .. }
-                    | EventKind::ApprovalRequest { .. }
-                    | EventKind::ApprovalResponse { .. }
-                    | EventKind::Usage { .. }
-            );
-            if tool && !tools {
-                continue;
-            }
-            if let Some(at) = local(e.timestamp)
-                && day != Some(at.date_naive())
-            {
-                day = Some(at.date_naive());
-                m.close_streaming();
-                m.items.push(Item::Divider(at.format("%A %-d %B %Y").to_string()));
-            }
-            m.apply(e);
-            if matches!(e.kind, EventKind::UserMessage { .. }) {
-                prompts.push((m.items.len() - 1, e.timestamp));
-            }
-        }
+        let (m, prompts) = crate::model::conversation(events, tools);
         let laid = transcript::layout(&m.items, width);
         let prompts = prompts.into_iter().map(|(item, at)| (laid.starts.get(item).copied().unwrap_or(0), at)).collect();
         Page { lines: laid.lines, prompts, width }
@@ -356,6 +327,7 @@ impl Reading {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use desl_ir::EventKind;
     use serde_json::json;
 
     /// Noon on 2026-11-19 and on the day after, local time, in milliseconds.

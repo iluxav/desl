@@ -16,6 +16,11 @@ All notable changes to desl are recorded here. The format follows
   works) and stops its turn. It follows the browser's light or dark setting, works at phone
   width, and comes back by itself after `desl daemon restart`. Another website, a wrong key or
   a rebinding host name gets nothing. Shells and file managers stay in the terminal.
+- desl web shows a thread's whole conversation beside its screen, the same one `prefix [`
+  shows in the terminal: every prompt with its time, the replies as Markdown, tool calls folded
+  to a line you can open, a rule at each new day. A search box finds a word (enter for the next,
+  shift+enter for the one before), a box hides the tool calls, and it follows new turns as they
+  land.
 - desl web shows the agent's own screen: the selected thread's Claude Code, Codex, Copilot or
   task list, drawn by xterm.js, with keys, paste and the mouse, as in the terminal. When the
   terminal shows the same thread, the page draws it at the terminal's size so the terminal stays

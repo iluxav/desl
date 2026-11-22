@@ -14,6 +14,7 @@ const $ = (id) => document.getElementById(id);
 
 const state = {
   view: null,
+  tab: 'screen',
   selected: read(SELECTED),
   ws: null,
   retry: 500,
@@ -103,6 +104,8 @@ function connect(key) {
   };
   ws.onclose = (e) => {
     state.ws = null;
+    conv.thread = null;
+    conv.asking = null;
     // What this connection showed went with it: the next one attaches again.
     screen.thread = null;
     screen.ready = false;
@@ -155,6 +158,13 @@ function handle(msg) {
       break;
     case 'notice':
       if (msg.thread_id === screen.thread) notice(msg.text);
+      break;
+    case 'conversation':
+      conversationArrived(msg);
+      break;
+    case 'event':
+      // Something was added to the log of the conversation on screen: read it again.
+      if (msg.change && msg.change.what === 'appended' && msg.change.event && msg.change.event.thread_id === conv.thread) conversationChanged();
       break;
     default:
       break;
@@ -212,6 +222,7 @@ function render() {
   drawWaiting();
   drawChrome(cur);
   if (cur && $('link').dataset.state === 'connected' && screen.term && cur.t.id !== screen.thread) attach(cur.t.id);
+  if (cur && $('link').dataset.state === 'connected' && state.tab === 'conv' && cur.t.id !== conv.thread) readConversation(cur.t.id);
 }
 
 function drawSide(cur) {
@@ -522,6 +533,283 @@ function setupScreen() {
   });
 }
 
+// ---- the conversation --------------------------------------------------------------------------
+
+const conv = {
+  /** The thread whose conversation is drawn, or asked for. */
+  thread: null,
+  items: [],
+  /** The request in flight, by its id. */
+  asking: null,
+  timer: null,
+  /** The search's matches, and which of them is shown. */
+  found: [],
+  at: -1,
+};
+
+function showTab(tab) {
+  state.tab = tab;
+  write('desl-web-tab', tab);
+  const screenOn = tab === 'screen';
+  $('tab-screen').setAttribute('aria-selected', String(screenOn));
+  $('tab-conv').setAttribute('aria-selected', String(!screenOn));
+  $('screen-pane').hidden = !screenOn;
+  $('conv-pane').hidden = screenOn;
+  if (screenOn) refit();
+  render();
+}
+
+function readConversation(id) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  if (conv.thread !== id) {
+    conv.thread = id;
+    conv.items = [];
+    drawConversation(true);
+  }
+  const reqId = state.nextId++;
+  conv.asking = reqId;
+  state.ws.send(JSON.stringify({ type: 'conversation', id: reqId, thread_id: id }));
+}
+
+function conversationArrived(msg) {
+  if (msg.id !== conv.asking || msg.thread_id !== conv.thread) return;
+  conv.asking = null;
+  if (msg.error) {
+    notice(msg.error, true);
+    return;
+  }
+  const list = $('conv');
+  const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40 || !conv.items.length;
+  conv.items = msg.items || [];
+  drawConversation(atEnd);
+}
+
+function conversationChanged() {
+  clearTimeout(conv.timer);
+  conv.timer = setTimeout(() => {
+    if (state.tab === 'conv' && conv.thread) readConversation(conv.thread);
+  }, 600);
+}
+
+/** Inline Markdown as nodes: code, bold, italics and links. Never HTML. */
+function inline(text, into) {
+  const re = /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(\*[^*\s][^*\n]*\*)|(\[[^\]\n]+\]\([^)\s]+\))/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (m.index > last) into.append(document.createTextNode(text.slice(last, m.index)));
+    const t = m[0];
+    if (m[1]) into.append(el('code', '', t.slice(1, -1)));
+    else if (m[2]) into.append(el('strong', '', t.slice(2, -2)));
+    else if (m[3]) into.append(el('em', '', t.slice(1, -1)));
+    else {
+      const [, label, href] = t.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+      if (/^https?:\/\//.test(href)) {
+        const a = el('a', '', label);
+        a.href = href;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        into.append(a);
+      } else {
+        into.append(document.createTextNode(label));
+      }
+    }
+    last = m.index + t.length;
+  }
+  if (last < text.length) into.append(document.createTextNode(text.slice(last)));
+}
+
+/** A reply's Markdown as nodes: paragraphs, headings, lists, code blocks, quotes. Never HTML. */
+function markdown(text) {
+  const out = document.createDocumentFragment();
+  const lines = text.split('\n');
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^\s*```/.test(line)) {
+      const code = [];
+      i++;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) code.push(lines[i++]);
+      i++;
+      const pre = el('pre');
+      pre.append(el('code', '', code.join('\n')));
+      out.append(pre);
+      continue;
+    }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) {
+      const head = el(`h${Math.min(h[1].length + 1, 4)}`);
+      inline(h[2], head);
+      out.append(head);
+      i++;
+      continue;
+    }
+    if (/^\s*([-*+]|\d+[.)])\s+/.test(line)) {
+      const ordered = /^\s*\d+[.)]\s+/.test(line);
+      const list = el(ordered ? 'ol' : 'ul');
+      while (i < lines.length && /^\s*([-*+]|\d+[.)])\s+/.test(lines[i])) {
+        const li = el('li');
+        inline(lines[i].replace(/^\s*([-*+]|\d+[.)])\s+/, ''), li);
+        list.append(li);
+        i++;
+      }
+      out.append(list);
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const quote = el('blockquote');
+      const body = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) body.push(lines[i++].replace(/^>\s?/, ''));
+      inline(body.join(' '), quote);
+      out.append(quote);
+      continue;
+    }
+    if (/^\s*\|/.test(line)) {
+      // A table stays as it was written, in a fixed-width block.
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      const pre = el('pre');
+      pre.append(el('code', '', rows.join('\n')));
+      out.append(pre);
+      continue;
+    }
+    if (!line.trim()) {
+      i++;
+      continue;
+    }
+    const para = [];
+    while (i < lines.length && lines[i].trim() && !/^(#{1,6}\s|\s*```|\s*([-*+]|\d+[.)])\s|>|\s*\|)/.test(lines[i])) para.push(lines[i++]);
+    // A line break in a reply stays one: agents break lines on purpose.
+    const p = el('p');
+    para.forEach((l, k) => {
+      if (k) p.append(el('br'));
+      inline(l, p);
+    });
+    out.append(p);
+  }
+  return out;
+}
+
+function lines(block, into, diff) {
+  const pre = el('pre');
+  for (const l of block.text.split('\n')) {
+    const kind = diff && l.startsWith('+') && !l.startsWith('+++') ? 'add' : diff && l.startsWith('-') && !l.startsWith('---') ? 'del' : '';
+    pre.append(el('span', kind, `${l}\n`));
+  }
+  if (block.more) pre.append(el('span', 'more', `… ${block.more} more lines`));
+  into.append(pre);
+}
+
+function clock(ms) {
+  if (!ms) return '';
+  const d = new Date(ms);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function drawConversation(toEnd) {
+  const list = $('conv');
+  list.replaceChildren();
+  if (!conv.items.length) {
+    list.append(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet.'));
+    return;
+  }
+  for (const item of conv.items) {
+    let node;
+    switch (item.kind) {
+      case 'rule':
+        node = el('div', 'item item-rule', item.text);
+        break;
+      case 'user': {
+        node = el('div', 'item item-user');
+        node.append(el('span', 'caret', '›'), el('span', 'text', item.text));
+        if (item.at) node.append(el('span', 'at', clock(item.at)));
+        break;
+      }
+      case 'assistant':
+        node = el('div', 'item item-assistant');
+        node.append(markdown(item.text));
+        break;
+      case 'tool': {
+        node = el('details', 'item item-tool');
+        const sum = el('summary');
+        const outcome = el('span', item.ok === false ? 'outcome bad' : 'outcome', item.summary || '');
+        sum.append(el('span', 'verb', item.verb), el('span', 'target', item.target), outcome);
+        node.append(sum);
+        if (item.diff) lines(item.diff, node, true);
+        else if (item.detail && item.detail.text.trim()) lines(item.detail, node, false);
+        else node.append(el('p', 'more', item.summary ? '(no output)' : '(no output yet)'));
+        break;
+      }
+      case 'brief':
+        node = el('details', 'item item-brief');
+        node.append(el('summary', '', `${item.label} · ~${item.tokens} tokens`));
+        lines({ text: item.text, more: 0 }, node, false);
+        break;
+      case 'error':
+        node = el('div', 'item item-error', `✕ ${item.text}`);
+        break;
+      default:
+        node = el('div', 'item item-note', item.text);
+        break;
+    }
+    list.append(node);
+  }
+  findAgain(false);
+  if (toEnd) list.scrollTop = list.scrollHeight;
+}
+
+/** The items that hold the search's text: letters in either case, unless it has a capital. */
+function findAgain(move) {
+  const q = $('conv-find').value;
+  for (const n of document.querySelectorAll('#conv .found')) n.classList.remove('found');
+  if (!q) {
+    conv.found = [];
+    conv.at = -1;
+    $('conv-count').textContent = '';
+    return;
+  }
+  const exact = /[A-Z]/.test(q);
+  const needle = exact ? q : q.toLowerCase();
+  conv.found = [...document.querySelectorAll('#conv .item')].filter((n) => {
+    if (n.classList.contains('item-tool') && $('conv').classList.contains('no-tools')) return false;
+    const text = exact ? n.textContent : n.textContent.toLowerCase();
+    return text.includes(needle);
+  });
+  if (!conv.found.length) {
+    conv.at = -1;
+    $('conv-count').textContent = 'not found';
+    return;
+  }
+  if (move || conv.at < 0 || conv.at >= conv.found.length) conv.at = Math.max(0, Math.min(conv.at, conv.found.length - 1));
+  const hit = conv.found[conv.at];
+  hit.classList.add('found');
+  if (move) hit.scrollIntoView({ block: 'center' });
+  $('conv-count').textContent = `${conv.at + 1} of ${conv.found.length}`;
+}
+
+function setupConversation() {
+  $('tab-screen').addEventListener('click', () => showTab('screen'));
+  $('tab-conv').addEventListener('click', () => showTab('conv'));
+  $('conv-tools').addEventListener('change', (e) => {
+    $('conv').classList.toggle('no-tools', !e.target.checked);
+    findAgain(false);
+  });
+  $('conv-find').addEventListener('input', () => {
+    conv.at = -1;
+    findAgain(true);
+  });
+  // enter goes on to the next match, shift+enter back; esc clears the search.
+  $('conv-find').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && conv.found.length) {
+      e.preventDefault();
+      conv.at = (conv.at + (e.shiftKey ? conv.found.length - 1 : 1)) % conv.found.length;
+      findAgain(true);
+    } else if (e.key === 'Escape') {
+      $('conv-find').value = '';
+      findAgain(false);
+    }
+  });
+}
+
 // ---- the prompt -------------------------------------------------------------------------------
 
 async function sendPrompt(e) {
@@ -639,9 +927,10 @@ function main() {
   }
   resizable();
   setupScreen();
+  setupConversation();
   $('prompt-form').addEventListener('submit', sendPrompt);
   $('stop').addEventListener('click', stop);
-  render();
+  showTab(read('desl-web-tab') === 'conv' ? 'conv' : 'screen');
   connect(key);
 }
 

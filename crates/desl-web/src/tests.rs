@@ -199,6 +199,45 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     c.send(Message::Text(json!({ "id": 3, "command": "interrupt", "thread_id": "t-1" }).to_string().into())).await.unwrap();
     let interrupt = request(&mut rig.got).await;
     assert!(matches!(interrupt.command, Command::Interrupt { .. }), "the shutdown never reached the daemon: {interrupt:?}");
+    // The page asks the bridge for a conversation: the bridge asks the daemon for the events.
+    c.send(Message::Text(json!({ "type": "conversation", "id": 4, "thread_id": "t-1" }).to_string().into())).await.unwrap();
+    let events = request(&mut rig.got).await;
+    assert!(matches!(events.command, Command::Events { ref thread_id } if thread_id == "t-1"), "{events:?}");
+    let said = desl_ir::Event {
+        index: 1,
+        thread_id: "t-1".into(),
+        timestamp: 0,
+        agent: "claude".into(),
+        kind: desl_ir::EventKind::UserMessage { text: "hello".into(), attachments: vec![] },
+    };
+    rig.give.send(ServerFrame::Reply { id: events.id, ok: Some(Reply::Events { events: vec![said] }), error: None }).await.unwrap();
+    let conv = next(&mut c).await;
+    assert_eq!((conv["type"].as_str(), conv["id"].as_u64()), (Some("conversation"), Some(4)), "{conv}");
+    assert_eq!(conv["items"][0]["text"], "hello");
+}
+
+#[test]
+fn a_conversation_reaches_the_page_as_the_history_projects_it() {
+    use desl_ir::{Event, EventKind};
+    let ev = |index, kind| Event { index, thread_id: "t-1".into(), timestamp: 0, agent: "claude".into(), kind };
+    let long: String = (1..=50).map(|n| format!("line {n}\n")).collect();
+    let items = crate::bridge::items(&[
+        ev(1, EventKind::UserMessage { text: "run the tests".into(), attachments: vec![] }),
+        ev(2, EventKind::ToolCall { id: "c1".into(), name: "bash".into(), args: json!({ "command": "cargo test" }) }),
+        ev(
+            3,
+            EventKind::ToolResult { call_id: "c1".into(), output: long, exit_code: Some(0), is_error: false, truncated: false, blob: None },
+        ),
+        ev(4, EventKind::AssistantMessage { text: "All **50** pass.".into(), model: None }),
+    ]);
+    let kinds: Vec<&str> = items.iter().filter_map(|i| i["kind"].as_str()).collect();
+    assert_eq!(kinds, ["user", "tool", "assistant"]);
+    assert_eq!(
+        (items[1]["verb"].as_str(), items[1]["target"].as_str(), items[1]["ok"].as_bool()),
+        (Some("run"), Some("cargo test"), Some(true))
+    );
+    assert_eq!(items[1]["detail"]["more"], 10, "40 lines are sent, and the count of the rest");
+    assert_eq!(items[2]["text"], "All **50** pass.", "the page renders the Markdown itself, as text");
 }
 
 #[tokio::test]

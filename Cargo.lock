@@ -582,6 +582,7 @@ dependencies = [
 name = "desl-proto"
 version = "0.1.2"
 dependencies = [
+ "chrono",
  "desl-ir",
  "serde",
  "serde_json",

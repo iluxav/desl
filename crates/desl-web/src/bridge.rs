@@ -1,16 +1,19 @@
 //! One browser tab joined to the daemon (web-spec.md "Architecture"). The tab proves it holds
 //! the key, then gets a connection of its own to the daemon: every frame the daemon sends goes
 //! to the tab as its JSON, and every request the tab sends goes to the daemon, so the page
-//! speaks the protocol in `docs/protocol.md`. The bridge adds one message of its own, `view`:
-//! the sidebar as `desl_proto::view` words it for the TUI, sent whenever it changes, so the
-//! two clients cannot show different things. It keeps nothing that matters: closing it, or the
-//! tab, loses nothing.
+//! speaks the protocol in `docs/protocol.md`. The bridge adds two messages of its own: `view`,
+//! the sidebar as `desl_proto::view` words it for the TUI, sent whenever it changes, and
+//! `conversation`, a thread's whole conversation as `desl_proto::conversation` projects it for
+//! the TUI's history, sent when the page asks; so the two clients cannot show different things.
+//! It keeps nothing that matters: closing it, or the tab, loses nothing.
 
 use crate::Shared;
 use axum::extract::ws::{CloseFrame, Message, WebSocket};
-use desl_ir::{Project, Thread};
+use desl_ir::{Event, Project, Thread};
+use desl_proto::conversation::{Item, conversation};
 use desl_proto::{Change, Command, PROTOCOL, Reply, Request, ServerFrame, view};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::io;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,6 +24,12 @@ use tokio::net::UnixStream;
 const OWN: u64 = 1 << 52;
 pub(crate) const HELLO: u64 = OWN;
 pub(crate) const SUBSCRIBE: u64 = OWN + 1;
+/// The bridge's own requests for the page start here.
+const ASKED: u64 = OWN + 16;
+
+/// Lines of a tool's output, and of an edit's diff, sent before `more` says how many were left.
+const DETAIL_LINES: usize = 40;
+const DIFF_LINES: usize = 400;
 
 /// How long a tab has to say the key before it is turned away.
 const KEY_WAIT: Duration = Duration::from_secs(5);
@@ -76,6 +85,10 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
     });
     let mut cache = Cache::default();
     let mut ages = tokio::time::interval(AGES);
+    // What the page asked the bridge for, by the id the bridge asked the daemon with: the page's
+    // id and the thread.
+    let mut asked: HashMap<u64, (Value, String)> = HashMap::new();
+    let mut next = ASKED;
     loop {
         tokio::select! {
             frame = frames.recv() => {
@@ -85,6 +98,21 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
                     break;
                 };
                 let parsed = serde_json::from_slice::<ServerFrame>(&bytes).ok();
+                if let Some(ServerFrame::Reply { id, ok, error }) = &parsed
+                    && let Some((page_id, thread_id)) = asked.remove(id)
+                {
+                    let answer = match (ok, error) {
+                        (Some(Reply::Events { events }), _) => {
+                            json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "items": items(events) })
+                        }
+                        (_, Some(e)) => json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "error": e }),
+                        _ => continue,
+                    };
+                    if say(&mut ws, answer).await.is_err() {
+                        break;
+                    }
+                    continue;
+                }
                 let own = matches!(&parsed, Some(ServerFrame::Reply { id, .. }) if *id >= OWN);
                 let changed = parsed.is_some_and(|f| cache.fold(f));
                 if !own && ws.send(Message::Text(String::from_utf8_lossy(&bytes).into_owned().into())).await.is_err() {
@@ -95,6 +123,15 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
                 }
             }
             msg = ws.recv() => match msg {
+                // The page asks the bridge itself for a thread's conversation.
+                Some(Ok(Message::Text(t))) if conversation_asked(t.as_str()).is_some() => {
+                    let Some((page_id, thread_id)) = conversation_asked(t.as_str()) else { continue };
+                    asked.insert(next, (page_id, thread_id.clone()));
+                    if send(&mut wr, &Request { id: next, command: Command::Events { thread_id } }).await.is_err() {
+                        break;
+                    }
+                    next += 1;
+                }
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Request>(t.as_str()) {
                     Ok(r) if r.id < OWN && allowed(&r.command) => {
                         if send(&mut wr, &r).await.is_err() {
@@ -126,6 +163,52 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
         }
     }
     reader.abort();
+}
+
+/// `{"type": "conversation", "id": …, "thread_id": …}`: the page's id and the thread.
+fn conversation_asked(text: &str) -> Option<(Value, String)> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    if v.get("type").and_then(Value::as_str) != Some("conversation") {
+        return None;
+    }
+    Some((v.get("id").cloned().unwrap_or(Value::Null), v.get("thread_id")?.as_str()?.to_string()))
+}
+
+/// The first `lines` lines of `text`, and how many more there were.
+fn capped(text: &str, lines: usize) -> Value {
+    let all: Vec<&str> = text.lines().collect();
+    let shown = all.len().min(lines);
+    json!({ "text": all[..shown].join("\n"), "more": all.len() - shown })
+}
+
+/// A thread's conversation as the page draws it: the items of the TUI's history, each a JSON
+/// object with its `kind`. A prompt says when it was sent.
+pub(crate) fn items(events: &[Event]) -> Vec<Value> {
+    let (thread, prompts) = conversation(events, true);
+    let sent: HashMap<usize, i64> = prompts.into_iter().collect();
+    thread
+        .items
+        .iter()
+        .enumerate()
+        .map(|(i, item)| match item {
+            Item::User { text } => json!({ "kind": "user", "text": text, "at": sent.get(&i) }),
+            Item::Assistant { text, .. } => json!({ "kind": "assistant", "text": text }),
+            Item::Tool { verb, target, outcome, decision, detail, diff, .. } => json!({
+                "kind": "tool",
+                "verb": verb,
+                "target": target,
+                "ok": outcome.as_ref().map(|o| o.ok),
+                "summary": outcome.as_ref().map(|o| o.summary.as_str()),
+                "decision": decision,
+                "detail": capped(detail, DETAIL_LINES),
+                "diff": diff.as_deref().map(|d| capped(d, DIFF_LINES)),
+            }),
+            Item::Divider(label) => json!({ "kind": "rule", "text": label }),
+            Item::Brief { label, text, tokens, .. } => json!({ "kind": "brief", "label": label, "text": text, "tokens": tokens }),
+            Item::Note(text) => json!({ "kind": "note", "text": text }),
+            Item::Error(text) => json!({ "kind": "error", "text": text }),
+        })
+        .collect()
 }
 
 async fn say(ws: &mut WebSocket, v: Value) -> Result<(), axum::Error> {

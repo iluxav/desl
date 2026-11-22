@@ -276,6 +276,73 @@ body.resizing { cursor: col-resize; user-select: none; }
 .screen-note p { margin: 0; }
 @media (max-width: 899px) { .pane { min-height: 70vh; } }
 
+/* Screen or conversation. */
+.tabs { display: flex; gap: 2px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+.tab {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--dim);
+  font-size: 13px;
+  font-weight: 500;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+
+/* The whole conversation, as the terminal's history shows it. */
+.conv-pane { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.conv-tools { display: flex; align-items: center; gap: 12px; padding: 8px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+#conv-find {
+  flex: 0 1 320px;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line2);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 13px;
+}
+.conv-count { color: var(--muted); font: 12px var(--mono); }
+.conv-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; }
+.conv-toggle input { accent-color: var(--accent); }
+.conv { flex: 1; min-height: 0; overflow: auto; padding: 8px 28px 28px; }
+.conv > * { max-width: 860px; }
+.conv.no-tools .item-tool { display: none; }
+.item { margin: 14px 0 0; }
+.item.found { outline: 2px solid var(--warn); outline-offset: 4px; border-radius: 4px; }
+.item-rule { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin-top: 26px; }
+.item-rule::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+.item-user { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; border-radius: 8px; background: var(--raised); }
+.item-user .caret { font-size: 15px; }
+.item-user .text { flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+.item-user .at { color: var(--muted); font: 11.5px var(--mono); white-space: nowrap; }
+.item-assistant { padding: 0 12px 0 32px; line-height: 1.6; overflow-wrap: anywhere; }
+.item-assistant p, .item-assistant ul, .item-assistant ol, .item-assistant pre, .item-assistant blockquote { margin: 0 0 10px; }
+.item-assistant h1, .item-assistant h2, .item-assistant h3, .item-assistant h4 { margin: 14px 0 8px; font-size: 15px; }
+.item-assistant ul, .item-assistant ol { padding-left: 22px; }
+.item-assistant code { font: 12.5px var(--mono); background: var(--raised); border-radius: 4px; padding: 1px 4px; }
+.item-assistant pre { background: var(--raised); border-radius: 6px; padding: 10px 12px; overflow: auto; }
+.item-assistant pre code { background: none; padding: 0; }
+.item-assistant blockquote { border-left: 3px solid var(--line2); padding-left: 10px; color: var(--dim); }
+.item-tool { margin: 6px 0 0 32px; font: 12.5px var(--mono); color: var(--dim); }
+.item-tool summary { cursor: pointer; display: flex; gap: 10px; list-style: none; padding: 2px 0; }
+.item-tool summary::-webkit-details-marker { display: none; }
+.item-tool summary::before { content: "▸"; color: var(--muted); }
+.item-tool[open] summary::before { content: "▾"; }
+.item-tool .verb { min-width: 44px; }
+.item-tool .target { color: var(--text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.item-tool .outcome { color: var(--ok); white-space: nowrap; }
+.item-tool .outcome.bad { color: var(--crit); }
+.item-tool pre { margin: 6px 0 4px; padding: 8px 10px; background: var(--raised); border-radius: 6px; overflow: auto; white-space: pre; color: var(--dim); }
+.item-tool .add { color: var(--ok); }
+.item-tool .del { color: var(--crit); }
+.item-tool .more { color: var(--muted); }
+.item-note { margin-left: 32px; color: var(--muted); font-style: italic; font-size: 13px; }
+.item-error { margin-left: 32px; color: var(--crit); font-size: 13px; }
+.item-brief { margin-left: 32px; color: var(--dim); font-size: 13px; }
+
 /* The waiting list. */
 .waitlist { display: flex; flex-direction: column; gap: 12px; }
 .card {

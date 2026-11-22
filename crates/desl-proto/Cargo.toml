@@ -8,6 +8,7 @@ description = "desl: the daemon protocol, length-prefixed JSON frames over a Uni
 
 [dependencies]
 desl-ir = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 vt100 = { workspace = true }

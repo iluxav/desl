@@ -696,6 +696,7 @@ impl Engine {
             queued: Vec::new(),
             pending_approval: None,
             subagents: Vec::new(),
+            open_forms: Vec::new(),
         };
         let id = thread.id.clone();
         self.threads.push(thread);
@@ -2522,6 +2523,7 @@ impl Engine {
             queued: Vec::new(),
             pending_approval: None,
             subagents: Vec::new(),
+            open_forms: Vec::new(),
             // The copy's agent may title it apart from the parent.
             named: false,
             // `yolo` is set per thread, by hand; a fork does not inherit it.

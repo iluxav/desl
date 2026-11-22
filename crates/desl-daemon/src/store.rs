@@ -3,7 +3,7 @@
 //! Every append is its own transaction, so a crash never loses an event that was shown.
 
 use anyhow::{Context, Result};
-use desl_ir::{Binding, Event, EventKind, GitState, PermissionMode, Project, Status, Thread};
+use desl_ir::{Binding, Event, EventKind, GitState, OpenForm, PermissionMode, Project, Status, Thread};
 use desl_proto::PastPrompt;
 use rusqlite::{Connection, OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -150,6 +150,20 @@ impl Store {
                 }
             }
         }
+        if version < 7 {
+            // Forms (docs/design/2026-11-21-web-forms.md): the form and its answer are blobs; a
+            // draft is the page's state of an open form; `told` marks a dismissal the agent heard.
+            self.conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE forms (
+                     id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, title TEXT NOT NULL, created_at INTEGER NOT NULL,
+                     blob TEXT NOT NULL, closed_by TEXT, answer_blob TEXT, told INTEGER NOT NULL DEFAULT 0, draft TEXT
+                 ) WITHOUT ROWID;
+                 CREATE INDEX forms_open ON forms (thread_id) WHERE closed_by IS NULL;
+                 PRAGMA user_version = 7;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -268,6 +282,7 @@ impl Store {
                 queued: queued.remove(&id).unwrap_or_default(),
                 pending_approval: None,
                 subagents: serde_json::from_str(&r.get::<_, String>(12)?).unwrap_or_default(),
+                open_forms: Vec::new(),
                 named: r.get(13)?,
                 git: GitState::default(),
                 id,
@@ -301,10 +316,77 @@ impl Store {
     }
 
     pub fn delete_thread(&self, id: &str) -> Result<()> {
-        for table in ["events", "bindings", "queue"] {
+        for table in ["events", "bindings", "queue", "forms"] {
             self.conn.execute(&format!("DELETE FROM {table} WHERE thread_id = ?1"), params![id])?;
         }
         self.conn.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    // ---- forms -------------------------------------------------------------------------------
+
+    pub fn form_put(&self, id: &str, thread_id: &str, title: &str, at: i64, blob: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO forms (id, thread_id, title, created_at, blob) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, thread_id, title, at, blob],
+        )?;
+        Ok(())
+    }
+
+    /// Closes an open form. False when it was closed already, or is not there.
+    pub fn form_close(&self, id: &str, by: &str, answer_blob: Option<&str>) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE forms SET closed_by = ?2, answer_blob = ?3, draft = NULL WHERE id = ?1 AND closed_by IS NULL",
+            params![id, by, answer_blob],
+        )?;
+        Ok(n == 1)
+    }
+
+    /// Keeps the page's state of an open form. False when it is closed, or is not there.
+    pub fn form_draft(&self, id: &str, draft: &str) -> Result<bool> {
+        let n = self.conn.execute("UPDATE forms SET draft = ?2 WHERE id = ?1 AND closed_by IS NULL", params![id, draft])?;
+        Ok(n == 1)
+    }
+
+    pub fn form(&self, id: &str) -> Result<Option<StoredForm>> {
+        let mut st =
+            self.conn.prepare("SELECT id, thread_id, title, created_at, blob, closed_by, answer_blob, draft FROM forms WHERE id = ?1")?;
+        let mut rows = st.query_map(params![id], |r| {
+            Ok(StoredForm {
+                id: r.get(0)?,
+                thread_id: r.get(1)?,
+                title: r.get(2)?,
+                at: r.get(3)?,
+                blob: r.get(4)?,
+                closed_by: r.get(5)?,
+                answer_blob: r.get(6)?,
+                draft: r.get(7)?,
+            })
+        })?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Every open form, with its thread's id, oldest first.
+    pub fn open_forms(&self) -> Result<Vec<(String, OpenForm)>> {
+        let mut st =
+            self.conn.prepare("SELECT thread_id, id, title, created_at FROM forms WHERE closed_by IS NULL ORDER BY created_at, id")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, OpenForm { id: r.get(1)?, title: r.get(2)?, at: r.get(3)? })))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The forms of a thread the user dismissed and its agent has not heard of yet: id, title.
+    pub fn untold_dismissals(&self, thread_id: &str) -> Result<Vec<(String, String)>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, title FROM forms WHERE thread_id = ?1 AND closed_by = 'dismissed' AND told = 0 ORDER BY created_at, id")?;
+        let rows = st.query_map(params![thread_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn mark_told(&self, ids: &[String]) -> Result<()> {
+        for id in ids {
+            self.conn.execute("UPDATE forms SET told = 1 WHERE id = ?1", params![id])?;
+        }
         Ok(())
     }
 
@@ -455,6 +537,22 @@ impl Store {
     }
 }
 
+/// A form as the store keeps it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredForm {
+    pub id: String,
+    pub thread_id: String,
+    pub title: String,
+    pub at: i64,
+    /// The form's JSON.
+    pub blob: String,
+    /// `user`, `withdrawn` or `dismissed`; None while it is open.
+    pub closed_by: Option<String>,
+    /// The answer's JSON, for `user`.
+    pub answer_blob: Option<String>,
+    pub draft: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +585,7 @@ mod tests {
             queued: vec![],
             pending_approval: None,
             subagents: Vec::new(),
+            open_forms: Vec::new(),
             git: GitState::default(),
         }
     }
@@ -612,6 +711,29 @@ mod tests {
     }
 
     #[test]
+    fn a_form_is_kept_until_it_closes_once() {
+        let (s, dir) = store();
+        s.form_put("f-1", "t-1", "Pick", 10, "ab").unwrap();
+        assert!(s.form_draft("f-1", "{\"next\":\"M5\"}").unwrap());
+        assert_eq!(s.open_forms().unwrap(), [("t-1".to_string(), OpenForm { id: "f-1".into(), title: "Pick".into(), at: 10 })]);
+        let row = s.form("f-1").unwrap().unwrap();
+        assert_eq!((row.thread_id.as_str(), row.blob.as_str(), row.draft.as_deref()), ("t-1", "ab", Some("{\"next\":\"M5\"}")));
+        assert!(s.form_close("f-1", "dismissed", None).unwrap());
+        assert!(!s.form_close("f-1", "user", Some("cd")).unwrap(), "closed once");
+        assert!(!s.form_draft("f-1", "{}").unwrap(), "a closed form takes no draft");
+        assert_eq!(s.form("f-1").unwrap().unwrap().closed_by.as_deref(), Some("dismissed"));
+        assert_eq!(s.untold_dismissals("t-1").unwrap(), [("f-1".to_string(), "Pick".to_string())]);
+        s.mark_told(&["f-1".to_string()]).unwrap();
+        assert!(s.untold_dismissals("t-1").unwrap().is_empty());
+        assert!(s.open_forms().unwrap().is_empty());
+        s.form_put("f-2", "t-1", "Again", 20, "ef").unwrap();
+        s.delete_thread("t-1").unwrap();
+        assert!(s.form("f-2").unwrap().is_none(), "a removed thread's forms go with it");
+        assert!(s.form("f-9").unwrap().is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn a_store_from_schema_one_is_backed_up_and_migrated_in_place() {
         let dir = std::env::temp_dir().join(format!("desl-store-migrate-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -643,6 +765,7 @@ mod tests {
         let named: Vec<(String, bool)> = s.threads().unwrap().into_iter().map(|t| (t.id, t.named)).collect();
         assert_eq!(named, [("t-1".to_string(), true), ("t-2".to_string(), false)], "a name that is not the first prompt's was the user's");
         assert!(dir.join("workspace.db.v1.bak").exists(), "the store as it was is kept beside the migrated one");
+        assert!(s.open_forms().unwrap().is_empty(), "the forms table is there");
         let version: i64 = s.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         let _ = std::fs::remove_dir_all(dir);

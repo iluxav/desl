@@ -442,6 +442,19 @@ pub struct Thread {
     /// agents' files while they run, and stored with the thread.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subagents: Vec<Subagent>,
+    /// Its forms not answered yet, oldest first: while one is open and the agent is idle, the
+    /// thread is `waiting`. From the store's `forms` table, not its row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_forms: Vec<OpenForm>,
+}
+
+/// A form the thread's agent put in front of the user that is not answered yet.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct OpenForm {
+    pub id: String,
+    pub title: String,
+    /// When it was shown, in milliseconds.
+    pub at: i64,
 }
 
 /// A helper agent that a thread's agent started.

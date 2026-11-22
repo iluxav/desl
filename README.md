@@ -109,32 +109,31 @@ the agent.
 
 ## In a browser
 
-`desl web` opens the workspace in a browser, beside the terminal:
+desl web shows the workspace in a browser, beside the terminal. `desl` starts it in the
+background as it attaches, and `ctrl+space v` opens your browser on it. From a shell,
+`desl web --open` does the same, `desl web` prints the address, and `desl web --stop` ends it.
 
 ```sh
 desl web
 # desl web: http://127.0.0.1:7428/#t=<key>
 ```
 
-Or press `ctrl+space v` in desl, which starts it in the background and opens your browser on
-it; `desl web --open` does that from a shell, and `desl web --stop` ends it.
+The page lists every project and agent thread with the same marks and words as the sidebar,
+and shows the whole conversation of the thread you pick, with a search and a prompt box under
+it (queued while the agent works).
 
-Open the address it prints. The page lists every project and agent thread with the same marks
-and words as the sidebar, and shows the whole conversation of the thread you pick, with a
-search and a prompt box under it (queued while the agent works).
-
-It is where your agents put **forms** in front of you: when a choice needs its trade-offs, a
-plan should be approved step by step, or a setting tuned, the agent calls desl's `show_form`
-tool and ends its turn, and the form appears as a card in its conversation: options, a
-checklist to untick and reorder, fields, a slider, a preview of a look to tune, a table to
-edit, pictures to pick from, a section of a Markdown file to edit in place, saved into the
-file when you press Send. Press Send, and your answer is the agent's
-next prompt. The right column lists every open form, and `ctrl+space v` on a waiting thread
-goes straight to it. desl gives the tool to Claude Code, Codex and Copilot when it starts them;
-nothing to configure.
+It is where your agents put **forms** in front of you. When a choice needs its trade-offs, a
+plan should be approved step by step or a look tuned, the agent calls desl's `show_form` tool
+and ends its turn, and the form appears as a card in its conversation: options, a checklist to
+untick and reorder, fields and sliders, a live preview, a table to edit, pictures to pick from,
+or a section of a Markdown file to edit in place. Press Send and your answer is the agent's
+next prompt; an edited file is saved first. The right column lists every open form, and
+`ctrl+space v` on a waiting thread goes straight to it. desl gives the tool to Claude Code,
+Codex and Copilot when it starts them; nothing to configure.
 
 The agent's own screen stays in the terminal. desl web listens on 127.0.0.1 only, and the key
-after `#t=` is new each time it starts. `ctrl+c` stops it; the agents keep working.
+after `#t=` is new each time it starts. It runs on when desl closes, and after an install it
+starts again from the new binary on the same address; the agents keep working either way.
 
 ## From a script
 

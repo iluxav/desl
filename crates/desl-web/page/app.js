@@ -1,10 +1,11 @@
 // desl web's page (web-spec.md). It speaks the daemon's protocol through desl web's bridge and
 // draws the `view` the bridge sends: the projects and their agent threads as desl itself words
-// them for the terminal, and the selected thread's conversation. The agent's own screen stays in
-// the terminal. Text from agents only ever goes into the page as text nodes. Forms an agent puts
-// in front of the user are drawn as cards in its conversation (forms.js).
+// them for the terminal, and the selected thread's conversation, its highlights or its agent's own
+// screen (screen.js). Text from agents only ever goes into the page as text nodes. Forms an agent
+// puts in front of the user are drawn as cards in its conversation (forms.js).
 
 import { card } from '/forms.js';
+import * as screen from '/screen.js';
 import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
 import { attend, setupAttention } from '/attention.js';
 
@@ -135,6 +136,7 @@ function connect(key) {
     state.ws = null;
     conv.thread = null;
     conv.asking = null;
+    screen.lost();
     for (const [, done] of state.pending) done({ error: 'desl web lost the daemon before it answered. Send it again.' });
     state.pending.clear();
     if (e.code === 4401) {
@@ -181,7 +183,13 @@ function handle(msg) {
       break;
     }
     case 'notice':
-      if (msg.thread_id === conv.thread) notice(msg.text);
+      if (msg.thread_id === conv.thread || msg.thread_id === screen.shown()) notice(msg.text);
+      break;
+    case 'pty':
+    case 'pty_size':
+    case 'pty_replace':
+    case 'pty_ended':
+      screen.frame(msg);
       break;
     case 'conversation':
       conversationArrived(msg);
@@ -215,6 +223,12 @@ function request(command, fields) {
     state.pending.set(id, resolve);
     state.ws.send(JSON.stringify({ id, command, ...fields }));
   });
+}
+
+/** Sends one request the daemon never answers: keys, a size, leaving a screen. */
+function fire(command, fields) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  state.ws.send(JSON.stringify({ id: state.nextId++, command, ...fields }));
 }
 
 // ---- drawing ----------------------------------------------------------------------------------
@@ -255,7 +269,10 @@ function render() {
   drawChrome(cur);
   // The last entry says "working" while the agent is.
   if (conv.view === 'highlights') drawHighlights(false);
-  if (cur && $('link').dataset.state === 'connected' && cur.t.id !== conv.thread) readConversation(cur.t.id);
+  const live = cur && $('link').dataset.state === 'connected';
+  if (live && cur.t.id !== conv.thread) readConversation(cur.t.id);
+  if (live && conv.view === 'screen' && cur.t.id !== screen.shown()) showScreen(cur.t.id);
+  composer();
 }
 
 function drawSide(cur) {
@@ -338,8 +355,8 @@ function drawWaiting() {
   const list = $('waitlist');
   list.replaceChildren();
   const forms = state.view ? state.view.forms || [] : [];
-  // Threads whose agent asks in its own screen, a form open beside it or not: answered in the
-  // terminal. A thread waiting on a form alone is answered on its card.
+  // Threads whose agent asks in its own screen, a form open beside it or not: answered on its
+  // Screen. A thread waiting on a form alone is answered on its card.
   const ids = state.view ? state.view.screen || [] : [];
   const count = forms.length + ids.length;
   $('wait-title').textContent = count ? `Waiting · ${count}` : 'Waiting';
@@ -367,15 +384,15 @@ function drawWaiting() {
     const found = all.find(({ t }) => t.id === id);
     if (!found) continue;
     const { t, p } = found;
-    // Its agent asks in its own screen, which stays in the terminal: this says where to go.
+    // Its agent asks in its own screen: a click opens that screen, where it is answered.
     const line = el('button', 'wait-line');
     line.type = 'button';
     line.setAttribute('aria-label', `${t.title} is waiting in its own screen`);
     const top = el('span', 'wait-top');
     top.append(mark(t.agent, t.status, 13), el('span', 'title', `${t.title} · ${p.name}`));
     if (t.age) top.append(el('span', 'age', t.age));
-    line.append(top, el('span', 'wait-where', 'Asks in its own screen: answer in the terminal.'));
-    line.addEventListener('click', () => select(t.id));
+    line.append(top, el('span', 'wait-where', 'Asks in its own screen: open it to answer.'));
+    line.addEventListener('click', () => openScreen(t.id));
     list.append(line);
   }
 }
@@ -399,6 +416,17 @@ function drawChrome(cur) {
   $('send').disabled = !ready;
 }
 
+// On the Screen the agent's own input takes the keys: the page's prompt shows only where there is
+// none, under the Conversation and the Highlights, and at phone width, where a terminal is hard to
+// type in.
+const NARROW = window.matchMedia('(max-width: 899px)');
+
+function composer() {
+  const form = conv.view !== 'screen' || NARROW.matches;
+  $('prompt-form').hidden = !form;
+  $('composer').hidden = !form && !$('notice').textContent;
+}
+
 let noticeTimer = null;
 
 /** A sentence under the thread, for a few seconds: longer when something went wrong. */
@@ -408,6 +436,47 @@ function notice(text, error = false) {
   n.classList.toggle('error', error);
   clearTimeout(noticeTimer);
   if (text) noticeTimer = setTimeout(() => notice(''), error ? 15000 : 8000);
+  composer();
+}
+
+// ---- the agent's screen (screen.js) -----------------------------------------------------------
+
+function screenNote(text, again) {
+  $('screen-note').hidden = !text;
+  $('screen-note-text').textContent = text || '';
+  $('screen-again').hidden = !again;
+}
+
+/** Thread `id`'s screen, once the pane has its size; the keys go to it. */
+function showScreen(id) {
+  requestAnimationFrame(() => {
+    if (conv.view !== 'screen' || state.selected !== id) return;
+    screen.attach(id).then(() => {
+      if (conv.view === 'screen' && document.activeElement === document.body) screen.focus();
+    });
+    screen.focus();
+  });
+}
+
+/** A waiting thread's own screen, with the keys: it is answered there. */
+function openScreen(id) {
+  if (state.selected !== id) select(id);
+  setView('screen');
+}
+
+function setupScreenPane() {
+  screen.setupScreen($('screen'), $('screen-pane'), {
+    request,
+    fire,
+    note: screenNote,
+    keys: () => false,
+    who: () => {
+      const cur = current();
+      return cur ? cur.t.agent : 'The agent';
+    },
+  });
+  $('screen-again').addEventListener('click', () => screen.again());
+  NARROW.addEventListener('change', composer);
 }
 
 // ---- the conversation --------------------------------------------------------------------------
@@ -418,8 +487,8 @@ const conv = {
   items: [],
   /** Its story in short questions and answers (docs/design/2026-11-22-highlights.md). */
   highlights: [],
-  /** `conversation` or `highlights`, as the user left it. */
-  view: readJson('desl-web-view').view === 'highlights' ? 'highlights' : 'conversation',
+  /** `conversation`, `highlights` or `screen`, as the user left it. */
+  view: ['highlights', 'screen'].includes(readJson('desl-web-view').view) ? readJson('desl-web-view').view : 'conversation',
   /** The request in flight, by its id. */
   asking: null,
   timer: null,
@@ -505,22 +574,37 @@ function openAt(event) {
   setTimeout(() => target.classList.remove('flash'), 1600);
 }
 
+const VIEWS = { conversation: 'view-conv', highlights: 'view-high', screen: 'view-screen' };
+
 function setView(view) {
   conv.view = view;
   const high = view === 'highlights';
-  $('conv').hidden = high;
+  const term = view === 'screen';
+  $('conv').hidden = view !== 'conversation';
   $('highlights').hidden = !high;
-  for (const id of ['conv-find', 'conv-count', 'conv-toggle']) $(id).hidden = high;
-  $('view-conv').classList.toggle('on', !high);
-  $('view-high').classList.toggle('on', high);
-  $('view-conv').setAttribute('aria-pressed', String(!high));
-  $('view-high').setAttribute('aria-pressed', String(high));
+  $('screen-pane').hidden = !term;
+  for (const id of ['conv-find', 'conv-count', 'conv-toggle']) $(id).hidden = view !== 'conversation';
+  $('screen-hint').hidden = !term;
+  for (const [v, id] of Object.entries(VIEWS)) {
+    $(id).classList.toggle('on', v === view);
+    $(id).setAttribute('aria-pressed', String(v === view));
+  }
   try {
     localStorage.setItem('desl-web-view', JSON.stringify({ view }));
   } catch (e) {
     // The choice is only for this visit, then.
   }
   if (high) drawHighlights(true);
+  if (term) {
+    screen.refit();
+    const cur = current();
+    if (cur && $('link').dataset.state === 'connected') showScreen(cur.t.id);
+  } else {
+    // Out of sight, the agent's terminal is sized by whoever else shows it.
+    screen.detach();
+    screenNote('');
+  }
+  composer();
 }
 
 function conversationChanged(now = false) {
@@ -1133,6 +1217,7 @@ function findAgain(move) {
 function setupConversation() {
   $('view-conv').addEventListener('click', () => setView('conversation'));
   $('view-high').addEventListener('click', () => setView('highlights'));
+  $('view-screen').addEventListener('click', () => setView('screen'));
   setView(conv.view);
   $('conv-tools').addEventListener('change', (e) => {
     $('conv').classList.toggle('no-tools', !e.target.checked);
@@ -1274,6 +1359,7 @@ function main() {
     return;
   }
   resizable();
+  setupScreenPane();
   setupConversation();
   setupTasks();
   setupAttention();

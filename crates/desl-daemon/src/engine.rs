@@ -94,8 +94,26 @@ struct Client {
     subscribed: bool,
     /// The thread whose token stream this client receives.
     viewing: Option<String>,
-    /// The threads whose agents' interfaces this client shows (the native route), one per pane.
-    shows: HashSet<String>,
+    /// The threads whose agents' interfaces this client shows (the native route), one per pane,
+    /// each with the size it asked for.
+    shows: HashMap<String, Asked>,
+}
+
+impl Client {
+    /// `desl web`'s bridge: a TUI's size wins over its, and it answers no terminal questions
+    /// (web-spec.md, "One thread on two screens").
+    fn page(&self) -> bool {
+        self.name == "web"
+    }
+}
+
+/// The size a client asked a thread's terminal to be, and when, by [`Engine::stamp`].
+#[derive(Clone, Copy)]
+struct Asked {
+    rows: u16,
+    cols: u16,
+    at: u64,
+    page: bool,
 }
 
 /// The turn in flight on a thread.
@@ -204,6 +222,8 @@ pub struct Engine {
     models: HashMap<String, Vec<ModelInfo>>,
     tx: Sender<Msg>,
     generation: u64,
+    /// Counts the sizes clients ask for, so the newest is known.
+    stamp: u64,
     /// Each thread's running agent interface, with the generation its output is tagged with.
     ptys: HashMap<String, (u64, Pty)>,
     /// What the user's terminal answers to the questions agents ask, from the last attach.
@@ -433,6 +453,7 @@ impl Engine {
             models: HashMap::new(),
             tx,
             generation: 0,
+            stamp: 0,
             ptys: HashMap::new(),
             answers: term::Answers::default(),
             tails: HashMap::new(),
@@ -1124,12 +1145,16 @@ impl Engine {
     pub fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::Connected { client, out } => {
-                self.clients.insert(client, Client { out, name: String::new(), subscribed: false, viewing: None, shows: HashSet::new() });
+                self.clients.insert(client, Client { out, name: String::new(), subscribed: false, viewing: None, shows: HashMap::new() });
                 self.refresh_git();
             }
             Msg::Disconnected { client } => {
-                self.clients.remove(&client);
+                let shown: Vec<String> = self.clients.remove(&client).map(|c| c.shows.into_keys().collect()).unwrap_or_default();
                 self.waiters.retain(|(c, _, _)| *c != client);
+                // A TUI that showed them is gone: a page that shows them takes their size.
+                for thread_id in shown {
+                    self.fit(&thread_id);
+                }
             }
             Msg::Request { client, request } => {
                 let id = request.id;
@@ -1426,15 +1451,42 @@ impl Engine {
         if answers != term::Answers::default() {
             self.answers = answers;
         }
-        match self.ptys.get_mut(thread_id) {
-            Some((_, pty)) => pty.resize(rows, cols),
-            None => self.start_pty(i, rows, cols)?,
+        if !self.ptys.contains_key(thread_id) {
+            // It starts at the size of the first client to show it.
+            self.start_pty(i, rows, cols)?;
         }
+        self.stamp += 1;
         if let Some(c) = self.clients.get_mut(&client) {
-            c.shows.insert(thread_id.to_string());
+            let asked = Asked { rows, cols, at: self.stamp, page: c.page() };
+            c.shows.insert(thread_id.to_string(), asked);
         }
+        self.fit(thread_id);
         let (_, pty) = &self.ptys[thread_id];
-        Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()) })
+        let (rows, cols) = pty.size();
+        Ok(Reply::Attached { thread_id: thread_id.to_string(), agent: pty.agent.clone(), replay: b64::encode(pty.log()), rows, cols })
+    }
+
+    /// Gives a thread's terminal the size its clients ask for (web-spec.md "One thread on two
+    /// screens"): while a TUI shows it, the size the TUI that asked last wants, since a TUI draws
+    /// the agent through an emulator of its pane's size; otherwise the size the page that asked
+    /// last wants. The pages that show it hear the size whenever it changes, and draw the agent
+    /// at that size.
+    fn fit(&mut self, thread_id: &str) {
+        let want = self.clients.values().filter_map(|c| c.shows.get(thread_id)).max_by_key(|a| (!a.page, a.at)).map(|a| (a.rows, a.cols));
+        let Some((rows, cols)) = want else { return };
+        let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
+        let before = pty.size();
+        pty.resize(rows, cols);
+        let (rows, cols) = pty.size();
+        if (rows, cols) == before {
+            return;
+        }
+        let frame = ServerFrame::PtySize { thread_id: thread_id.to_string(), rows, cols };
+        let pages: Vec<ClientId> =
+            self.clients.iter().filter(|(_, c)| c.page() && c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
+        for client in pages {
+            self.send(client, &frame);
+        }
     }
 
     fn pty_output(&mut self, thread_id: &str, generation: u64, data: &[u8]) {
@@ -1458,13 +1510,16 @@ impl Engine {
             self.poll_tail(thread_id);
         }
         let Some((_, pty)) = self.ptys.get_mut(thread_id) else { return };
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
-        if shown.is_empty() {
-            // Nobody's terminal is there to answer what the agent asks it: answer as it would.
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
+        if !shown.iter().any(|id| self.clients.get(id).is_some_and(|c| !c.page())) {
+            // No TUI's terminal is there to answer what the agent asks it: answer as it would.
+            // A page leaves its questions to the daemon, so they are answered once.
             let replies = term::replies(data, &self.answers, pty.cursor());
             if !replies.is_empty() {
                 pty.write(&replies);
             }
+        }
+        if shown.is_empty() {
             return;
         }
         let frame = ServerFrame::Pty { thread_id: thread_id.to_string(), data: b64::encode(data) };
@@ -1876,7 +1931,7 @@ impl Engine {
     }
 
     fn showing(&self, thread_id: &str) -> Vec<ClientId> {
-        self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect()
+        self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect()
     }
 
     fn pty_exit(&mut self, thread_id: &str, generation: u64) {
@@ -1928,7 +1983,7 @@ impl Engine {
         let frame = ServerFrame::PtyEnded { thread_id: thread_id.to_string(), code };
         // A task list closed on screen stays in the sidebar while its file is there.
         let own_program = self.idx(thread_id).is_ok_and(|i| !is_agent(&self.threads[i].active_agent) && !self.keeps_list(i));
-        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains(thread_id)).map(|(id, _)| *id).collect();
+        let shown: Vec<ClientId> = self.clients.iter().filter(|(_, c)| c.shows.contains_key(thread_id)).map(|(id, _)| *id).collect();
         for client in shown {
             self.send(client, &frame);
             if let Some(c) = self.clients.get_mut(&client) {
@@ -2178,7 +2233,7 @@ impl Engine {
         }
         let mut dirs: Vec<String> = self.projects.iter().map(|p| p.path.clone()).collect();
         for c in self.clients.values() {
-            for id in c.shows.iter().chain(c.viewing.iter()) {
+            for id in c.shows.keys().chain(c.viewing.iter()) {
                 if let Ok(i) = self.idx(id)
                     && !dirs.contains(&self.threads[i].cwd)
                 {
@@ -2458,15 +2513,19 @@ impl Engine {
                 return None;
             }
             Command::Resize { thread_id, rows, cols } => {
-                if let Some((_, pty)) = self.ptys.get_mut(&thread_id) {
-                    pty.resize(rows, cols);
+                self.stamp += 1;
+                let stamp = self.stamp;
+                if let Some(a) = self.clients.get_mut(&client).and_then(|c| c.shows.get_mut(&thread_id)) {
+                    (a.rows, a.cols, a.at) = (rows, cols, stamp);
                 }
+                self.fit(&thread_id);
                 return None;
             }
             Command::Leave { thread_id } => {
                 if let Some(c) = self.clients.get_mut(&client) {
                     c.shows.remove(&thread_id);
                 }
+                self.fit(&thread_id);
                 return None;
             }
             Command::Subagent { thread_id, subagent_id } => self.idx(&thread_id).map(|i| {

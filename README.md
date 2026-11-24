@@ -110,7 +110,7 @@ the agent.
 
 ## In a browser
 
-desl web shows the workspace in a browser, beside the terminal. `desl` starts it in the
+desl web shows the workspace in a browser, beside the terminal or instead of it. `desl` starts it in the
 background as it attaches, and `ctrl+space v` opens your browser on it. From a shell,
 `desl web --open` does the same, `desl web` prints the address, and `desl web --stop` ends it.
 
@@ -121,7 +121,8 @@ desl web
 
 The page lists every project's agent threads with the same marks and words as the sidebar,
 and shows the whole conversation of the thread you pick, with a search and a prompt box under
-it (queued while the agent works). Its right column holds the project's task list, live:
+it (queued while the agent works). **Screen** beside it draws the agent's own interface, as the
+terminal does, with your keys going to it. Its right column holds the project's task list, live:
 **Fix now** or **Work on it** puts an agent on a task in a worktree of its own, and **Merge**
 brings its branch in when the agent marks it ready. Agents add and update tasks with tools
 desl gives them, and park ideas you defer.
@@ -136,7 +137,7 @@ pushes opens your browser on it. The right column lists every open form, and
 `ctrl+space v` on a waiting thread goes straight to it. desl gives the tool to Claude Code,
 Codex and Copilot when it starts them; nothing to configure.
 
-The agent's own screen stays in the terminal. desl web listens on 127.0.0.1 only, and the key
+desl web listens on 127.0.0.1 only, and the key
 after `#t=` is new each time it starts. It runs on when desl closes, and after an install it
 starts again from the new binary on the same address; the agents keep working either way.
 

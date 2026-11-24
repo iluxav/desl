@@ -585,12 +585,12 @@ function cssValue(c, v) {
 }
 
 // What a preview never keeps: it would load, run or go somewhere. The frame runs no script
-// anyway (its sandbox allows no script, and no `'unsafe-inline'` in the CSP); this is the second lock.
+// anyway (its sandbox allows no script, and the CSP allows no inline script); this is the second lock.
 const DROP = 'script, iframe, frame, frameset, object, embed, applet, base, meta, link, noscript, portal';
 
 /**
  * Draws the agent's HTML in the preview's frame. Its `<style>` elements and `style` attributes
- * become a constructed stylesheet and CSSOM, since the page's CSP refuses inline style.
+ * become a constructed stylesheet and CSSOM, so nothing of the agent's is put in as markup.
  */
 function fill(frame, w) {
   const doc = frame.contentDocument;

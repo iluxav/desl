@@ -7,6 +7,11 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- desl web draws each agent's own screen again, as a third view beside Conversation and
+  Highlights: Claude Code, Codex or Copilot as in the terminal, with your keys, pastes and mouse
+  going to it, so its own questions are answered on the page. A thread that asks in its screen
+  opens it from the right column. While the TUI shows the same thread, the page draws at the
+  TUI's size. Shift+drag selects and ctrl+c copies; the browser keeps ctrl+w, ctrl+t and ctrl+n.
 - desl web's tab asks for your eyes: its title starts with how many things wait, `(2) desl ·
   …`, with an amber dot as its icon; in the background, something new waiting blinks the title
   and the dot until you come back to the tab.

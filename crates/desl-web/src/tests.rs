@@ -323,11 +323,16 @@ async fn a_rebinding_host_name_gets_nothing() {
 }
 
 #[test]
-fn the_page_serves_no_terminal_and_allows_nothing_inline() {
-    assert!(FILES.iter().all(|(path, _, _)| !path.starts_with("/vendor/")), "xterm.js is gone");
+fn the_page_serves_its_terminal_and_runs_no_inline_script() {
+    // xterm.js draws the agent's screen (docs/design/2026-11-24-web-alone.md).
+    for want in ["/screen.js", "/vendor/xterm.mjs", "/vendor/xterm.css", "/vendor/addon-fit.mjs"] {
+        assert!(FILES.iter().any(|(path, _, _)| *path == want), "{want} is served");
+    }
     let csp = csp(7428);
-    assert!(!csp.contains("unsafe-inline"), "{csp}");
     assert!(csp.starts_with("default-src 'self';"), "{csp}");
+    // xterm.js writes its sizes and colours into style elements; scripts stay the page's own.
+    assert!(csp.contains("style-src 'self' 'unsafe-inline';"), "{csp}");
+    assert!(!csp.contains("script-src"), "scripts fall back to 'self': {csp}");
 }
 
 #[test]

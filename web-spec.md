@@ -2,14 +2,14 @@
 
 Nov 21, 2026 · adopted Nov 21, 2026 · redirected to forms Nov 21, 2026
 
-`desl web` opens the workspace in a browser, beside the terminal. It is where an agent puts a
+`desl web` opens the workspace in a browser, beside the terminal or instead of it. It is where an agent puts a
 **form** in front of the user: a few widgets described in JSON (choices, a checklist, a document
 to edit, a look to tune), drawn inside the thread's conversation. The user works
 in it and presses Send, and the agent receives the result as data in its next prompt. The page
 also shows every project and agent thread, and each thread's whole conversation.
 
-It is a second client of the daemon, beside the TUI, and replaces nothing. The agent's own screen
-stays in the terminal.
+It is a second client of the daemon, beside the TUI. It draws each agent's own screen too, so
+the page can be used without the TUI open (see "Turned again" below).
 
 **Adopted 2026-11-21.** `SPEC.md` carries the changes listed below. Where this file and `SPEC.md`
 disagree, `SPEC.md` wins.
@@ -21,11 +21,16 @@ milestones beside it. An earlier version of this file planned the agent's screen
 questions with `desl ask`, approval cards, a live document and the task list on the page; the
 first three were built and removed, the last two moved to Later.
 
+**Turned again 2026-11-24**, the author's call: they want to use the page alone, without the TUI
+beside it. The agent's screen comes back as a third view of a thread, with the daemon's size
+rule, and the TUI's actions on threads and a pasted screenshot follow
+(`docs/design/2026-11-24-web-alone.md`).
+
 ## Changes made to SPEC.md
 
 | Section | Before | Now |
 | --- | --- | --- |
-| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user; the agent's screen stays in the terminal. It adds no feature the CLI lacks." |
+| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user, and each agent's own screen, so the page can be used without the TUI. It adds no feature the CLI lacks." |
 | Language and stack | "`tokio` … comes back only if remote clients in phase 3 need it." | `desl web` uses `tokio` and `axum`, in its own crate. The daemon and the TUI stay on plain threads and channels. |
 | Naming and vocabulary | No words for the new pieces | **form**: what a thread's agent puts in front of the user on the page, made of widgets, answered with Send. **waiting list**: every open form and every agent dialog in the workspace, in one place. |
 | IR events | — | `form` and `form_answer`; `highlight` (an agent's question and answer for the thread's Highlights, from desl's MCP tool `highlight`) |
@@ -83,8 +88,8 @@ terminal, and the TUI keeps them.
 - An activity view per thread from its events: tool calls, file changes, usage.
 - Remote access, with the pairing rules of phase 3.
 
-**Never:** accounts, sharing, hosted pages, analytics, columns or boards, the agent's screen, or
-a model call of desl's own.
+**Never:** accounts, sharing, hosted pages, analytics, columns or boards, or a model call of
+desl's own.
 
 ## Layout
 
@@ -106,9 +111,9 @@ a model call of desl's own.
 | --- | --- |
 | Left | Projects and their agent threads, one line each: the status mark, the title, the age, `⎇` for a worktree |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; Stop while it works |
-| Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`) |
-| Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line saying to answer it in the terminal |
-| Bottom | The prompt to the selected thread; a sentence from desl, for a few seconds |
+| Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
+| Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered |
+| Bottom | The prompt to the selected thread, under the Conversation and the Highlights (the Screen has the agent's own input; at phone width it shows under all three); a sentence from desl, for a few seconds |
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI
 does. The page has a light and a dark version, following the browser's setting. At phone width
@@ -179,9 +184,9 @@ is true now or what it recommends, so the user changes only what differs.
 nothing in it runs (no `allow-scripts`), and the page's CSP, which the frame inherits, refuses
 inline script and anything from outside. The page fills the frame through the DOM, and drops
 `script`, `iframe`, `object`, `embed`, `meta`, `base` and `link` elements, `on…` attributes and
-`javascript:` URLs as a second lock. Since the CSP refuses inline style, the agent's CSS and its
-`<style>` elements become a constructed stylesheet, and its `style` attributes are set through
-CSSOM. A link click stays in the frame. The controls are drawn by the page and set CSS variables
+`javascript:` URLs as a second lock. The agent's CSS and its `<style>` elements become a
+constructed stylesheet, and its `style` attributes are set through CSSOM, so none of its markup
+goes in as it came. A link click stays in the frame. The controls are drawn by the page and set CSS variables
 on the frame's root; a conversation redraw leaves the card on the page, so the frame never loads
 again mid-drag. **Wide** gives the card the waiting list's width too.
 
@@ -273,8 +278,9 @@ browser ──WebSocket──▶ desl web (tokio, axum) ─┘
   `form_answer`, `form_close`, `form_draft`. The bridge adds the token check, the origin check,
   one daemon connection per browser tab, the view and the conversation.
 - **One binary.** The page's files are compiled into the binary and served from memory. No
-  frontend build step and no vendored code: plain JavaScript modules, with the page's own
-  Markdown renderer, which makes elements and text nodes, never HTML. `cargo build` stays the only
+  frontend build step: plain JavaScript modules, with the page's own Markdown renderer, which
+  makes elements and text nodes, never HTML; the one vendored code is xterm.js (see "One thread on
+  two screens"). `cargo build` stays the only
   build.
 - **tokio stays in its own crate,** `crates/desl-web`, and its runtime starts only when `desl web`
   runs. `desl mcp` is plain blocking code in the `desl` binary.
@@ -285,6 +291,20 @@ browser ──WebSocket──▶ desl web (tokio, axum) ─┘
   (`exec`), handing it the key in `DESL_WEB_KEY`. On connecting, the bridge says which build of
   the page it serves (a hash of the page's files), and a page loaded from another build loads
   itself again.
+
+**One thread on two screens.** The page draws an agent's screen with xterm.js 6.0.0 and its fit
+addon, vendored in `page/vendor` with their licences and the npm integrity each was checked
+against; the one code on the page that is not its own. The
+page attaches while a thread's Screen view shows, as the TUI does: the replay drawn part by part
+at the size each part was drawn at, then every byte as it comes, and it leaves when the view
+changes. While a TUI shows the same thread, the TUI's size wins, since the TUI draws the agent
+through an emulator of its pane's size; the page hears `pty_size` and draws at it, and the pane
+scrolls when the terminal is larger than it. Once no TUI shows the thread, the page that asked
+last sets the size. The daemon answers the agent's questions to its terminal whenever no TUI
+shows the thread, and the page drops the answers xterm.js gives by itself, so the agent hears
+each answer once (`docs/protocol.md`). A selection is copied with `ctrl+c` or `ctrl+shift+c`
+(shift+drag selects where the agent takes the mouse); without one, `ctrl+c` goes to the agent.
+The browser keeps `ctrl+w`, `ctrl+t` and `ctrl+n` in a tab, and the Screen says so.
 
 **Cost:** the stripped release binary grew from 8.2 MB to 10.1 MB with xterm.js in milestone 1;
 without it, 9.8 MB.
@@ -331,7 +351,7 @@ does the same; `desl web` while one runs says where it is; `desl web --stop` end
   `desl_proto::view::Sidebar` words it, every open form (`form_id`, `thread_id`, `title`,
   `project`, `age`), oldest first, and `screen`, the waiting threads whose agent asks in its own
   screen (none open form, or its screen asks beside one: the thread's `screen_asks`), which the
-  waiting column lists as answered in the terminal. Sent when the workspace changes, and every 15 seconds when an age moved on; never twice
+  waiting column lists, each line opening that thread's screen. Sent when the workspace changes, and every 15 seconds when an age moved on; never twice
   the same.
 - `{"type": "bridge", "state": "ready", "build"}` on connecting; `"no_daemon"` or
   `"daemon_gone"` when the daemon cannot be reached; the page connects again, with growing
@@ -372,7 +392,8 @@ the agents. Every rule below follows from that.
    site from driving the agents, including through DNS rebinding.
 4. **Agent text is never HTML.** Forms, replies and titles reach the page only as text nodes or
    through the page's Markdown renderer, which makes elements and never HTML. The
-   Content-Security-Policy is `default-src 'self'` with nothing inline, styles included. The
+   Content-Security-Policy is `default-src 'self'`, with no inline script; inline styles are
+   allowed, since xterm.js sizes and colours the agent's screen through style elements. The
    `preview` widget shows agent HTML and CSS in a frame sandboxed without scripts, filled by the
    page with what could run or load removed; that is the one place agent markup is drawn.
    Pictures reach the page as `data:` URLs, never as files it can name.
@@ -394,6 +415,7 @@ the agents. Every rule below follows from that.
 | 4 | Diff review | Dropped by the author on 2026-11-22: changes are reviewed in the editor or in git |
 | 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
 | 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |
+| 7 | The screen back | Done 2026-11-24: Conversation, Highlights and Screen; xterm.js and the daemon's size rule restored from 4798f4a; the waiting column's line for a thread that asks in its screen opens that screen. Checked live in an isolated workspace: Claude Code drawn on the page, typing reached its input, the screen came back with what was typed after a turn through the Conversation, and at 390 px the terminal fit with the prompt box under it |
 
 Each milestone follows the definition of done in `SPEC.md`: spec match, tests, help text, error
 paths tried by hand, and budgets.
@@ -419,7 +441,8 @@ description teaches the rest: an agent needs nothing else to use it.
 - `tokio` and `axum` are used in `desl web` only. The daemon, the TUI and `desl mcp` stay on
   threads.
 - The page's files are compiled into the single binary, with no frontend build step.
-- The page does not show the agent's screen (the author's call, 2026-11-21).
+- The page shows the agent's screen, as a third view of a thread (the author's call, 2026-11-24,
+  turning around the call of 2026-11-21 that it should not).
 - Forms: desl's own widget set, as JSON, drawn by the page's own code; not A2UI, not agent HTML
   (the author's call, 2026-11-21). The tool returns at once and the answer arrives as the next
   prompt (the author's call). Forms show inside the conversation (the author's call). The agents'

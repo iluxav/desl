@@ -379,6 +379,13 @@ pub enum ServerFrame {
         thread_id: String,
         data: String,
     },
+    /// The size of a shown thread's agent's terminal changed: sent to `desl web`'s pages, which
+    /// draw the agent at that size. A TUI sizes the terminal itself and never gets it.
+    PtySize {
+        thread_id: String,
+        rows: u16,
+        cols: u16,
+    },
     /// The shown thread's agent quit. `code` is its exit status when it had one.
     PtyEnded {
         thread_id: String,
@@ -433,10 +440,16 @@ pub enum Reply {
     },
     /// The answer to `attach`: everything the agent has drawn so far (base64), to put on the
     /// screen before the `pty` frames that follow; `agent` is who is drawing it.
+    /// `rows` and `cols` are the size the agent's terminal has now, which may not be the size
+    /// asked for: a TUI's size wins over a page's (web-spec.md "One thread on two screens").
     Attached {
         thread_id: String,
         agent: String,
         replay: String,
+        #[serde(default)]
+        rows: u16,
+        #[serde(default)]
+        cols: u16,
     },
     /// `queued` when the agent was busy and the prompt waits its turn.
     Sent {

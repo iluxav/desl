@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="light dark">
 <title>desl</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="/vendor/xterm.css">
 <link rel="stylesheet" href="/app.css">
 <script type="module" src="/app.js"></script>
 </head>
@@ -29,13 +30,22 @@
           <div class="seg conv-view" role="group" aria-label="What the thread shows">
             <button id="view-conv" type="button" class="on" aria-pressed="true">Conversation</button>
             <button id="view-high" type="button" aria-pressed="false" title="The thread's story: each question and its answer, in two sentences">Highlights</button>
+            <button id="view-screen" type="button" aria-pressed="false" title="The agent's own screen: the keys go to it">Screen</button>
           </div>
+          <span id="screen-hint" class="screen-hint" hidden title="Shift+drag selects where the agent takes the mouse; ctrl+c copies a selection. The browser keeps ctrl+w, ctrl+t and ctrl+n for itself.">Keys go to the agent · the browser keeps ctrl+w, ctrl+t, ctrl+n</span>
           <input id="conv-find" type="search" aria-label="Find in the conversation" placeholder="Find in the conversation">
           <span id="conv-count" class="conv-count"></span>
           <label id="conv-toggle" class="conv-toggle"><input id="conv-tools" type="checkbox" checked> Tool calls</label>
         </div>
         <div id="conv" class="conv"></div>
         <div id="highlights" class="conv highlights" aria-label="Highlights" hidden></div>
+        <div id="screen-pane" class="screen-pane" hidden>
+          <div id="screen" class="screen" aria-label="The agent's own screen"></div>
+          <div id="screen-note" class="screen-note" role="status" hidden>
+            <p id="screen-note-text"></p>
+            <button id="screen-again" type="button" class="secondary" hidden>Start it again</button>
+          </div>
+        </div>
       </div>
       <section id="diffview" class="diffview" aria-label="A task's changes" hidden>
         <div class="diff-top"><span id="diff-title" class="diff-title"></span><button id="diff-close" type="button" class="secondary">Close</button></div>

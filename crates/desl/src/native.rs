@@ -406,7 +406,7 @@ fn arrow(raw: &[u8]) -> Option<SKey> {
 }
 
 /// The user's shell by name: `bash`, `zsh`.
-fn shell_name() -> String {
+pub(crate) fn shell_name() -> String {
     let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "bash".into());
     std::path::Path::new(&shell).file_name().map_or(shell.clone(), |n| n.to_string_lossy().into_owned())
 }

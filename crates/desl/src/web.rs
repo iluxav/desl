@@ -156,17 +156,17 @@ pub fn stop(paths: &Paths) -> Result<bool> {
     Ok(true)
 }
 
-/// The thread the page opens on when `prefix v` is pressed on `on`: that thread when the page
-/// shows it (an agent's), else its project's agent thread used last, so the page lands on the
-/// project the user is in. None when that project has no agent thread.
+/// The thread the page opens on when `prefix v` is pressed on `on`: that thread when it is an
+/// agent's, else its project's agent thread used last, so the page lands on the project the
+/// user is in with a conversation to show. None when that project has no agent thread.
 pub fn page_thread(threads: &[desl_ir::Thread], on: &str) -> Option<String> {
     let here = threads.iter().find(|t| t.id == on)?;
-    if desl_proto::view::on_page(here) {
+    if desl_proto::view::talks(here) {
         return Some(here.id.clone());
     }
     threads
         .iter()
-        .filter(|t| t.project_id == here.project_id && desl_proto::view::on_page(t))
+        .filter(|t| t.project_id == here.project_id && desl_proto::view::talks(t))
         .max_by_key(|t| t.updated_at)
         .map(|t| t.id.clone())
 }

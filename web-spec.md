@@ -30,7 +30,7 @@ rule, and the TUI's actions on threads and a pasted screenshot follow
 
 | Section | Before | Now |
 | --- | --- | --- |
-| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their agent threads and each thread's conversation, where an agent puts forms in front of the user, and each agent's own screen, so the page can be used without the TUI. It adds no feature the CLI lacks." |
+| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their threads and each thread's conversation, where an agent puts forms in front of the user, and each agent's own screen and the actions on threads, so the page can be used without the TUI. It adds no feature the CLI lacks." |
 | Language and stack | "`tokio` … comes back only if remote clients in phase 3 need it." | `desl web` uses `tokio` and `axum`, in its own crate. The daemon and the TUI stay on plain threads and channels. |
 | Naming and vocabulary | No words for the new pieces | **form**: what a thread's agent puts in front of the user on the page, made of widgets, answered with Send. **waiting list**: every open form and every agent dialog in the workspace, in one place. |
 | IR events | — | `form` and `form_answer`; `highlight` (an agent's question and answer for the thread's Highlights, from desl's MCP tool `highlight`) |
@@ -75,8 +75,16 @@ call). Forms are for what the terminal does badly.
    `select` (milestone 2); `document` (3); `preview`, `table`, `images` (5). The `diff` widget
    (4) was dropped.
 
-Shell and file-manager threads are left out of the page. The browser adds nothing to a
-terminal, and the TUI keeps them.
+Shell and file-manager threads are listed on the page too, since 2026-11-24, so it can stand
+alone: they open on their Screen, and have no conversation or highlights.
+
+**Without the TUI** (`docs/design/2026-11-24-web-alone.md`)
+
+1. **The screen:** each agent's own interface as a third view of its thread (milestone 7).
+2. **The thread's actions:** a new thread in a project, a directory opened as a project, and on
+   the thread on screen switch, restart, fork, rename and close, with the prefix key as in the
+   TUI (milestone 8; see "Keys on the page").
+3. **A pasted screenshot** reaches the agent (milestone 9).
 
 **Later**
 
@@ -109,8 +117,8 @@ desl's own.
 
 | Area | What it holds |
 | --- | --- |
-| Left | Projects and their agent threads, one line each: the status mark, the title, the age, `⎇` for a worktree |
-| Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; Stop while it works |
+| Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it |
+| Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; `⋯`, the thread's actions; Stop while it works |
 | Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
 | Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered |
 | Bottom | The prompt to the selected thread, under the Conversation and the Highlights (the Screen has the agent's own input; at phone width it shows under all three); a sentence from desl, for a few seconds |
@@ -309,8 +317,8 @@ The browser keeps `ctrl+w`, `ctrl+t` and `ctrl+n` in a tab, and the Screen says 
 **Cost:** the stripped release binary grew from 8.2 MB to 10.1 MB with xterm.js in milestone 1;
 without it, 9.8 MB.
 
-**Tasks** (docs/design/2026-11-22-tasks-first-class.md). The left column lists agent threads
-only. The right column shows Waiting, then the project's task list, live as the daemon sends
+**Tasks** (docs/design/2026-11-22-tasks-first-class.md). The left column leaves the task list's
+thread out. The right column shows Waiting, then the project's task list, live as the daemon sends
 `tasks` changes:
 - **Filters:**
   - the project (the selected thread's by default, one by name, or all, grouped);
@@ -346,14 +354,28 @@ in the background when none runs, in a session of its own. Over SSH, or with no 
 (`open` on macOS), the address goes to the clipboard instead. From a shell, `desl web --open`
 does the same; `desl web` while one runs says where it is; `desl web --stop` ends it.
 
+**Keys on the page.** The prefix key is the one in `config.toml`, which desl web tells the
+page; the page reads it, and the key after it, before the agent's screen or any field sees them.
+After it: `c` a new thread in this project, `o` open a directory, `s` switch, `r` restart, `f`
+fork, `,` rename, `x` close (after a `y`), `n`/`p` the next and the previous thread, `1`…`9` a
+thread by its place in the list, `l` the thread shown before, `[` the Conversation or back to the
+Screen, `?` the keys in a list that runs the one picked, the prefix again to send it to the agent,
+`esc` nothing. `alt+j`/`alt+k` move between threads. A header pill says the prefix was pressed.
+Menus take `j`/`k` or the arrows, `enter`, `1`…`9` and `esc`, and give the keys back to the
+agent when they close. Opening a directory lists what `prefix o` lists (the projects, zoxide's
+directories, git repositories under home, the folders beside them), filtered as typed; a typed
+path opens as it is; then a menu of what to start there. A switch, a fork and a restart are for
+agents: a shell or a file manager offers only rename and close.
+
 **The bridge's own messages.** Besides the daemon's frames, the bridge sends the page:
-- `{"type": "view", "view": {waiting, projects, forms, screen}}`: the sidebar as
-  `desl_proto::view::Sidebar` words it, every open form (`form_id`, `thread_id`, `title`,
+- `{"type": "view", "view": {waiting, projects, forms, screen}, "file_manager"}`: the sidebar as
+  `desl_proto::view::Sidebar` words it, each project with its `path`, every open form (`form_id`, `thread_id`, `title`,
   `project`, `age`), oldest first, and `screen`, the waiting threads whose agent asks in its own
   screen (none open form, or its screen asks beside one: the thread's `screen_asks`), which the
   waiting column lists, each line opening that thread's screen. Sent when the workspace changes, and every 15 seconds when an age moved on; never twice
-  the same.
-- `{"type": "bridge", "state": "ready", "build"}` on connecting; `"no_daemon"` or
+  the same. `file_manager` is the user's file manager when the daemon found one.
+- `{"type": "bridge", "state": "ready", "build", "prefix", "shell"}` on connecting, with the
+  prefix key and the user's shell as the desl that started desl web reads them; `"no_daemon"` or
   `"daemon_gone"` when the daemon cannot be reached; the page connects again, with growing
   waits up to 5 seconds.
 - A refused request is answered as the daemon would, and never reaches the daemon: `shutdown`,
@@ -364,6 +386,8 @@ does the same; `desl web` while one runs says where it is; `desl web --stop` end
   (`user`, `assistant`, `tool`, `rule`, `brief`, `note`, `error`, `form` with its id, title and
   how it closed). The page asks again when an event is added to that thread: at once for a form
   shown or closed, within 600 ms for the rest.
+- `{"type": "dirs", "id", "dirs"}`, the answer to the page's `{"type": "dirs", "id"}`: every
+  directory `prefix o` lists, best first, each `{path, shown, note}`, gathered off the runtime.
 
 The bridge says `hello` as client `web` and subscribes without a directory; request ids from 2^52
 up are its own. The page sends the key as `{"token": "…"}`; a wrong or late key closes the socket
@@ -416,6 +440,7 @@ the agents. Every rule below follows from that.
 | 5 | Preview, table, images | Done 2026-11-22: the preview in a frame without scripts, with range, colour and select controls; a table whose answer is the changed cells; pictures of the project checked inside the thread's directory on push and on each read. A choice starts on a `value`. Checked live: a preview's `<script>`, `onerror` and `javascript:` link ran nothing and its outside image was refused; a redraw kept the frame and the drag; a picture outside the project, or a link to one, was refused |
 | 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |
 | 7 | The screen back | Done 2026-11-24: Conversation, Highlights and Screen; xterm.js and the daemon's size rule restored from 4798f4a; the waiting column's line for a thread that asks in its screen opens that screen. Checked live in an isolated workspace: Claude Code drawn on the page, typing reached its input, the screen came back with what was typed after a turn through the Conversation, and at 390 px the terminal fit with the prompt box under it |
+| 8 | The thread's actions | Done 2026-11-24: shells and file managers in the left column, on their Screen; `+` on a project, Open a directory, and the header's `⋯` (switch, restart, fork, rename, close); the prefix key and `alt+j`/`alt+k` on the page. Checked live: `ctrl+space ?` listed the keys without typing into Claude, `ctrl+space c` opened a shell that ran a command typed on the page, rename and close (after `y`) worked from `⋯`, `ctrl+space o` with a typed path made a project and a shell in it, the thread moves went where they should, and a restart redrew Claude fresh |
 
 Each milestone follows the definition of done in `SPEC.md`: spec match, tests, help text, error
 paths tried by hand, and budgets.

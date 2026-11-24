@@ -12,6 +12,12 @@ All notable changes to desl are recorded here. The format follows
   going to it, so its own questions are answered on the page. A thread that asks in its screen
   opens it from the right column. While the TUI shows the same thread, the page draws at the
   TUI's size. Shift+drag selects and ctrl+c copies; the browser keeps ctrl+w, ctrl+t and ctrl+n.
+- desl web without the TUI: shells and file managers are in its left column too, and the page
+  does to threads what the TUI does. `+` on a project opens a new thread in it (an agent, your
+  shell, your file manager), **Open a directory** finds one as `prefix o` does, and `⋯` on a
+  thread switches, restarts, forks, renames or closes it. Your prefix key works on the page:
+  `ctrl+space c`, `o`, `s`, `r`, `f`, `,`, `x`, `n`, `p`, `1`…`9`, `l`, `[` and `?` for the list,
+  with `alt+j`/`alt+k` between threads.
 - desl web's tab asks for your eyes: its title starts with how many things wait, `(2) desl ·
   …`, with an amber dot as its icon; in the background, something new waiting blinks the title
   and the dot until you come back to the tab.

@@ -6,6 +6,7 @@
 
 import { card } from '/forms.js';
 import * as screen from '/screen.js';
+import * as pop from '/popover.js';
 import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
 import { attend, setupAttention } from '/attention.js';
 
@@ -34,6 +35,18 @@ const state = {
   startWith: Object.assign({ agent: '', place: 'worktree' }, readJson('desl-web-start')),
   /** The task column's filters: project (`auto` follows the selected thread), status, more, find. */
   tf: Object.assign({ project: 'auto', status: 'open', more: '', find: '' }, readJson('desl-web-tasks')),
+  /** The prefix key as config.toml sets it, the user's shell and file manager (desl web says). */
+  prefix: 'ctrl+space',
+  shell: 'shell',
+  fileManager: null,
+  /** The thread shown before the one selected, for `prefix l`. */
+  previous: null,
+  /** A thread just made here, selected before the view lists it. */
+  awaiting: null,
+  /** The prefix was pressed: the next key is the page's. */
+  armed: false,
+  /** The directory lists asked for, by id. */
+  dirs: new Map(),
 };
 
 function readJson(name) {
@@ -88,6 +101,8 @@ const MARKS = {
     ['path', { d: 'M11 11h2' }],
   ],
   tasks: [['rect', { x: '4', y: '4', width: '16', height: '16', rx: '3' }], ['path', { d: 'M8 12.5l3 3 5-6' }]],
+  shell: [['path', { d: 'M4 17l5-5-5-5M11 19h9' }]],
+  files: [['path', { d: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z' }]],
   other: [['path', { d: 'M12 3l9 9-9 9-9-9z' }]],
 };
 
@@ -155,6 +170,7 @@ function handle(msg) {
       // For the budget "page load to a usable thread list" (web-spec.md "Budgets").
       if (!state.view) performance.mark('desl-first-view');
       state.view = msg.view;
+      state.fileManager = msg.file_manager || null;
       state.retry = 500;
       askTasks();
       if ($('link').dataset.state !== 'connected') setLink('connected');
@@ -166,6 +182,8 @@ function handle(msg) {
       if (msg.state === 'ready') {
         state.tasksAsked.clear();
         askAgents();
+        if (msg.prefix) state.prefix = msg.prefix;
+        if (msg.shell) state.shell = msg.shell;
       }
       if (msg.state === 'ready' && msg.build) {
         if (state.build && state.build !== msg.build) location.reload();
@@ -194,6 +212,12 @@ function handle(msg) {
     case 'conversation':
       conversationArrived(msg);
       break;
+    case 'dirs': {
+      const done = state.dirs.get(msg.id);
+      state.dirs.delete(msg.id);
+      if (done) done(msg.dirs || []);
+      break;
+    }
     case 'event':
       if (msg.change && msg.change.what === 'tasks') {
         state.tasks.set(msg.change.project_id, msg.change.tasks);
@@ -240,6 +264,9 @@ function threads() {
 function current() {
   const all = threads();
   let found = all.find(({ t }) => t.id === state.selected);
+  if (found && state.awaiting === found.t.id) state.awaiting = null;
+  // A thread made here is selected before the view lists it.
+  if (!found && state.awaiting && state.awaiting === state.selected) return null;
   if (!found && all.length) {
     const waiting = state.view.waiting[0];
     found = all.find(({ t }) => t.id === waiting) || all[0];
@@ -249,6 +276,7 @@ function current() {
 }
 
 function select(id) {
+  if (state.selected && state.selected !== id) state.previous = state.selected;
   state.selected = id;
   write(SELECTED, id);
   notice('');
@@ -268,11 +296,21 @@ function render() {
   drawTasks();
   drawChrome(cur);
   // The last entry says "working" while the agent is.
-  if (conv.view === 'highlights') drawHighlights(false);
+  if (shownView() !== conv.applied) applyView();
+  else viewButtons(cur);
+  if (shownView() === 'highlights') drawHighlights(false);
   const live = cur && $('link').dataset.state === 'connected';
-  if (live && cur.t.id !== conv.thread) readConversation(cur.t.id);
-  if (live && conv.view === 'screen' && cur.t.id !== screen.shown()) showScreen(cur.t.id);
+  if (live && talks(cur.t) && cur.t.id !== conv.thread) readConversation(cur.t.id);
+  if (live && shownView() === 'screen' && cur.t.id !== screen.shown()) showScreen(cur.t.id);
+  // On the Screen the keys belong to the agent: when nothing holds them (a redraw took the
+  // button that had them), they go back to it. Not at phone width, where that opens a keyboard.
+  if (shownView() === 'screen' && !pop.isOpen() && document.activeElement === document.body && !NARROW.matches) screen.focus();
   composer();
+}
+
+/** A thread with a conversation: an agent's, not a shell's or a file manager's. */
+function talks(t) {
+  return !['shell', 'files', 'tasks'].includes(t.agent);
 }
 
 function drawSide(cur) {
@@ -282,8 +320,13 @@ function drawSide(cur) {
     nav.append(el('p', 'empty', 'Reading the workspace…'));
     return;
   }
+  const open = el('button', 'side-open', 'Open a directory');
+  open.type = 'button';
+  open.title = `Open a directory as a project (${state.prefix} o)`;
+  open.addEventListener('click', openDirectory);
+  nav.append(open);
   if (!state.view.projects.length) {
-    nav.append(el('p', 'empty', 'No agent threads yet. Start one in the terminal with ctrl+space c.'));
+    nav.append(el('p', 'empty', 'No threads yet. Open a directory to start one.'));
   }
   for (const p of state.view.projects) {
     const section = el('section', 'project');
@@ -293,6 +336,12 @@ function drawSide(cur) {
     if (p.branch) row.append(el('span', 'branch', `⎇ ${p.branch}`));
     if (p.dirty > 0) row.append(el('span', 'dirty', `±${p.dirty}`));
     if (p.parent) row.append(el('span', 'parent', p.parent));
+    const add = el('button', 'project-add', '+');
+    add.type = 'button';
+    add.title = `New thread in ${p.name} (${state.prefix} c)`;
+    add.setAttribute('aria-label', `New thread in ${p.name}`);
+    add.addEventListener('click', () => newThread(p, add));
+    row.append(add);
     section.append(row);
     for (const t of p.threads) {
       const b = el('button', 'row');
@@ -317,7 +366,6 @@ function drawSide(cur) {
     }
     nav.append(section);
   }
-  nav.append(el('p', 'side-note', 'Shells and file managers stay in the terminal.'));
 }
 
 function drawHead(cur) {
@@ -340,6 +388,12 @@ function drawHead(cur) {
   right.append(el('span', `status-${t.status}`, `${t.glyph} ${t.word}`));
   if (!h.yolo) right.append(el('span', 'mode', h.mode));
   right.append(el('span', 'tid', t.id));
+  const more = el('button', 'head-actions', '⋯');
+  more.type = 'button';
+  more.title = 'Switch, restart, fork, rename or close this thread';
+  more.setAttribute('aria-label', 'Thread actions');
+  more.addEventListener('click', () => actions(more));
+  right.append(more);
   // Ends the turn, as esc does in the agent's own screen; there while there is a turn to end.
   if (t.status === 'working' && $('link').dataset.state === 'connected') {
     const b = el('button', 'stop', 'Stop');
@@ -422,7 +476,7 @@ function drawChrome(cur) {
 const NARROW = window.matchMedia('(max-width: 899px)');
 
 function composer() {
-  const form = conv.view !== 'screen' || NARROW.matches;
+  const form = shownView() !== 'screen' || NARROW.matches;
   $('prompt-form').hidden = !form;
   $('composer').hidden = !form && !$('notice').textContent;
 }
@@ -450,11 +504,11 @@ function screenNote(text, again) {
 /** Thread `id`'s screen, once the pane has its size; the keys go to it. */
 function showScreen(id) {
   requestAnimationFrame(() => {
-    if (conv.view !== 'screen' || state.selected !== id) return;
+    if (shownView() !== 'screen' || state.selected !== id) return;
     screen.attach(id).then(() => {
-      if (conv.view === 'screen' && document.activeElement === document.body) screen.focus();
+      if (shownView() === 'screen' && !pop.isOpen() && document.activeElement === document.body) screen.focus();
     });
-    screen.focus();
+    if (!pop.isOpen()) screen.focus();
   });
 }
 
@@ -472,10 +526,14 @@ function setupScreenPane() {
     keys: () => false,
     who: () => {
       const cur = current();
-      return cur ? cur.t.agent : 'The agent';
+      return cur ? (talks(cur.t) ? agentName(cur.t.agent) : cur.t.title) : 'The agent';
     },
   });
   $('screen-again').addEventListener('click', () => screen.again());
+  // A box over the page that closes gives the keys back to the agent when it is on screen.
+  pop.onLost(() => {
+    if (shownView() === 'screen') screen.focus();
+  });
   NARROW.addEventListener('change', composer);
 }
 
@@ -487,6 +545,8 @@ const conv = {
   items: [],
   /** Its story in short questions and answers (docs/design/2026-11-22-highlights.md). */
   highlights: [],
+  /** The view shown now, which is the Screen for a shell whatever `view` says. */
+  applied: null,
   /** `conversation`, `highlights` or `screen`, as the user left it. */
   view: ['highlights', 'screen'].includes(readJson('desl-web-view').view) ? readJson('desl-web-view').view : 'conversation',
   /** The request in flight, by its id. */
@@ -576,8 +636,35 @@ function openAt(event) {
 
 const VIEWS = { conversation: 'view-conv', highlights: 'view-high', screen: 'view-screen' };
 
+/** A shell or a file manager has no conversation: only its Screen can be picked. */
+function viewButtons(cur) {
+  const quiet = Boolean(cur) && !talks(cur.t);
+  $('view-conv').disabled = quiet;
+  $('view-high').disabled = quiet;
+}
+
+/** The view the user picked, or the Screen for a thread with no conversation. */
+function shownView() {
+  const cur = current();
+  return cur && !talks(cur.t) ? 'screen' : conv.view;
+}
+
 function setView(view) {
   conv.view = view;
+  try {
+    localStorage.setItem('desl-web-view', JSON.stringify({ view }));
+  } catch (e) {
+    // The choice is only for this visit, then.
+  }
+  applyView();
+}
+
+/** Shows the view in effect: the panes, the tools over them, and the screen attached or not. */
+function applyView() {
+  const view = shownView();
+  conv.applied = view;
+  const cur = current();
+  viewButtons(cur);
   const high = view === 'highlights';
   const term = view === 'screen';
   $('conv').hidden = view !== 'conversation';
@@ -589,15 +676,9 @@ function setView(view) {
     $(id).classList.toggle('on', v === view);
     $(id).setAttribute('aria-pressed', String(v === view));
   }
-  try {
-    localStorage.setItem('desl-web-view', JSON.stringify({ view }));
-  } catch (e) {
-    // The choice is only for this visit, then.
-  }
   if (high) drawHighlights(true);
   if (term) {
     screen.refit();
-    const cur = current();
     if (cur && $('link').dataset.state === 'connected') showScreen(cur.t.id);
   } else {
     // Out of sight, the agent's terminal is sized by whoever else shows it.
@@ -1265,6 +1346,254 @@ async function stop() {
   notice(reply.error ? reply.error : `Asked ${cur.t.title} to stop its turn.`, Boolean(reply.error));
 }
 
+// ---- actions on threads (docs/design/2026-11-24-web-alone.md) ----------------------------------
+
+/** The menu rows for a new thread in `cwd`: the agents, the shell, the file manager. */
+function newRows(cwd, beside) {
+  const rows = state.agents.map((id) => ({ label: agentName(id), note: 'agent', run: () => create(cwd, id, beside) }));
+  rows.push({ label: state.shell, note: 'shell', run: () => create(cwd, 'shell', beside) });
+  if (state.fileManager) rows.push({ label: state.fileManager, note: 'files', run: () => create(cwd, 'files', beside) });
+  return rows;
+}
+
+/** A new thread in project `p`: from a shell of it, where that shell is now, as in the TUI. */
+function newThread(p, anchor) {
+  const cur = current();
+  const beside = cur && cur.p.id === p.id ? cur.t.id : null;
+  pop.menu({ title: `New thread in ${p.name}`, rows: newRows(p.path, beside), anchor });
+}
+
+async function create(cwd, agent, beside) {
+  const reply = await request('new_thread', { cwd, agent, prompt: null, beside, worktree: false });
+  if (reply.error) {
+    notice(reply.error, true);
+    return;
+  }
+  const id = reply.ok && reply.ok.thread_id;
+  if (!id) return;
+  state.awaiting = id;
+  select(id);
+  notice(`Opened ${id}.`);
+}
+
+/** The directories `prefix o` lists, from desl web. */
+function dirs() {
+  return new Promise((resolve) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+      resolve([]);
+      return;
+    }
+    const id = state.nextId++;
+    state.dirs.set(id, resolve);
+    state.ws.send(JSON.stringify({ type: 'dirs', id }));
+  });
+}
+
+/** Opens a directory as a project: the finder, then what to start there. */
+function openDirectory() {
+  pop.finder({
+    title: 'Open a directory',
+    dirs: dirs(),
+    pick: (path) => {
+      const name = path.replace(/\/+$/, '').split('/').pop() || path;
+      pop.menu({ title: `Start in ${name}`, rows: newRows(path.replace(/(.)\/+$/, '$1'), null) });
+    },
+  });
+}
+
+/** The thread's own menu: what the TUI's prefix keys do to it. */
+function actions(anchor) {
+  const cur = current();
+  if (!cur) return;
+  const k = (key) => `${state.prefix} ${key}`;
+  const rows = [];
+  if (talks(cur.t)) {
+    rows.push({ label: 'Switch agent…', note: k('s'), run: () => switchMenu(cur, anchor) });
+    rows.push({ label: 'Restart', note: k('r'), run: () => restart(cur) });
+    rows.push({ label: 'Fork…', note: k('f'), run: () => forkMenu(cur, anchor) });
+  }
+  rows.push({ label: 'Rename…', note: k(','), run: () => rename(cur, anchor) });
+  rows.push({ label: 'Close…', note: k('x'), run: () => closeThread(cur, anchor) });
+  pop.menu({ title: cur.t.title, rows, anchor });
+}
+
+function noConversation(cur) {
+  notice(`${cur.t.title} is a ${cur.t.agent === 'files' ? 'file manager' : 'shell'}: it has no conversation to switch, fork or restart.`, true);
+}
+
+function switchMenu(cur, anchor) {
+  if (!talks(cur.t)) return noConversation(cur);
+  const rows = state.agents.map((id) => ({
+    label: agentName(id),
+    note: id === cur.t.agent ? '✓ current' : 'agent',
+    mark: id === cur.t.agent,
+    disabled: id === cur.t.agent,
+    run: async () => {
+      notice(`Switching ${cur.t.title} to ${agentName(id)}…`);
+      const reply = await request('switch', { thread_id: cur.t.id, agent: id });
+      if (reply.error) notice(reply.error, true);
+    },
+  }));
+  pop.menu({ title: `Switch ${cur.t.title} to`, rows, anchor });
+}
+
+function forkMenu(cur, anchor) {
+  if (!talks(cur.t)) return noConversation(cur);
+  const rows = state.agents.map((id) => ({
+    label: agentName(id),
+    note: id === cur.t.agent ? '✓ this thread’s' : 'agent',
+    mark: id === cur.t.agent,
+    run: async () => {
+      const reply = await request('fork', { thread_id: cur.t.id, agent: id, at: null, worktree: false });
+      if (reply.error) {
+        notice(reply.error, true);
+        return;
+      }
+      const made = reply.ok && reply.ok.thread_id;
+      if (made) {
+        state.awaiting = made;
+        select(made);
+        notice(`Forked ${cur.t.title} to ${made} on ${agentName(id)}.`);
+      }
+    },
+  }));
+  pop.menu({ title: `Fork ${cur.t.title} to`, rows, anchor });
+}
+
+async function restart(cur) {
+  if (!talks(cur.t)) return noConversation(cur);
+  const reply = await request('restart', { thread_id: cur.t.id });
+  notice(reply.error || `Restarting ${agentName(cur.t.agent)} on the same conversation.`, Boolean(reply.error));
+}
+
+function rename(cur, anchor) {
+  pop.field({
+    title: `Rename ${cur.t.id}`,
+    value: cur.t.title,
+    anchor,
+    save: async (name) => {
+      const reply = await request('rename', { thread_id: cur.t.id, name });
+      if (reply.error) notice(reply.error, true);
+    },
+  });
+}
+
+function closeThread(cur, anchor) {
+  const what = talks(cur.t) ? `Its agent ends; ${agentName(cur.t.agent)}'s own history keeps the conversation.` : `The ${cur.t.agent === 'files' ? 'file manager' : 'shell'} ends.`;
+  pop.confirm({
+    title: `Close ${cur.t.title}?`,
+    text: `${what} It leaves the list.`,
+    yesLabel: 'Close',
+    anchor,
+    yes: async () => {
+      const reply = await request('remove_thread', { thread_id: cur.t.id });
+      if (reply.error) {
+        notice(reply.error, true);
+        return;
+      }
+      const all = threads().filter(({ t }) => t.id !== cur.t.id);
+      const back = all.find(({ t }) => t.id === state.previous) || all[0];
+      if (back) select(back.t.id);
+      notice(`Closed ${cur.t.title}.`);
+    },
+  });
+}
+
+/** The thread `by` places from the selected one in the left column, round the end. */
+function step(by) {
+  const all = threads();
+  if (!all.length) return;
+  const i = all.findIndex(({ t }) => t.id === state.selected);
+  select(all[(i + by + all.length) % all.length].t.id);
+}
+
+/** Every key after the prefix, as the TUI's `prefix ?` lists them. */
+function prefixKeys() {
+  const cur = current();
+  return [
+    { key: 'c', label: 'New thread in this project', run: () => cur && newThread(cur.p, null) },
+    { key: 'o', label: 'Open a directory', run: openDirectory },
+    { key: 's', label: 'Switch agent', run: () => cur && switchMenu(cur, null) },
+    { key: 'r', label: 'Restart the agent', run: () => cur && restart(cur) },
+    { key: 'f', label: 'Fork', run: () => cur && forkMenu(cur, null) },
+    { key: ',', label: 'Rename', run: () => cur && rename(cur, null) },
+    { key: 'x', label: 'Close', run: () => cur && closeThread(cur, null) },
+    { key: 'n', label: 'Next thread', run: () => step(1) },
+    { key: 'p', label: 'Previous thread', run: () => step(-1) },
+    { key: 'l', label: 'The thread shown before', run: () => state.previous && select(state.previous) },
+    { key: '[', label: 'Conversation, or back to the Screen', run: () => setView(shownView() === 'screen' ? 'conversation' : 'screen') },
+    { key: '1…9', label: 'Thread 1 to 9 in the list', run: () => {} },
+  ];
+}
+
+/** The prefix key as the browser reports it: ctrl and space, or ctrl and its letter. */
+function isPrefix(e) {
+  if (!e.ctrlKey || e.altKey || e.metaKey) return false;
+  const key = state.prefix.replace(/^ctrl\+/, '');
+  return key === 'space' ? e.code === 'Space' : e.key.toLowerCase() === key;
+}
+
+/** What the prefix key sends to an agent when pressed twice: NUL for space, else its control byte. */
+function prefixByte() {
+  const key = state.prefix.replace(/^ctrl\+/, '');
+  return new Uint8Array([key === 'space' ? 0 : key.charCodeAt(0) & 0x1f]);
+}
+
+function afterPrefix(e) {
+  if (['Shift', 'Control', 'Alt', 'Meta'].includes(e.key)) return false;
+  state.armed = false;
+  $('prefix-pill').hidden = true;
+  if (e.key === 'Escape') return true;
+  if (isPrefix(e)) {
+    screen.send(prefixByte());
+    return true;
+  }
+  if (/^[1-9]$/.test(e.key)) {
+    const all = threads();
+    const t = all[Number(e.key) - 1];
+    if (t) select(t.t.id);
+    return true;
+  }
+  if (e.key === '?') {
+    pop.menu({ title: `Keys after ${state.prefix}`, rows: prefixKeys().filter((k) => k.key !== '1…9').map((k) => ({ label: k.label, note: k.key, run: k.run })) });
+    return true;
+  }
+  const hit = prefixKeys().find((k) => k.key === e.key);
+  if (hit) hit.run();
+  else notice(`${state.prefix} ${e.key} does nothing on the page. ${state.prefix} ? lists the keys.`);
+  return true;
+}
+
+/**
+ * The page's keys, read before the agent's screen or any field sees them: the prefix and the key
+ * after it, and alt+j/alt+k to move between threads, as in the TUI. Everything else goes on.
+ */
+function setupKeys() {
+  window.addEventListener(
+    'keydown',
+    (e) => {
+      if (pop.isOpen()) return;
+      let used = false;
+      if (state.armed) used = afterPrefix(e);
+      else if (isPrefix(e)) {
+        state.armed = true;
+        const pill = $('prefix-pill');
+        pill.textContent = `${state.prefix} …`;
+        pill.hidden = false;
+        used = true;
+      } else if (e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'j' || e.key === 'k')) {
+        step(e.key === 'j' ? 1 : -1);
+        used = true;
+      }
+      if (used) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    },
+    true,
+  );
+}
+
 // ---- resizing the outer columns ---------------------------------------------------------------
 
 const WIDTHS = 'desl-web-widths';
@@ -1360,6 +1689,7 @@ function main() {
   }
   resizable();
   setupScreenPane();
+  setupKeys();
   setupConversation();
   setupTasks();
   setupAttention();

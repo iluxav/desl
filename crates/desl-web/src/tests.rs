@@ -32,7 +32,12 @@ fn shell(id: &str) -> Thread {
 
 fn workspace() -> Workspace {
     let project = Project { id: "desl".into(), path: "/src/desl".into(), default_agent: None, created_at: 0, git: Default::default() };
-    Workspace { projects: vec![project], threads: vec![thread("t-1", Status::Working), shell("t-2")], ..Workspace::default() }
+    Workspace {
+        projects: vec![project],
+        threads: vec![thread("t-1", Status::Working), shell("t-2")],
+        file_manager: Some("yazi".into()),
+        ..Workspace::default()
+    }
 }
 
 fn headers(host: &str, origin: Option<&str>) -> HeaderMap {
@@ -93,7 +98,12 @@ fn the_view_follows_the_workspace_and_is_sent_only_when_it_changes() {
     assert!(c.fold(ws));
     let first: Value = serde_json::from_str(&c.next(0).unwrap()).unwrap();
     let threads = &first["view"]["projects"][0]["threads"];
-    assert_eq!(threads.as_array().map(Vec::len), Some(1), "the shell stays in the terminal: {first}");
+    // Shells and file managers are on the page too, which can stand alone.
+    assert_eq!(threads.as_array().map(Vec::len), Some(2), "{first}");
+    assert_eq!(threads[1]["agent"], "shell");
+    // What a new thread in a project needs: where it is, and whether the file manager is there.
+    assert_eq!(first["view"]["projects"][0]["path"], "/src/desl");
+    assert_eq!(first["file_manager"], "yazi");
     assert_eq!(threads[0]["word"], "working");
     assert_eq!(threads[0]["header"]["model"], "claude-opus-5-5 · high");
     assert_eq!(threads[0]["header"]["yolo"], true);
@@ -104,6 +114,9 @@ fn the_view_follows_the_workspace_and_is_sent_only_when_it_changes() {
     let next: Value = serde_json::from_str(&c.next(120_000).unwrap()).unwrap();
     assert_eq!(next["view"]["waiting"], json!(["t-1"]));
     assert!(c.fold(ServerFrame::Event { change: Change::ThreadRemoved { thread_id: "t-1".into() } }));
+    let left: Value = serde_json::from_str(&c.next(120_000).unwrap()).unwrap();
+    assert_eq!(left["view"]["projects"][0]["threads"][0]["id"], "t-2", "its shell keeps the project on the page");
+    assert!(c.fold(ServerFrame::Event { change: Change::ThreadRemoved { thread_id: "t-2".into() } }));
     let gone: Value = serde_json::from_str(&c.next(120_000).unwrap()).unwrap();
     assert_eq!(gone["view"]["projects"], json!([]), "a project with nothing to show goes too");
 }
@@ -154,7 +167,12 @@ async fn rig() -> Rig {
     let (give, give_rx) = tokio::sync::mpsc::channel(16);
     tokio::spawn(daemon(listener, got_tx, give_rx));
     let (tcp, port) = listen(Some(0)).await.unwrap();
-    let shared = Shared { token: KEY.into(), port, socket: Arc::new(socket) };
+    let host = Host {
+        prefix: "ctrl+a".into(),
+        shell: "zsh".into(),
+        dirs: Box::new(|known| known.iter().map(|p| (p.clone(), p.replace("/home/u", "~"), "project".into())).collect()),
+    };
+    let shared = Shared { token: KEY.into(), port, socket: Arc::new(socket), host: Arc::new(host) };
     tokio::spawn(async move { axum::serve(tcp, app(shared)).await });
     Rig { port, got, give, _dir: Dir(dir) }
 }
@@ -196,6 +214,8 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     rig.give.send(ServerFrame::Reply { id: sub.id, ok: Some(Reply::Workspace(Box::new(workspace()))), error: None }).await.unwrap();
     let ready = next(&mut c).await;
     assert_eq!((ready["state"].as_str(), ready["build"].as_str()), (Some("ready"), Some(build())), "{ready}");
+    // The prefix key and the shell, as the desl that started desl web knows them.
+    assert_eq!((ready["prefix"].as_str(), ready["shell"].as_str()), (Some("ctrl+a"), Some("zsh")), "{ready}");
     let view = next(&mut c).await;
     assert_eq!(view["type"], "view", "the bridge's own replies stay with it: {view}");
     assert_eq!(view["view"]["projects"][0]["threads"][0]["title"], "Web client");
@@ -238,6 +258,11 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     assert_eq!(conv["items"][0]["event"], 1, "each item says the event behind it, for a highlight's link");
     let h = &conv["highlights"][0];
     assert_eq!((h["by"].as_str(), h["question"].as_str(), h["event"].as_u64()), (Some("you"), Some("hello"), Some(1)), "{conv}");
+    // The directories `prefix o` lists, for the page's own finder: the projects desl knows first.
+    c.send(Message::Text(json!({ "type": "dirs", "id": 5 }).to_string().into())).await.unwrap();
+    let dirs = next(&mut c).await;
+    assert_eq!((dirs["type"].as_str(), dirs["id"].as_u64()), (Some("dirs"), Some(5)), "{dirs}");
+    assert_eq!(dirs["dirs"][0], json!({ "path": "/src/desl", "shown": "/src/desl", "note": "project" }));
 }
 
 #[test]
@@ -325,7 +350,7 @@ async fn a_rebinding_host_name_gets_nothing() {
 #[test]
 fn the_page_serves_its_terminal_and_runs_no_inline_script() {
     // xterm.js draws the agent's screen (docs/design/2026-11-24-web-alone.md).
-    for want in ["/screen.js", "/vendor/xterm.mjs", "/vendor/xterm.css", "/vendor/addon-fit.mjs"] {
+    for want in ["/screen.js", "/popover.js", "/vendor/xterm.mjs", "/vendor/xterm.css", "/vendor/addon-fit.mjs"] {
         assert!(FILES.iter().any(|(path, _, _)| *path == want), "{want} is served");
     }
     let csp = csp(7428);

@@ -64,7 +64,19 @@ pub fn web(paths: &Paths, out: &Out, port: Option<u16>, open: bool, stop: bool) 
     }
     drop(connect(paths, true)?);
     let exe = own_binary().ok();
-    let ended = desl_web::run(&paths.socket, port, handed, exe.clone(), |url| {
+    // What a page used without the TUI needs from desl itself (docs/design/2026-11-24-web-alone.md).
+    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let host = desl_web::Host {
+        prefix: desl_proto::config::load(&paths.config, None).prefix.label(),
+        shell: crate::native::shell_name(),
+        dirs: Box::new(move |known| {
+            crate::finder::every(known)
+                .into_iter()
+                .map(|(p, k)| (p.to_string_lossy().into_owned(), crate::finder::tilde(&p, home.as_deref()), k.note().to_string()))
+                .collect()
+        }),
+    };
+    let ended = desl_web::run(&paths.socket, port, handed, exe.clone(), host, |url| {
         if let Err(e) = crate::web::record(paths, url) {
             eprintln!("desl web could not note where it runs ({e}); `desl web --stop` and the TUI will not find it.");
         }

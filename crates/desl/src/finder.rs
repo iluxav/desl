@@ -139,6 +139,40 @@ fn folders_beside(beside: &[PathBuf], home: &Path) -> Vec<PathBuf> {
 /// How well `query` matches `text` as an fzf-style subsequence, higher better; None if not.
 /// The letters are looked for in the path's last name first, since the name is what people
 /// type: `reb` is `~/Projects/rebrand`, not the `r` and `e` of `Projects` and a later `b`.
+/// Every directory `prefix o` lists for the projects desl knows, best source first, each path
+/// once, gathered in one go: desl web's page filters it as the user types
+/// (docs/design/2026-11-24-web-alone.md).
+pub fn every(known: &[String]) -> Vec<(PathBuf, Kind)> {
+    gather(known, zoxide(), home().as_deref())
+}
+
+fn gather(known: &[String], recent: Vec<PathBuf>, home: Option<&Path>) -> Vec<(PathBuf, Kind)> {
+    fn add(out: &mut Vec<(PathBuf, Kind)>, p: PathBuf, k: Kind) {
+        if !out.iter().any(|(q, _)| *q == p) {
+            out.push((p, k));
+        }
+    }
+    let mut out = Vec::new();
+    for p in known {
+        add(&mut out, PathBuf::from(p), Kind::Project);
+    }
+    for p in recent {
+        add(&mut out, p, Kind::Recent);
+    }
+    if let Some(home) = home {
+        let repos = repos(home);
+        let mut beside: Vec<PathBuf> = known.iter().map(PathBuf::from).collect();
+        beside.extend(repos.iter().cloned());
+        for p in repos {
+            add(&mut out, p, Kind::Repo);
+        }
+        for p in folders_beside(&beside, home) {
+            add(&mut out, p, Kind::Folder);
+        }
+    }
+    out
+}
+
 pub(crate) fn score(text: &str, query: &str) -> Option<i64> {
     if query.is_empty() {
         return Some(0);
@@ -326,6 +360,27 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_whole_list_for_the_page_keeps_the_sources_order_and_each_path_once() {
+        let home = Temp::new("every");
+        for d in ["Projects/api/.git", "Projects/rebrand", "Work/site/.git"] {
+            std::fs::create_dir_all(home.path().join(d)).unwrap();
+        }
+        let api = home.path().join("Projects/api");
+        let known = [api.to_string_lossy().into_owned()];
+        let recent = vec![home.path().join("Work/site"), api.clone()];
+        let got = gather(&known, recent, Some(home.path()));
+        let rows: Vec<(String, Kind)> = got.iter().map(|(p, k)| (tilde(p, Some(home.path())), *k)).collect();
+        assert_eq!(
+            rows,
+            [
+                ("~/Projects/api".to_string(), Kind::Project),
+                ("~/Work/site".to_string(), Kind::Recent),
+                ("~/Projects/rebrand".to_string(), Kind::Folder),
+            ]
+        );
     }
 
     #[test]

@@ -34,6 +34,7 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/tasks.js", "text/javascript; charset=utf-8", include_str!("../page/tasks.js")),
     ("/attention.js", "text/javascript; charset=utf-8", include_str!("../page/attention.js")),
     ("/screen.js", "text/javascript; charset=utf-8", include_str!("../page/screen.js")),
+    ("/popover.js", "text/javascript; charset=utf-8", include_str!("../page/popover.js")),
     ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
     // xterm.js draws an agent's screen (page/vendor/README.md says where each copy came from).
     ("/vendor/xterm.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/xterm.mjs")),
@@ -49,6 +50,28 @@ pub(crate) struct Shared {
     port: u16,
     /// The daemon's socket.
     socket: Arc<PathBuf>,
+    host: Arc<Host>,
+}
+
+/// Every directory `prefix o` lists for the known projects given, best first: each one's path,
+/// how it is shown (`~/src/app`) and where it comes from (`project`, `git`, …).
+pub type Dirs = Box<dyn Fn(&[String]) -> Vec<(String, String, String)> + Send + Sync>;
+
+/// What `desl web` learns from the desl that starts it, for a page used without the TUI
+/// (docs/design/2026-11-24-web-alone.md).
+pub struct Host {
+    /// The prefix key as `config.toml` sets it: `ctrl+space`, `ctrl+a` … `ctrl+z`.
+    pub prefix: String,
+    /// The user's shell's name, for the new-thread menu.
+    pub shell: String,
+    /// What the page's directory finder lists.
+    pub dirs: Dirs,
+}
+
+impl Default for Host {
+    fn default() -> Host {
+        Host { prefix: "ctrl+space".into(), shell: "bash".into(), dirs: Box::new(|_| Vec::new()) }
+    }
 }
 
 /// How [`run`] ended.
@@ -66,7 +89,14 @@ const BINARY_CHECK: Duration = Duration::from_secs(2);
 /// Serves the page until ctrl+c, or until `exe`, the binary it runs from, is replaced. `ready`
 /// gets the address to open, the key included, as soon as the page can be served. `port` 0
 /// takes any free port; `key`, when given, is the one desl web had before it started again.
-pub fn run(socket: &Path, port: Option<u16>, key: Option<String>, exe: Option<PathBuf>, ready: impl FnOnce(&str)) -> Result<Ended> {
+pub fn run(
+    socket: &Path,
+    port: Option<u16>,
+    key: Option<String>,
+    exe: Option<PathBuf>,
+    host: Host,
+    ready: impl FnOnce(&str),
+) -> Result<Ended> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().context("desl web could not start its runtime")?;
     let again = key.is_some();
     rt.block_on(async move {
@@ -76,7 +106,7 @@ pub fn run(socket: &Path, port: Option<u16>, key: Option<String>, exe: Option<Pa
             None => self::key()?.into(),
         };
         ready(&format!("http://127.0.0.1:{port}/#t={token}"));
-        let shared = Shared { token: token.clone(), port, socket: Arc::new(socket.to_path_buf()) };
+        let shared = Shared { token: token.clone(), port, socket: Arc::new(socket.to_path_buf()), host: Arc::new(host) };
         let replaced = async {
             match exe {
                 Some(exe) => replaced(&exe, BINARY_CHECK).await,

@@ -75,8 +75,10 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
         let _ = say(&mut ws, json!({ "type": "bridge", "state": "no_daemon" })).await;
         return;
     }
-    // Which page this is: one loaded before an install reloads itself.
-    if say(&mut ws, json!({ "type": "bridge", "state": "ready", "build": crate::build() })).await.is_err() {
+    // Which page this is: one loaded before an install reloads itself. The prefix key and the
+    // shell are the TUI's, for a page used without it.
+    let ready = json!({ "type": "bridge", "state": "ready", "build": crate::build(), "prefix": s.host.prefix, "shell": s.host.shell });
+    if say(&mut ws, ready).await.is_err() {
         return;
     }
     let (tx, mut frames) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
@@ -93,8 +95,15 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
     // id and the thread.
     let mut asked: HashMap<u64, (Value, String)> = HashMap::new();
     let mut next = ASKED;
+    // The directories `prefix o` lists, gathered off the runtime: each answer for the page.
+    let (dirs_tx, mut dirs_done) = tokio::sync::mpsc::channel::<Value>(4);
     loop {
         tokio::select! {
+            Some(answer) = dirs_done.recv() => {
+                if say(&mut ws, answer).await.is_err() {
+                    break;
+                }
+            }
             frame = frames.recv() => {
                 let Some(bytes) = frame else {
                     // The daemon stopped or handed over: the page connects again.
@@ -132,6 +141,18 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
             }
             msg = ws.recv() => match msg {
                 // The page asks the bridge itself for a thread's conversation.
+                Some(Ok(Message::Text(t))) if dirs_asked(t.as_str()).is_some() => {
+                    let Some(page_id) = dirs_asked(t.as_str()) else { continue };
+                    let host = s.host.clone();
+                    let known = cache.paths();
+                    let tx = dirs_tx.clone();
+                    tokio::spawn(async move {
+                        let found = tokio::task::spawn_blocking(move || (host.dirs)(&known)).await.unwrap_or_default();
+                        let dirs: Vec<Value> =
+                            found.into_iter().map(|(path, shown, note)| json!({ "path": path, "shown": shown, "note": note })).collect();
+                        let _ = tx.send(json!({ "type": "dirs", "id": page_id, "dirs": dirs })).await;
+                    });
+                }
                 Some(Ok(Message::Text(t))) if conversation_asked(t.as_str()).is_some() => {
                     let Some((page_id, thread_id)) = conversation_asked(t.as_str()) else { continue };
                     asked.insert(next, (page_id, thread_id.clone()));
@@ -171,6 +192,12 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
         }
     }
     reader.abort();
+}
+
+/// `{"type": "dirs", "id": …}`: the page's id, asking for the directories `prefix o` lists.
+fn dirs_asked(text: &str) -> Option<Value> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    (v.get("type").and_then(Value::as_str) == Some("dirs")).then(|| v.get("id").cloned().unwrap_or(Value::Null))
 }
 
 /// `{"type": "conversation", "id": …, "thread_id": …}`: the page's id and the thread.
@@ -260,6 +287,8 @@ fn now() -> i64 {
 pub(crate) struct Cache {
     projects: Vec<Project>,
     threads: Vec<Thread>,
+    /// The user's file manager, when the daemon found one: the new-thread menu offers it.
+    file_manager: Option<String>,
     /// The subscription was answered: the view can be worked out.
     ready: bool,
     /// The view last sent, to send nothing when it is the same.
@@ -273,6 +302,7 @@ impl Cache {
             ServerFrame::Reply { id: SUBSCRIBE, ok: Some(Reply::Workspace(ws)), .. } => {
                 self.projects = ws.projects;
                 self.threads = ws.threads;
+                self.file_manager = ws.file_manager;
                 self.ready = true;
                 true
             }
@@ -312,12 +342,17 @@ impl Cache {
             return None;
         }
         let v = view::sidebar(&self.projects, &self.threads, now, view::on_page);
-        let text = json!({ "type": "view", "view": v }).to_string();
+        let text = json!({ "type": "view", "view": v, "file_manager": self.file_manager }).to_string();
         if self.sent.as_deref() == Some(text.as_str()) {
             return None;
         }
         self.sent = Some(text.clone());
         Some(text)
+    }
+
+    /// Every project's folder.
+    fn paths(&self) -> Vec<String> {
+        self.projects.iter().map(|p| p.path.clone()).collect()
     }
 
     async fn push(&mut self, ws: &mut WebSocket) -> Result<(), axum::Error> {

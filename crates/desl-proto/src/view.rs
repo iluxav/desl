@@ -116,9 +116,15 @@ pub fn project_name(path: &str) -> String {
     Path::new(path).file_name().map_or(path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Shown in the browser: agent threads. Shells and file managers stay in the terminal, and the
-/// task list has the page's right column (docs/design/2026-11-22-tasks-first-class.md).
+/// Listed in the browser's left column: agents, shells and file managers, since the page can be
+/// used without the TUI (docs/design/2026-11-24-web-alone.md). The task list has the page's
+/// right column (docs/design/2026-11-22-tasks-first-class.md).
 pub fn on_page(t: &Thread) -> bool {
+    t.active_agent != desl_ir::TASKS
+}
+
+/// A thread with a conversation: an agent's, not a shell's, a file manager's or the task list's.
+pub fn talks(t: &Thread) -> bool {
     t.active_agent != SHELL && t.active_agent != FILES && t.active_agent != desl_ir::TASKS
 }
 
@@ -162,6 +168,8 @@ pub struct ProjectRow {
     pub name: String,
     /// The folder it is in, with the home directory as `~`.
     pub parent: String,
+    /// Its own folder, in full: where a new thread in it starts.
+    pub path: String,
     pub branch: Option<String>,
     /// How many paths `git status` lists.
     pub dirty: u32,
@@ -223,6 +231,7 @@ pub fn sidebar(projects: &[Project], threads: &[Thread], now: i64, keep: impl Fn
                 id: t.project_id.clone(),
                 name: project_name(path),
                 parent,
+                path: path.to_string(),
                 branch: git.and_then(|g| g.branch.clone()),
                 dirty: git.map_or(0, |g| g.dirty),
                 hue: hue(path),
@@ -342,11 +351,12 @@ mod tests {
         assert_eq!((p.threads[0].age.as_str(), p.threads[1].age.as_str()), ("", "now"));
         // Each thread's latest highlight, for catching up at a glance.
         assert_eq!((p.threads[0].latest.as_str(), p.threads[1].latest.as_str()), ("", "Only prefix t asked for the list."));
-        // The browser leaves the shell out, and so a project with nothing else to show.
-        let page = sidebar(&projects, &threads[1..2], 0, on_page);
-        assert_eq!(page.projects.len(), 1);
+        // The browser lists the shell too, and leaves out a project whose only thread is its task
+        // list, which has the page's right column.
         let page = sidebar(&projects, &threads, 0, on_page);
-        assert_eq!(page.projects[0].threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t-2", "t-4"]);
+        assert_eq!(page.projects[0].threads.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t-1", "t-2", "t-4"]);
+        let only_list = [thread("t-5", "rebrand", 5, desl_ir::TASKS, Status::Idle)];
+        assert!(sidebar(&projects, &only_list, 0, on_page).projects.is_empty());
     }
 
     #[test]
@@ -421,13 +431,16 @@ mod tests {
     }
 
     #[test]
-    fn the_page_lists_agent_threads_only() {
+    fn the_page_lists_every_thread_but_the_task_list() {
         let agent = thread("t-1", "desl", 1, "claude", Status::Idle);
         let tasks = thread("t-2", "desl", 2, desl_ir::TASKS, Status::Idle);
         let shell = thread("t-3", "desl", 3, desl_ir::SHELL, Status::Idle);
-        assert!(on_page(&agent));
+        let files = thread("t-4", "desl", 4, FILES, Status::Idle);
+        assert!(on_page(&agent) && on_page(&shell) && on_page(&files));
         assert!(!on_page(&tasks), "the task list has a column of its own on the page");
-        assert!(!on_page(&shell));
+        // Only an agent has a conversation to show.
+        assert!(talks(&agent));
+        assert!(!talks(&shell) && !talks(&files) && !talks(&tasks));
     }
 
     #[test]

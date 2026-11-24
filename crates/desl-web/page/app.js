@@ -315,6 +315,11 @@ function talks(t) {
 
 function drawSide(cur) {
   const nav = $('projects');
+  // A redraw mid-drag would take the project being dragged from under the pointer.
+  if (drag.id) {
+    drag.stale = true;
+    return;
+  }
   nav.replaceChildren();
   if (!state.view) {
     nav.append(el('p', 'empty', 'Reading the workspace…'));
@@ -331,7 +336,15 @@ function drawSide(cur) {
   for (const p of state.view.projects) {
     const section = el('section', 'project');
     section.setAttribute('aria-label', p.name);
+    section.dataset.project = p.id;
     const row = el('div', 'project-row');
+    // Dragged by its line to another place among the projects.
+    row.draggable = true;
+    row.title = `${p.name}: drag to move it among the projects`;
+    row.addEventListener('dragstart', (e) => dragStart(e, p, section));
+    row.addEventListener('dragend', dragEnd);
+    section.addEventListener('dragover', (e) => dragOver(e, section));
+    section.addEventListener('drop', (e) => dropOn(e, section));
     row.append(projectDot(p.hue), el('span', 'project-name', p.name));
     if (p.branch) row.append(el('span', 'branch', `⎇ ${p.branch}`));
     if (p.dirty > 0) row.append(el('span', 'dirty', `±${p.dirty}`));
@@ -362,7 +375,15 @@ function drawSide(cur) {
         b.title = `${t.title} · ${t.word} · ${t.id}\n${t.latest}`;
       }
       b.addEventListener('click', () => select(t.id));
-      section.append(b);
+      // Its own menu, on the right: what `⋯` in the header does, for this thread.
+      const line = el('div', 'thread-line');
+      const more = el('button', 'row-more', '⋯');
+      more.type = 'button';
+      more.title = `Switch, restart, fork, rename or close ${t.title}`;
+      more.setAttribute('aria-label', `Actions for ${t.title}`);
+      more.addEventListener('click', () => actions({ t, p }, more));
+      line.append(b, more);
+      section.append(line);
     }
     nav.append(section);
   }
@@ -392,7 +413,7 @@ function drawHead(cur) {
   more.type = 'button';
   more.title = 'Switch, restart, fork, rename or close this thread';
   more.setAttribute('aria-label', 'Thread actions');
-  more.addEventListener('click', () => actions(more));
+  more.addEventListener('click', () => actions(current(), more));
   right.append(more);
   // Ends the turn, as esc does in the agent's own screen; there while there is a turn to end.
   if (t.status === 'working' && $('link').dataset.state === 'connected') {
@@ -1406,11 +1427,14 @@ function openDirectory() {
   });
 }
 
-/** The thread's own menu: what the TUI's prefix keys do to it. */
-function actions(anchor) {
-  const cur = current();
+/**
+ * A thread's own menu, from the header or its line in the left column: what the TUI's prefix
+ * keys do to it. The keys are named for the thread on screen, which they act on.
+ */
+function actions(cur, anchor) {
   if (!cur) return;
-  const k = (key) => `${state.prefix} ${key}`;
+  const shown = cur.t.id === state.selected;
+  const k = (key) => (shown ? `${state.prefix} ${key}` : '');
   const rows = [];
   if (talks(cur.t)) {
     rows.push({ label: 'Switch agent…', note: k('s'), run: () => switchMenu(cur, anchor) });
@@ -1496,9 +1520,11 @@ function closeThread(cur, anchor) {
         notice(reply.error, true);
         return;
       }
-      const all = threads().filter(({ t }) => t.id !== cur.t.id);
-      const back = all.find(({ t }) => t.id === state.previous) || all[0];
-      if (back) select(back.t.id);
+      if (cur.t.id === state.selected) {
+        const all = threads().filter(({ t }) => t.id !== cur.t.id);
+        const back = all.find(({ t }) => t.id === state.previous) || all[0];
+        if (back) select(back.t.id);
+      }
       notice(`Closed ${cur.t.title}.`);
     },
   });
@@ -1597,6 +1623,76 @@ function setupKeys() {
     },
     true,
   );
+}
+
+// ---- moving projects with the mouse ------------------------------------------------------------
+
+/** The project being dragged, and whether the left column changed meanwhile. */
+const drag = { id: null, stale: false };
+
+function dragStart(e, p, section) {
+  drag.id = p.id;
+  drag.stale = false;
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', p.name);
+  section.classList.add('dragging');
+}
+
+function clearMarks() {
+  for (const s of document.querySelectorAll('#projects .project')) s.classList.remove('drop-before', 'drop-after', 'dragging');
+}
+
+function dragEnd() {
+  clearMarks();
+  drag.id = null;
+  if (drag.stale) drawSide(current());
+}
+
+/** Above the middle of a project the dragged one goes before it, below it after. */
+function before(e, section) {
+  const r = section.getBoundingClientRect();
+  return e.clientY < r.top + r.height / 2;
+}
+
+function dragOver(e, section) {
+  if (!drag.id) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const up = before(e, section);
+  for (const s of document.querySelectorAll('#projects .project')) {
+    s.classList.toggle('drop-before', s === section && up);
+    s.classList.toggle('drop-after', s === section && !up);
+  }
+}
+
+function dropOn(e, section) {
+  if (!drag.id) return;
+  e.preventDefault();
+  const id = drag.id;
+  const ids = state.view.projects.map((p) => p.id);
+  const from = ids.indexOf(id);
+  const at = ids.indexOf(section.dataset.project);
+  const into = before(e, section) ? at : at + 1;
+  const to = into > from ? into - 1 : into;
+  dragEnd();
+  if (from >= 0 && at >= 0 && to !== from) moveProject(id, to);
+}
+
+/**
+ * Moves project `id` to place `to` in the left column. The daemon moves a project one place at a
+ * time, past projects the page may not list (one whose only thread is its task list), so it is
+ * asked again until the page's list has it there; the view comes before each answer.
+ */
+async function moveProject(id, to) {
+  for (let n = 0; n < 64; n++) {
+    const at = state.view.projects.findIndex((p) => p.id === id);
+    if (at < 0 || at === to) return;
+    const reply = await request('move_project', { project_id: id, up: to < at });
+    if (reply.error) {
+      notice(reply.error, true);
+      return;
+    }
+  }
 }
 
 // ---- resizing the outer columns ---------------------------------------------------------------

@@ -210,6 +210,33 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row .latest { flex: 0 0 100%; padding-left: 22px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row[aria-current="true"] .latest { color: var(--dim); }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
+/* A thread's line with its menu on the right, over its age, on hover and on the thread on screen. */
+.thread-line { position: relative; }
+.row-more {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  width: 26px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--dim);
+  font: 600 14px/1 var(--mono);
+  opacity: 0;
+}
+.row-more:hover { color: var(--text); background: var(--line2); }
+.thread-line:hover .row-more, .row-more:focus-visible, .thread-line:has(.row[aria-current="true"]) .row-more { opacity: 1; }
+.thread-line:hover .age, .thread-line:has(.row-more:focus-visible) .age, .thread-line:has(.row[aria-current="true"]) .age { visibility: hidden; }
+@media (hover: none) {
+  .row-more { opacity: 1; }
+  .thread-line .age { visibility: hidden; }
+}
+/* A project is moved by dragging its line; a line shows where it lands. */
+.project-row[draggable="true"] { cursor: grab; }
+.project.dragging { opacity: 0.45; }
+.project.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.project.drop-after { box-shadow: 0 2px 0 var(--accent); }
 .wt { color: var(--branch); }
 
 

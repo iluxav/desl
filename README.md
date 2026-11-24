@@ -124,7 +124,8 @@ and shows the whole conversation of the thread you pick, with a search and a pro
 it (queued while the agent works). **Screen** beside it draws the agent's own interface, as the
 terminal does, with your keys going to it. Shells and file managers are there too, and the page
 opens, switches, forks, restarts, renames and closes threads, with the same prefix keys as the
-terminal (`ctrl+space ?` lists them), so you can work in the browser alone. Its right column holds the project's task list, live:
+terminal (`ctrl+space ?` lists them), so you can work in the browser alone. `⋯` on a thread's
+line opens its menu, and dragging a project's line moves it. Its right column holds the project's task list, live:
 **Fix now** or **Work on it** puts an agent on a task in a worktree of its own, and **Merge**
 brings its branch in when the agent marks it ready. Agents add and update tasks with tools
 desl gives them, and park ideas you defer.

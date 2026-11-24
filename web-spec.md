@@ -117,7 +117,7 @@ desl's own.
 
 | Area | What it holds |
 | --- | --- |
-| Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it |
+| Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it; `⋯` on a thread's line opens that thread's menu (switch, restart, fork, rename, close) without opening it, shown on hover and on the thread on screen in place of its age; a project's line is dragged to move the project among the others, which the TUI's sidebar keeps too (the daemon's `move_project`, asked until the page lists it there) |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; `⋯`, the thread's actions; Stop while it works |
 | Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
 | Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered |

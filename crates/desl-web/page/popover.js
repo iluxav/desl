@@ -46,7 +46,8 @@ function show(box, anchor, keys) {
   box.classList.add('pop');
   box.setAttribute('role', 'dialog');
   document.body.append(box);
-  if (anchor) {
+  // An anchor a redraw took off the page has no place: the box goes in the middle then.
+  if (anchor && anchor.isConnected) {
     const r = anchor.getBoundingClientRect();
     const w = box.offsetWidth;
     box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;

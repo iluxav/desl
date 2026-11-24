@@ -312,6 +312,9 @@ last sets the size. The daemon answers the agent's questions to its terminal whe
 shows the thread, and the page drops the answers xterm.js gives by itself, so the agent hears
 each answer once (`docs/protocol.md`). A selection is copied with `ctrl+c` or `ctrl+shift+c`
 (shift+drag selects where the agent takes the mouse); without one, `ctrl+c` goes to the agent.
+As in a terminal, `ctrl+v` goes to the agent, which reads a picture from the clipboard itself,
+and `ctrl+shift+v` pastes text. A paste that holds a picture and no text, by any other way,
+sends the agent `ctrl+v` too, so a screenshot reaches it; a shell gets nothing.
 The browser keeps `ctrl+w`, `ctrl+t` and `ctrl+n` in a tab, and the Screen says so.
 
 **Cost:** the stripped release binary grew from 8.2 MB to 10.1 MB with xterm.js in milestone 1;
@@ -441,6 +444,7 @@ the agents. Every rule below follows from that.
 | 6 | Security review | Dropped by the author on 2026-11-22, in a triage form (f-c36e). Each milestone's own review stays: milestone 5's fresh reviewer tried script in a preview and files outside the project through pictures |
 | 7 | The screen back | Done 2026-11-24: Conversation, Highlights and Screen; xterm.js and the daemon's size rule restored from 4798f4a; the waiting column's line for a thread that asks in its screen opens that screen. Checked live in an isolated workspace: Claude Code drawn on the page, typing reached its input, the screen came back with what was typed after a turn through the Conversation, and at 390 px the terminal fit with the prompt box under it |
 | 8 | The thread's actions | Done 2026-11-24: shells and file managers in the left column, on their Screen; `+` on a project, Open a directory, and the header's `⋯` (switch, restart, fork, rename, close); the prefix key and `alt+j`/`alt+k` on the page. Checked live: `ctrl+space ?` listed the keys without typing into Claude, `ctrl+space c` opened a shell that ran a command typed on the page, rename and close (after `y`) worked from `⋯`, `ctrl+space o` with a typed path made a project and a shell in it, the thread moves went where they should, and a restart redrew Claude fresh |
+| 9 | A pasted screenshot | Done 2026-11-24: a paste with a picture and no text sends the agent `ctrl+v`, which reads the clipboard itself, as `ctrl+v` on the page already did. Checked with a synthetic paste in an isolated workspace: a picture sent `0x16` to Claude, text went in as a bracketed paste, a shell got nothing. Not checked with a real screenshot in the clipboard, which would read the author's own |
 
 Each milestone follows the definition of done in `SPEC.md`: spec match, tests, help text, error
 paths tried by hand, and budgets.

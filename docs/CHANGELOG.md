@@ -18,6 +18,9 @@ All notable changes to desl are recorded here. The format follows
   thread switches, restarts, forks, renames or closes it. Your prefix key works on the page:
   `ctrl+space c`, `o`, `s`, `r`, `f`, `,`, `x`, `n`, `p`, `1`…`9`, `l`, `[` and `?` for the list,
   with `alt+j`/`alt+k` between threads.
+- A screenshot pasted into an agent's screen on desl web reaches the agent, however you paste:
+  `ctrl+v` as in a terminal, or `ctrl+shift+v`, `shift+insert` and the browser's menu, which
+  now send the agent `ctrl+v` too when the clipboard holds a picture. Text pastes as before.
 - desl web's tab asks for your eyes: its title starts with how many things wait, `(2) desl ·
   …`, with an amber dot as its icon; in the background, something new waiting blinks the title
   and the dot until you come back to the tab.

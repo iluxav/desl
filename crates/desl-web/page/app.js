@@ -524,6 +524,11 @@ function setupScreenPane() {
     fire,
     note: screenNote,
     keys: () => false,
+    // A pasted picture is for an agent; a shell gets nothing.
+    agent: () => {
+      const cur = current();
+      return Boolean(cur) && talks(cur.t);
+    },
     who: () => {
       const cur = current();
       return cur ? (talks(cur.t) ? agentName(cur.t.agent) : cur.t.title) : 'The agent';

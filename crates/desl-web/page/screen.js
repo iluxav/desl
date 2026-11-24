@@ -19,7 +19,7 @@ const screen = {
   /** The size last asked for. */
   asked: null,
   timer: null,
-  /** What the page gave: `request` (answered), `fire` (never answered), `note`, `keys`, `who`. */
+  /** What the page gave: `request` (answered), `fire` (never answered), `note`, `keys`, `who`, `agent`. */
   io: null,
 };
 
@@ -204,6 +204,24 @@ export function focus() {
   if (screen.term) screen.term.focus();
 }
 
+/**
+ * A paste the browser gives as a picture alone, as a screenshot is: xterm.js would send nothing.
+ * `ctrl+v` already reaches the agent as a terminal sends it; this is every other way to paste
+ * (ctrl+shift+v, shift+insert, the browser's menu).
+ */
+export function pictureOnly(data) {
+  if (!data || data.getData('text/plain')) return false;
+  return [...(data.items || [])].some((i) => i.kind === 'file' && i.type.startsWith('image/'));
+}
+
+/** The agent gets ctrl+v for a pasted picture and reads the clipboard itself, as in a terminal. */
+function pasted(e) {
+  if (!pictureOnly(e.clipboardData)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (screen.io.agent()) send(new Uint8Array([0x16]));
+}
+
 /** A key the screen keeps for the page: a selection is copied with ctrl+c or ctrl+shift+c. */
 function copied(e) {
   if (e.type !== 'keydown' || !e.ctrlKey || e.altKey || e.metaKey || e.key.toLowerCase() !== 'c') return false;
@@ -236,6 +254,8 @@ export function setupScreen(into, pane, io) {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(into);
+  // Before xterm.js's own listeners, on the textarea and the terminal inside `into`.
+  into.addEventListener('paste', pasted, true);
   term.attachCustomKeyEventHandler((e) => !(copied(e) || io.keys(e)));
   term.onData((text) => typed(new TextEncoder().encode(text), text));
   term.onBinary((text) => typed(Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff), text));

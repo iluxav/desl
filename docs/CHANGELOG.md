@@ -7,6 +7,9 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- `desl app` opens desl web in a window of its own, without the browser's tabs and address
+  bar, through an installed Google Chrome, Chromium, Brave, Edge or Vivaldi. It starts desl web
+  when none runs. `desl app --install` puts desl in the applications menu, with an icon.
 - A refined web project sidebar with folder, branch and action icons, indented threads and
   a background tint on the selected thread. Its toolbar stays fixed while the list scrolls.
 - A project's `⋯` menu on desl web offers Hide and Remove, with Show hidden projects beside

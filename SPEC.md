@@ -224,6 +224,7 @@ All keys are remappable in `keys.toml` by named command, with `vim` and `emacs` 
 desl                         attach to the workspace (starts the daemon if needed)
 desl status                  the thread list as text
 desl web [--port N] [--open] [--stop]   the workspace in a browser, at 127.0.0.1 (see web-spec.md); one per workspace
+desl app [--install]         desl web in a window of its own, opened with an installed Chromium-based browser; --install puts desl in the applications menu
 desl thread list|show|rename|rm
 desl project rm <project>     remove an idle project from the workspace; reopening its directory restores its conversations
 desl form list|show <form>|answer <form> '<json>'|close <form>   the forms agents put in front of the user (docs/design/2026-11-21-web-forms.md)

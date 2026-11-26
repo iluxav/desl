@@ -418,6 +418,18 @@ in the background when none runs, in a session of its own. Over SSH, or with no 
 (`open` on macOS), the address goes to the clipboard instead. From a shell, `desl web --open`
 does the same; `desl web` while one runs says where it is; `desl web --stop` ends it.
 
+**A window of its own.** `desl app` opens the page in a window of its own, without the browser's
+tabs and address bar: it starts desl web in the background when none runs, then runs the first
+of Google Chrome, Chromium, Brave, Edge and Vivaldi it finds with `--app=<address>`, in a session
+of its own, so the window stays when the terminal closes. It is the same page from the same
+desl web, with the browser's own profile: what the page keeps in the browser (saved prompts,
+hidden projects, widths) is what a tab in that browser has. Closing the window ends nothing.
+With none of those browsers installed, or over SSH, it opens nothing and says why.
+`desl app --install` writes a launcher entry (`desl.desktop`, with desl's icon) under
+`$XDG_DATA_HOME`, so desl is in the applications menu and starts as `desl app` does; deleting
+that file takes it out. Linux only; on macOS `desl app` is run from a terminal. `prefix v` and a
+pushed form still open a browser tab.
+
 **Keys on the page.** The prefix key is the one in `config.toml`, which desl web tells the
 page; the page reads it, and the key after it, before the agent's screen or any field sees them.
 After it: `c` a new thread in this project, `o` open a directory, `s` switch, `r` restart, `f`

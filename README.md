@@ -114,6 +114,10 @@ desl web shows the workspace in a browser, beside the terminal or instead of it.
 background as it attaches, and `ctrl+space v` opens your browser on it. From a shell,
 `desl web --open` does the same, `desl web` prints the address, and `desl web --stop` ends it.
 
+`desl app` opens the same page in a window of its own, with no tabs and no address bar. It uses
+Google Chrome, Chromium, Brave, Edge or Vivaldi, whichever is installed. `desl app --install`
+puts desl in your applications menu.
+
 ```sh
 desl web
 # desl web: http://127.0.0.1:7428/#t=<key>

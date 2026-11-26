@@ -68,6 +68,12 @@ enum Cmd {
         #[arg(long, conflicts_with_all = ["port", "open"])]
         stop: bool,
     },
+    /// desl web in a window of its own, without the browser's tabs and address bar
+    App {
+        /// Put desl in the applications menu, with an icon, instead of opening the window
+        #[arg(long)]
+        install: bool,
+    },
     /// The MCP server an agent desl starts is given, for its forms (run by the agent, not by hand)
     #[command(hide = true)]
     Mcp {
@@ -356,6 +362,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             Some(thread) => cli::web_open_on(paths, &out, &thread),
             None => cli::web(paths, &out, port, open, stop),
         },
+        Cmd::App { install } => cli::app(paths, &out, install),
         Cmd::Mcp { thread, socket } => mcp::run(&socket, &thread),
         Cmd::Form { command } => match command {
             FormCmd::New => cli::form_new(paths, &out),

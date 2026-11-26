@@ -38,6 +38,40 @@ pub fn web_open_on(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     Ok(())
 }
 
+/// `desl app` (web-spec.md "A window of its own"): desl web in a window of its own, started in
+/// the background when none runs. `--install` puts desl in the applications menu instead.
+pub fn app(paths: &Paths, out: &Out, install: bool) -> Result<()> {
+    if install {
+        if cfg!(target_os = "macos") {
+            bail!("desl writes a launcher entry on Linux only. On macOS, run `desl app` from a terminal");
+        }
+        let data = crate::web::data_home()
+            .context("desl found no home folder to put its launcher entry in. Set HOME, then run `desl app --install` again")?;
+        let entry = crate::web::install_launcher(&data, &own_binary()?)?;
+        let missing = if crate::web::app_browser().is_none() {
+            " It needs Google Chrome, Chromium, Brave, Edge or Vivaldi, and none is installed yet."
+        } else {
+            ""
+        };
+        done(
+            out,
+            json!({ "entry": entry, "browser": crate::web::app_browser().map(|(n, _)| n) }),
+            format!("desl is in your applications menu ({}).{missing} Delete that file to take it out again.", entry.display()),
+        );
+        return Ok(());
+    }
+    let url = crate::web::ensure(paths)?;
+    match crate::web::open_app(&url) {
+        Ok(browser) => done(
+            out,
+            json!({ "url": url, "opened": true, "browser": browser }),
+            format!("desl is open in a window of its own ({browser}). It runs on when the window closes; `desl web --stop` ends it."),
+        ),
+        Err(why) => bail!("{why}"),
+    }
+    Ok(())
+}
+
 /// `desl web` (web-spec.md): starts the daemon when it is not running, prints the address to
 /// open, key included, and serves the page until ctrl+c. The agents keep working without it.
 /// One serves each workspace: when one already does, this says where, and `--stop` ends it.

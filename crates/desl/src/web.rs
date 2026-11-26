@@ -64,23 +64,28 @@ pub fn running(paths: &Paths) -> Option<String> {
     answers(port(&n.url)?).then_some(n.url)
 }
 
+/// `exe` in a session of its own, so that closing this terminal does not end it.
+fn detached(exe: &std::path::Path) -> Command {
+    match desl_ir::adapter::which("setsid") {
+        // A session leader with no terminal, in place, as the daemon is started.
+        Some(setsid) => {
+            let mut c = Command::new(setsid);
+            c.arg(exe);
+            c
+        }
+        None => {
+            let mut c = Command::new(exe);
+            c.process_group(0);
+            c
+        }
+    }
+}
+
 /// Starts desl web in the background, in a session of its own so that closing this terminal
 /// does not end it, and returns its address once it serves the page.
 pub fn start() -> Result<String> {
     let exe = std::env::current_exe().context("desl could not find its own binary to start desl web")?;
-    let mut cmd = match desl_ir::adapter::which("setsid") {
-        // A session leader with no terminal, in place, as the daemon is started.
-        Some(setsid) => {
-            let mut c = Command::new(setsid);
-            c.arg(&exe);
-            c
-        }
-        None => {
-            let mut c = Command::new(&exe);
-            c.process_group(0);
-            c
-        }
-    };
+    let mut cmd = detached(&exe);
     cmd.args(["web", "--json"]).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     // It inherits DESL_HOME and DESL_SOCKET, so it serves the workspace this process talks to.
     let mut child = cmd.spawn().context("desl could not start desl web")?;
@@ -117,10 +122,103 @@ pub fn ensure(paths: &Paths) -> Result<String> {
     }
 }
 
+/// Over SSH this machine's screen is not the user's: no browser is opened on it.
+fn over_ssh() -> bool {
+    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    set("SSH_CONNECTION") || set("SSH_TTY")
+}
+
+/// The browsers that open one address in a window of its own (`--app=`), as their commands are
+/// named on Linux, the one most people have first.
+const APP_BROWSERS: &[&str] = &[
+    "google-chrome-stable",
+    "google-chrome",
+    "chromium",
+    "chromium-browser",
+    "brave",
+    "brave-browser",
+    "microsoft-edge-stable",
+    "vivaldi-stable",
+    "vivaldi",
+];
+
+/// The same browsers as macOS keeps them, in /Applications.
+const APP_BUNDLES: &[&str] = &["Google Chrome", "Chromium", "Brave Browser", "Microsoft Edge", "Vivaldi"];
+
+/// The first of those browsers `found` finds.
+fn app_browser_among<'a>(names: &[&'a str], found: impl Fn(&str) -> Option<PathBuf>) -> Option<(&'a str, PathBuf)> {
+    names.iter().find_map(|n| found(n).map(|p| (*n, p)))
+}
+
+/// The browser `desl app` opens its window with, by name and by path. None when none is installed.
+pub fn app_browser() -> Option<(&'static str, PathBuf)> {
+    if cfg!(target_os = "macos") {
+        app_browser_among(APP_BUNDLES, |n| Some(PathBuf::from(format!("/Applications/{n}.app/Contents/MacOS/{n}"))).filter(|p| p.is_file()))
+    } else {
+        app_browser_among(APP_BROWSERS, desl_ir::adapter::which)
+    }
+}
+
+/// Opens `url` in a window of its own: the page without the browser's tabs and address bar
+/// (web-spec.md "A window of its own"). Returns the browser's name; when it cannot, the
+/// sentence says why.
+pub fn open_app(url: &str) -> std::result::Result<&'static str, String> {
+    if over_ssh() {
+        return Err("desl runs over SSH here, so a window opened on this machine is not on your screen.".to_string());
+    }
+    let Some((name, bin)) = app_browser() else {
+        return Err("desl found no Google Chrome, Chromium, Brave, Edge or Vivaldi to open its own window with. Install one of them, or run `desl web --open` for a browser tab.".to_string());
+    };
+    // In a session of its own: the window stays when the terminal that ran `desl app` closes.
+    let child = detached(&bin).arg(format!("--app={url}")).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    match child {
+        Ok(mut c) => {
+            std::thread::spawn(move || c.wait());
+            Ok(name)
+        }
+        Err(e) => Err(format!("desl could not run `{}` ({e}).", bin.display())),
+    }
+}
+
+/// The launcher's icon, compiled in.
+const ICON: &str = include_str!("../assets/desl.svg");
+
+/// The launcher entry `desl app --install` writes: desl in the applications menu, starting
+/// `exe app`. The window class is the one those browsers give a window on 127.0.0.1, so the
+/// desktop knows the window as this entry's.
+fn launcher(exe: &std::path::Path) -> String {
+    format!(
+        "[Desktop Entry]\nVersion=1.0\nType=Application\nName=desl\nComment=Every coding agent in one workspace\nExec=\"{}\" app\nIcon=desl\nTerminal=false\nCategories=Development;\nStartupNotify=true\nStartupWMClass=chrome-127.0.0.1__-Default\n",
+        exe.display()
+    )
+}
+
+/// Writes the launcher entry and its icon under `data` (`~/.local/share`), and returns the
+/// entry's path.
+pub fn install_launcher(data: &std::path::Path, exe: &std::path::Path) -> Result<PathBuf> {
+    let icons = data.join("icons/hicolor/scalable/apps");
+    let apps = data.join("applications");
+    for dir in [&icons, &apps] {
+        std::fs::create_dir_all(dir).with_context(|| format!("desl could not make the folder {}", dir.display()))?;
+    }
+    let icon = icons.join("desl.svg");
+    std::fs::write(&icon, ICON).with_context(|| format!("desl could not write its icon to {}", icon.display()))?;
+    let entry = apps.join("desl.desktop");
+    std::fs::write(&entry, launcher(exe)).with_context(|| format!("desl could not write its launcher entry to {}", entry.display()))?;
+    Ok(entry)
+}
+
+/// Where the user's own launcher entries and icons live: `$XDG_DATA_HOME`, or `~/.local/share`.
+pub fn data_home() -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").filter(|v| !v.is_empty()).map(|h| PathBuf::from(h).join(".local/share")))
+}
+
 /// Opens `url` in the user's browser. When it cannot, the sentence says why.
 pub fn open(url: &str) -> std::result::Result<(), String> {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
-    if set("SSH_CONNECTION") || set("SSH_TTY") {
+    if over_ssh() {
         return Err("desl runs over SSH here, so this machine's browser is not yours.".to_string());
     }
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
@@ -242,6 +340,33 @@ mod tests {
         forget(&p);
         assert!(!note(&p).exists(), "this process's note goes");
         assert!(!stop(&p).unwrap(), "nothing to stop");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_window_opens_with_the_first_browser_installed() {
+        let only = |have: &'static [&'static str]| move |n: &str| have.contains(&n).then(|| PathBuf::from("/usr/bin").join(n));
+        assert_eq!(
+            app_browser_among(APP_BROWSERS, only(&["chromium", "google-chrome-stable", "brave"])),
+            Some(("google-chrome-stable", PathBuf::from("/usr/bin/google-chrome-stable")))
+        );
+        assert_eq!(app_browser_among(APP_BROWSERS, only(&["vivaldi"])), Some(("vivaldi", PathBuf::from("/usr/bin/vivaldi"))));
+        assert_eq!(app_browser_among(APP_BROWSERS, only(&["firefox"])), None, "Firefox has no such window");
+    }
+
+    #[test]
+    fn the_launcher_entry_starts_desl_app_and_brings_its_icon() {
+        let dir = std::env::temp_dir().join(format!("desl-launcher-{}", std::process::id()));
+        let entry = install_launcher(&dir, std::path::Path::new("/home/me/.local/bin/desl")).unwrap();
+        assert_eq!(entry, dir.join("applications/desl.desktop"));
+        let text = std::fs::read_to_string(&entry).unwrap();
+        assert!(text.starts_with("[Desktop Entry]\n"), "{text}");
+        assert!(text.contains("\nExec=\"/home/me/.local/bin/desl\" app\n"), "{text}");
+        assert!(text.contains("\nIcon=desl\n") && text.contains("\nTerminal=false\n"), "{text}");
+        assert!(std::fs::read_to_string(dir.join("icons/hicolor/scalable/apps/desl.svg")).unwrap().starts_with("<svg"));
+        // Again, after an install elsewhere: the entry follows the binary.
+        install_launcher(&dir, std::path::Path::new("/opt/desl")).unwrap();
+        assert!(std::fs::read_to_string(&entry).unwrap().contains("Exec=\"/opt/desl\" app"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

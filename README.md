@@ -55,7 +55,7 @@ curl -fsSL https://raw.githubusercontent.com/iluxav/desl/main/install.sh | sh
 
 The script picks the release build for your system (Linux or macOS, x86_64 or arm64), checks
 its SHA-256 and installs `desl` into `~/.local/bin`. It never needs sudo.
-`DESL_INSTALL_DIR=/some/dir` puts it elsewhere; `DESL_VERSION=v0.1.2` pins a release.
+`DESL_INSTALL_DIR=/some/dir` puts it elsewhere; `DESL_VERSION=v0.2.0` pins a release.
 
 From source, with a recent stable Rust:
 

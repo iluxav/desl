@@ -30,7 +30,7 @@ rule, and the TUI's actions on threads and a pasted screenshot follow
 
 | Section | Before | Now |
 | --- | --- | --- |
-| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their threads and each thread's conversation, where an agent puts forms in front of the user, and each agent's own screen and the actions on threads, so the page can be used without the TUI. It adds no feature the CLI lacks." |
+| Non-goals, "No dashboard" | "No web UI, no metrics pages, no boards." | "`desl web` is the one browser client: the projects, their threads and each thread's conversation, where an agent puts forms in front of the user, and each agent's own screen and the actions on threads, so the page can be used without the TUI. Workspace actions have CLI equivalents; saved prompts and layout preferences stay in the browser." |
 | Language and stack | "`tokio` … comes back only if remote clients in phase 3 need it." | `desl web` uses `tokio` and `axum`, in its own crate. The daemon and the TUI stay on plain threads and channels. |
 | Naming and vocabulary | No words for the new pieces | **form**: what a thread's agent puts in front of the user on the page, made of widgets, answered with Send. **waiting list**: every open form and every agent dialog in the workspace, in one place. |
 | IR events | — | `form` and `form_answer`; `highlight` (an agent's question and answer for the thread's Highlights, from desl's MCP tool `highlight`) |
@@ -120,7 +120,7 @@ desl's own.
 | Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it; `⋯` on a thread's line opens that thread's menu (switch, restart, fork, rename, close) without opening it, shown on hover and on the thread on screen in place of its age; a project's line is dragged to move the project among the others, which the TUI's sidebar keeps too (the daemon's `move_project`, asked until the page lists it there) |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; `⋯`, the thread's actions; Stop while it works |
 | Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
-| Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered |
+| Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered. Below it, **Tasks** and **Prompts** tabs: the project's live task list, or saved text to copy and reuse |
 | Bottom | The prompt to the selected thread, under the Conversation and the Highlights (the Screen has the agent's own input; at phone width it shows under all three); a sentence from desl, for a few seconds |
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI
@@ -133,6 +133,65 @@ left, 220 on the right) nor wider than 45% of the window, and the middle keeps a
 double click on the line gives the usual width back (280 and 300 px). From the keyboard the line
 takes the focus with `tab`, and the arrows move it by 16 px, 64 with `shift`. The widths are kept
 in the browser, for that browser only.
+
+**Collapsing.** Icons at the left and right ends of the page header collapse the corresponding
+sidebar and its resize line. The icons remain available to reopen them, with labels and
+`aria-expanded` reflecting their state; `prefix b` also toggles the projects sidebar. The
+conversation takes the freed width, and reopening restores the sidebar's chosen width. Each
+sidebar's collapsed state is kept in the browser. The header's waiting count remains visible.
+
+**Project sidebar.** Open a directory and Show hidden projects stay in a fixed toolbar above
+the list; only the list scrolls vertically. At phone width the list is capped at 40% of the
+viewport height. Folder, branch and action icons share a line style. Every project header is
+one compact row: folder, name, optional branch and change count, and actions. The full directory
+path appears on hover; projects without a branch leave no empty metadata row. Below 240px,
+branch details move into that tooltip to keep the name and actions readable. Threads are
+indented beneath one continuous vertical guide per project, inset only past the first item's
+top padding and the last item's bottom padding. Selection uses a background tint without a
+left accent bar. Live updates retain row nodes and keyboard focus, so
+an agent's pulse continues while its latest line changes. Working logos pulse in the accent
+colour once every 1.6 seconds, Waiting uses amber, Failed uses red and Idle fades the agent's
+colour; reduced motion keeps the working colour and disables the pulse.
+
+### Project actions
+
+Every project's line has **⋯** beside **+**, offering **Hide** and **Remove**. Hide hides the
+project and its threads from this browser's sidebar and next/previous thread navigation.
+It leaves the current pane and Waiting available. The eye toggle beside **Open a directory**
+shows hidden projects with a **Hidden** mark; their menu offers **Show** to unhide them. Opening
+a hidden thread from Waiting reveals its row. Hidden paths and the toggle are saved in this
+browser. Hide never changes the daemon's project list.
+
+Remove asks for confirmation that it affects the whole workspace, then sends `remove_project`
+to the daemon (`desl project rm <project>` from a shell). It closes idle programs and removes
+the project and its threads from every client's list. An active turn or an agent change refuses
+removal with a sentence explaining how to retry. Files, worktrees, conversations, bindings,
+queued prompts and forms are preserved. Opening the same directory restores its stored threads;
+browser prompts remain associated with its path. Show hidden does not list removed projects.
+Removing the selected project's last thread selects another visible thread, or clears the pane
+and disables input when none remains.
+
+### Saved prompts
+
+The right column has **Tasks** and **Prompts** tabs below Waiting; switching tabs does not hide
+Waiting. Prompts always follow the project of the thread selected in the left sidebar, with
+no separate project selector. Projects without a task list can still save prompts.
+
+The **+** button on Prompts opens an inline multiline text area, with **Save prompt** and
+**Cancel**. Blank text cannot be saved. Saving puts the exact text in a list, newest first;
+each item has a copy icon that copies the whole text to the clipboard, and **⋯** with **Edit**
+and **Delete**. Edit uses the same text area; Delete asks for confirmation. List previews are
+plain text, shortened visually to five lines. The editor shows the whole text.
+
+Saved prompts belong to a project by its full path and are kept in this browser's local
+storage on this address, separate from the daemon and thread log. Reloading or reopening the
+page keeps them; another browser or address has its own library. Each prompt has its own
+entry so tabs adding different prompts cannot replace one another's lists. Open tabs refresh
+on storage changes, and saving an edit refuses to replace a prompt changed or deleted in
+another tab. A storage failure keeps the editor's text and explains how to retry. Switching
+projects or tabs, or collapsing a sidebar, preserves unsaved drafts for the life of the page.
+Saved prompts are a browser convenience: they do not run automatically, and copying one does
+not send it to an agent.
 
 ## Indicators
 
@@ -312,9 +371,11 @@ last sets the size. The daemon answers the agent's questions to its terminal whe
 shows the thread, and the page drops the answers xterm.js gives by itself, so the agent hears
 each answer once (`docs/protocol.md`). A selection is copied with `ctrl+c` or `ctrl+shift+c`
 (shift+drag selects where the agent takes the mouse); without one, `ctrl+c` goes to the agent.
-As in a terminal, `ctrl+v` goes to the agent, which reads a picture from the clipboard itself,
-and `ctrl+shift+v` pastes text. A paste that holds a picture and no text, by any other way,
-sends the agent `ctrl+v` too, so a screenshot reaches it; a shell gets nothing.
+`ctrl+v` (`cmd+v` on macOS) lets the browser paste the clipboard's contents; xterm.js must not
+turn that key directly into the agent's image shortcut. Text takes xterm.js's normal paste
+path, bracketed when the agent requested it. `ctrl+shift+v` pastes plain text. A browser paste
+event that holds a picture and no text sends the agent `ctrl+v`, which reads that picture from
+the local clipboard; a shell gets nothing. Text takes precedence when both are present.
 The browser keeps `ctrl+w`, `ctrl+t` and `ctrl+n` in a tab, and the Screen says so.
 
 **Cost:** the stripped release binary grew from 8.2 MB to 10.1 MB with xterm.js in milestone 1;

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Bumped with every migration. Migrations only go forward.
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// A tool output or a diff larger than this is cut in the event; the full text goes to a blob.
 pub const INLINE_LIMIT: usize = 16 * 1024;
@@ -171,6 +171,11 @@ impl Store {
             // Highlights (docs/design/2026-11-22-highlights.md): each thread's latest line.
             self.conn.execute_batch("BEGIN; ALTER TABLE threads ADD COLUMN latest TEXT; PRAGMA user_version = 8; COMMIT;")?;
         }
+        if version < 9 {
+            self.conn.execute_batch(
+                "BEGIN; ALTER TABLE projects ADD COLUMN removed INTEGER NOT NULL DEFAULT 0; PRAGMA user_version = 9; COMMIT;",
+            )?;
+        }
         Ok(())
     }
 
@@ -204,8 +209,19 @@ impl Store {
     // ---- projects ----------------------------------------------------------------------------
 
     pub fn projects(&self) -> Result<Vec<Project>> {
-        let mut st = self.conn.prepare("SELECT id, path, default_agent, created_at FROM projects ORDER BY created_at, id")?;
-        let rows = st.query_map([], |r| {
+        self.read_projects(false)
+    }
+
+    /// Includes projects removed from the workspace, for reopening and reserving their ids.
+    pub fn all_projects(&self) -> Result<Vec<Project>> {
+        self.read_projects(true)
+    }
+
+    fn read_projects(&self, include_removed: bool) -> Result<Vec<Project>> {
+        let mut st = self
+            .conn
+            .prepare("SELECT id, path, default_agent, created_at FROM projects WHERE removed = 0 OR ?1 ORDER BY created_at, id")?;
+        let rows = st.query_map([include_removed], |r| {
             Ok(Project { id: r.get(0)?, path: r.get(1)?, default_agent: r.get(2)?, created_at: r.get(3)?, git: GitState::default() })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -214,10 +230,25 @@ impl Store {
     pub fn put_project(&self, p: &Project) -> Result<()> {
         self.conn.execute(
             "INSERT INTO projects (id, path, default_agent, created_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (id) DO UPDATE SET path = ?2, default_agent = ?3",
+             ON CONFLICT (id) DO UPDATE SET path = ?2, default_agent = ?3, removed = 0",
             params![p.id, p.path, p.default_agent, p.created_at],
         )?;
         Ok(())
+    }
+
+    /// Unlists a project without deleting any thread, event, form, queue or binding.
+    pub fn remove_project(&self, id: &str) -> Result<()> {
+        self.conn.execute("UPDATE projects SET removed = 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    /// Removed threads still own their ids and the prefixes of their forks.
+    pub fn thread_id_used(&self, id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 OR id LIKE ?2)",
+            params![id, format!("{id}/%")],
+            |r| r.get(0),
+        )?)
     }
 
     // ---- threads -----------------------------------------------------------------------------
@@ -339,6 +370,8 @@ impl Store {
             self.conn.execute(&format!("DELETE FROM {table} WHERE thread_id = ?1"), params![id])?;
         }
         self.conn.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+        let cursor_prefix = format!("session-offset:[{},", serde_json::json!(id));
+        self.conn.execute("DELETE FROM meta WHERE instr(key, ?1) = 1", [cursor_prefix])?;
         Ok(())
     }
 
@@ -515,6 +548,18 @@ impl Store {
         Ok(self.conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0)).optional()?)
     }
 
+    /// The next complete record of a native session this thread previously followed.
+    pub fn session_offset(&self, thread: &str, agent: &str, session: &str) -> Result<u64> {
+        let key = format!("session-offset:{}", serde_json::json!([thread, agent, session]));
+        self.meta_get(&key)?.map(|v| v.parse().map_err(Into::into)).unwrap_or(Ok(0))
+    }
+
+    /// Keep a native session's position when its interface moves to another conversation.
+    pub fn put_session_offset(&self, thread: &str, agent: &str, session: &str, offset: u64) -> Result<()> {
+        let key = format!("session-offset:{}", serde_json::json!([thread, agent, session]));
+        self.meta_set(&key, &offset.to_string())
+    }
+
     pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
         self.conn
             .execute("INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = ?2", params![key, value])?;
@@ -648,6 +693,21 @@ mod tests {
         assert_eq!(back[0].bindings["claude"].effort_choice.as_deref(), Some("high"));
         assert_eq!(s.queue_pop("t-1").unwrap().as_deref(), Some("next"));
         assert_eq!(s.queue_pop("t-1").unwrap(), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_deleted_threads_session_positions_cannot_leak_into_a_reused_id() {
+        let (s, dir) = store();
+        s.put_thread(&thread("t-1")).unwrap();
+        for (id, offset) in [("t-1", 100), ("t-10", 200), ("t-1/1", 300)] {
+            s.put_session_offset(id, "codex", "session", offset).unwrap();
+        }
+        s.delete_thread("t-1").unwrap();
+        s.put_thread(&thread("t-1")).unwrap();
+        assert_eq!(s.session_offset("t-1", "codex", "session").unwrap(), 0);
+        assert_eq!(s.session_offset("t-10", "codex", "session").unwrap(), 200);
+        assert_eq!(s.session_offset("t-1/1", "codex", "session").unwrap(), 300);
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -57,6 +57,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `new_thread` | `cwd`, `agent?`, `prompt?`, `beside?` | `created {thread_id}` | `agent` `shell` opens the user's shell in `beside`'s project at `cwd`, `files` their file manager in the directory `beside` is in (an error when none is installed), and `tasks` the project's task list: the tasks thread of `beside`'s project when it has one (its id comes back), else a new one at the project's root; from a shell or file manager `beside`, the agent opens where it is, as its own project, and it joins it |
 | `rename` | `thread_id`, `name` | `done` | |
 | `remove_thread` | `thread_id` | `done` | Ends its agents and deletes its history. |
+| `remove_project` | `project_id` | `done` | Unlists a project and its threads from the whole workspace and closes idle programs. Refuses active turns and agent changes. Preserves files, worktrees, thread logs, bindings, queued prompts and forms; registering the same directory again restores the project and its threads. |
 | `move_project` | `project_id`, `up` | `done` | Moves the project one place up or down among the projects that have a thread, the ones a sidebar lists, and keeps the order across restarts. An error sentence when it is already first or last. |
 | `brief` | `thread_id`, `to?` | `brief {to, text, token_estimate, turns, delta, needed}` | What a switch to `to` would send now. `needed` is false when `to` has seen everything. |
 | `clear` | `thread_id` | `done` | A fresh native session on the same thread; the history stays. |
@@ -106,6 +107,7 @@ sentence that says what happened and what to do next; clients show it as it is.
 | `thread` | `thread` | A thread was created, or its name, status, agent, bindings, queue, pending approval, branch or open forms changed. `thread.open_forms` lists its forms not answered yet, `{id, title, at}`, oldest first. `thread.screen_asks` is true while its agent asks something in its own screen, a form open beside it or not. |
 | `tasks` | `project_id`, `tasks` | A project's task list changed, in its file (checked every second) or through desl: the whole list as it is now. |
 | `project_order` | `ids` | The user moved a project: every project's id, in the order to list them now. |
+| `project_removed` | `project_id` | A project and all its threads left the workspace. Clients remove both together; a `thread_removed` for each thread follows. History stays stored, and registering the same directory again emits `project` and `thread` for the restored rows. |
 | `thread_removed` | `thread_id` | |
 | `appended` | `event` | An IR event was appended to a thread's log. |
 | `agents` | `agents` | Detection ran again. |

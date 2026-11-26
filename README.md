@@ -130,6 +130,20 @@ line opens its menu, and dragging a project's line moves it. Its right column ho
 brings its branch in when the agent marks it ready. Agents add and update tasks with tools
 desl gives them, and park ideas you defer.
 
+The header icons collapse either sidebar and reopen it at its previous width (`ctrl+space b`
+also toggles projects). Beside **Tasks**, **Prompts** keeps reusable text for each project:
+press **+**, write it and **Save prompt**. Each item has a copy button and **⋯** for Edit or
+Delete. Prompts stay in this browser on this address after reload and always follow the
+project of the thread selected in the left sidebar.
+
+A project's **⋯** menu offers **Hide** and **Remove**. The eye toggle beside **Open a directory**
+shows hidden projects, whose menu offers **Show**. Remove affects the whole workspace and
+closes idle programs; stop or finish active turns first. Files and conversations stay stored,
+and reopening the directory restores the project. `desl project rm <project>` does the same.
+
+In **Screen**, `ctrl+v` (`cmd+v` on macOS) pastes text or a screenshot from the clipboard;
+`ctrl+shift+v` pastes plain text. A copied saved prompt pastes as text into the agent's input.
+
 It is where your agents put **forms** in front of you. When a choice needs its trade-offs, a
 plan should be approved step by step or a look tuned, the agent calls desl's `show_form` tool
 and ends its turn, and the form appears as a card in its conversation: options, a checklist to

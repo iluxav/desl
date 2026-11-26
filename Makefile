@@ -11,7 +11,7 @@
 BINDIR ?= $(HOME)/.local/bin
 TARGET := target/release
 
-.PHONY: help build test check install uninstall
+.PHONY: help build test check check-web install uninstall
 
 help:
 	@sed -n '2,10p' $(MAKEFILE_LIST) | sed 's/^# \{0,1\}//'
@@ -26,6 +26,10 @@ check:
 	cargo clippy --workspace --all-targets -- -D warnings
 	cargo fmt --all --check
 	cargo test --workspace
+
+# Playwright and Chromium are test tools only; the installed binary needs neither.
+check-web:
+	node --test crates/desl-web/tests/browser.mjs
 
 # The running daemon would keep serving the old code, so it starts again from the binary just
 # installed. It hands that one every agent and shell, so nothing that runs in a thread ends and

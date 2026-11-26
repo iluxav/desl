@@ -62,6 +62,73 @@ pub fn file(cwd: &Path, session_id: Option<&str>, since: SystemTime) -> Option<(
         .map(|(_, id, p)| (id, p))
 }
 
+/// The rollout held open by this Codex interface, including after /new or /resume.
+pub fn running(pid: u32) -> Option<(String, PathBuf)> {
+    running_in(Path::new("/proc"), pid)
+}
+
+fn running_in(proc: &Path, pid: u32) -> Option<(String, PathBuf)> {
+    use std::io::{BufRead, Read};
+    // The npm launcher may own the PTY, with Codex in a child. Search nearest processes
+    // first, with a bound; never scan unrelated interfaces sharing the same directory.
+    let mut level = vec![pid];
+    for _ in 0..4 {
+        let mut found = std::collections::BTreeMap::new();
+        let mut children = Vec::new();
+        for pid in level.into_iter().take(32) {
+            let base = proc.join(pid.to_string());
+            let name = std::fs::read_to_string(base.join("comm")).unwrap_or_default();
+            if !matches!(name.trim(), "codex" | "node") {
+                continue;
+            }
+            for entry in std::fs::read_dir(base.join("fd")).into_iter().flatten().flatten() {
+                let flags = std::fs::read_to_string(base.join("fdinfo").join(entry.file_name())).ok().and_then(|text| {
+                    text.lines().find_map(|line| line.strip_prefix("flags:").and_then(|v| u32::from_str_radix(v.trim(), 8).ok()))
+                });
+                // A /resume preview or a tool reading another rollout is not its writer.
+                if flags.is_none_or(|flags| flags & 3 == 0) {
+                    continue;
+                }
+                let Ok(path) = std::fs::read_link(entry.path()) else { continue };
+                if !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("rollout-"))
+                    || path.extension().is_none_or(|e| e != "jsonl")
+                {
+                    continue;
+                }
+                if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+                    continue;
+                }
+                let Ok(file) = std::fs::File::open(&path) else { continue };
+                let mut first = String::new();
+                if std::io::BufReader::new(file.take(256 * 1024)).read_line(&mut first).is_err() {
+                    continue;
+                }
+                let Ok(v) = serde_json::from_str::<Value>(&first) else { continue };
+                let p = &v["payload"];
+                if v["type"] == "session_meta"
+                    && p["source"] == "cli"
+                    && p["thread_source"] != "subagent"
+                    && let Some(id) = p["id"].as_str()
+                {
+                    found.insert(id.to_string(), path);
+                }
+            }
+            if let Ok(text) = std::fs::read_to_string(base.join(format!("task/{pid}/children"))) {
+                children.extend(text.split_whitespace().filter_map(|s| s.parse::<u32>().ok()));
+            }
+        }
+        if !found.is_empty() {
+            // Ambiguous evidence must leave the known binding alone.
+            return (found.len() == 1).then(|| found.into_iter().next()).flatten();
+        }
+        if children.is_empty() {
+            break;
+        }
+        level = children;
+    }
+    None
+}
+
 fn text_of(content: &Value) -> String {
     content.as_array().into_iter().flatten().filter_map(|b| b.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("")
 }
@@ -461,6 +528,44 @@ pub fn subagent_events(cwd: &Path, agent_id: &str) -> Vec<EventKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_running_session_belongs_to_the_interface_not_its_helper_or_another_process() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("desl-codex-running-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("10/fd")).unwrap();
+        std::fs::create_dir_all(dir.join("10/fdinfo")).unwrap();
+        std::fs::write(dir.join("10/comm"), "codex\n").unwrap();
+        for fd in [41, 99] {
+            std::fs::write(dir.join(format!("10/fdinfo/{fd}")), "flags:\t0100001\n").unwrap();
+        }
+        let main = dir.join("rollout-main.jsonl");
+        let helper = dir.join("rollout-helper.jsonl");
+        std::fs::write(&main, include_str!("../fixtures/0.172.0-active-session.jsonl")).unwrap();
+        std::fs::write(&helper, include_str!("../fixtures/0.172.0-helper-session.jsonl")).unwrap();
+        symlink(&main, dir.join("10/fd/99")).unwrap();
+        symlink(&helper, dir.join("10/fd/41")).unwrap();
+        assert_eq!(running_in(&dir, 10), Some(("main-session".into(), main.clone())));
+        assert_eq!(running_in(&dir, 11), None);
+        // An npm launcher has the interface in a child process.
+        std::fs::create_dir_all(dir.join("9/task/9")).unwrap();
+        std::fs::write(dir.join("9/comm"), "node\n").unwrap();
+        std::fs::write(dir.join("9/task/9/children"), "10").unwrap();
+        assert_eq!(running_in(&dir, 9), Some(("main-session".into(), main)));
+        std::fs::write(dir.join("10/fdinfo/99"), "flags:\t0100000\n").unwrap();
+        assert_eq!(running_in(&dir, 9), None, "a read-only preview is not the active conversation");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_captured_0172_session_reports_an_active_turn() {
+        let mut reader = Reader::new(Path::new("/tmp/demo"));
+        let readings: Vec<_> =
+            include_str!("../fixtures/0.172.0-active-session.jsonl").lines().flat_map(|line| reader.line(line)).collect();
+        assert_eq!(readings, [Reading::Working]);
+        assert!(include_str!("../fixtures/0.172.0-helper-session.jsonl").lines().flat_map(|line| reader.line(line)).next().is_none());
+    }
 
     #[test]
     fn codexs_mcp_approval_is_a_question_on_its_screen() {

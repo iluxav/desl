@@ -88,6 +88,11 @@ enum Cmd {
         #[command(subcommand)]
         command: ThreadCmd,
     },
+    /// Remove a project from the workspace, keeping its files and stored conversations
+    Project {
+        #[command(subcommand)]
+        command: ProjectCmd,
+    },
     /// Open a new thread
     New {
         /// A project id or a directory (default: the current directory)
@@ -180,6 +185,12 @@ enum Cmd {
         #[command(subcommand)]
         command: DaemonCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum ProjectCmd {
+    /// Remove an idle project; opening its directory again restores its threads
+    Rm { project: String },
 }
 
 #[derive(Subcommand)]
@@ -359,6 +370,7 @@ fn run(cli: Cli, paths: &Paths) -> anyhow::Result<()> {
             ThreadCmd::Rename { thread, name } => cli::thread_rename(paths, &out, &thread, &name),
             ThreadCmd::Rm { thread } => cli::thread_rm(paths, &out, &thread),
         },
+        Cmd::Project { command: ProjectCmd::Rm { project } } => cli::project_rm(paths, &out, &project),
         Cmd::New { project, agent, worktree, message } => cli::new(paths, &out, project, agent, message, worktree),
         Cmd::Send { thread, prompt } => cli::send(paths, &out, &thread, &prompt),
         Cmd::Switch { thread, agent } => cli::switch(paths, &out, &thread, &agent),

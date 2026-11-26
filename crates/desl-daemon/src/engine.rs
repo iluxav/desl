@@ -144,6 +144,8 @@ struct Tail {
     /// The start of a line the agent has not finished writing.
     partial: Vec<u8>,
     last_poll: Instant,
+    /// A running interface may open a new native session without changing its process.
+    session_checked: Option<Instant>,
     /// When the agent's own title was last asked for, for an agent that keeps it outside the file.
     title_asked: Option<Instant>,
 }
@@ -407,6 +409,7 @@ impl Engine {
             store.meta_get(PROJECT_ORDER).ok().flatten().and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
         projects.sort_by_key(|p| order.iter().position(|id| *id == p.id).unwrap_or(usize::MAX));
         let mut threads = store.threads()?;
+        threads.retain(|t| projects.iter().any(|p| p.id == t.project_id));
         // Threads named before titles carry one word from their first prompt: give them the title.
         for t in threads.iter_mut().filter(|t| t.head > 0 && !t.name.contains(' ') && is_agent(&t.active_agent)) {
             let first = store.events(&t.id, 1, t.head.min(50)).unwrap_or_default().into_iter().find_map(|e| match e.kind {
@@ -801,10 +804,39 @@ impl Engine {
         if let Some(p) = self.projects.iter().find(|p| p.path == path) {
             return Ok(p.id.clone());
         }
+        let saved = self.store.all_projects().map_err(|e| format!("Could not read projects ({e}). Run `desl doctor` and try again."))?;
+        if let Some(mut project) = saved.iter().find(|p| p.path == path).cloned() {
+            let mut restored = self
+                .store
+                .threads()
+                .map_err(|e| format!("Could not restore the project's threads ({e}). Run `desl doctor` and try again."))?;
+            restored.retain(|t| t.project_id == project.id);
+            let forms = self
+                .store
+                .open_forms()
+                .map_err(|e| format!("Could not restore the project's forms ({e}). Run `desl doctor` and try again."))?;
+            for (id, form) in forms {
+                if let Some(t) = restored.iter_mut().find(|t| t.id == id) {
+                    t.open_forms.push(form);
+                }
+            }
+            project.git = git::state(Path::new(&path));
+            self.store
+                .put_project(&project)
+                .map_err(|e| format!("Could not restore the project ({e}). Run `desl doctor` and try again."))?;
+            let id = project.id.clone();
+            self.projects.push(project.clone());
+            self.broadcast(Change::Project { project });
+            for thread in restored {
+                self.threads.push(thread.clone());
+                self.broadcast(Change::Thread { thread: Box::new(thread) });
+            }
+            return Ok(id);
+        }
         let base = root.file_name().map(|s| s.to_string_lossy().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "project".into());
         let mut id = base.clone();
         let mut n = 2;
-        while self.projects.iter().any(|p| p.id == id) {
+        while saved.iter().any(|p| p.id == id) {
             id = format!("{base}-{n}");
             n += 1;
         }
@@ -817,15 +849,19 @@ impl Engine {
     }
 
     /// Short, typeable, git-style: `t-7f3a`.
-    fn new_thread_id(&self) -> String {
+    fn new_thread_id(&self) -> Result<String, String> {
         use std::hash::{Hash, Hasher};
         let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         for salt in 0u32.. {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (nanos, salt, std::process::id()).hash(&mut h);
             let id = format!("t-{:04x}", h.finish() & 0xffff);
-            if !self.threads.iter().any(|t| t.id == id || t.id.starts_with(&format!("{id}/"))) {
-                return id;
+            let used = self
+                .store
+                .thread_id_used(&id)
+                .map_err(|e| format!("Could not choose a thread id ({e}). Run `desl doctor` and try again."))?;
+            if !used {
+                return Ok(id);
             }
         }
         unreachable!("a free thread id always exists")
@@ -836,7 +872,7 @@ impl Engine {
             self.projects.iter().find(|p| p.id == project_id).cloned().ok_or_else(|| format!("There is no project {project_id}."))?;
         let ts = now();
         let thread = Thread {
-            id: self.new_thread_id(),
+            id: self.new_thread_id()?,
             project_id: project.id,
             name: String::new(),
             named: false,
@@ -1299,6 +1335,7 @@ impl Engine {
                 skip_existing: !read_before && t.head > 0,
                 partial,
                 last_poll: Instant::now(),
+                session_checked: None,
                 title_asked: None,
             },
         );
@@ -1531,6 +1568,67 @@ impl Engine {
     /// Reads what the agent added to its session file, appends it to the thread's log, and sets
     /// the thread's status from it and from the agent's screen.
     fn poll_tail(&mut self, thread_id: &str) {
+        if let Some(tail) = self.tails.get_mut(thread_id)
+            && tail.session_checked.is_none_or(|at| at.elapsed() >= Duration::from_secs(1))
+        {
+            tail.session_checked = Some(Instant::now());
+            let agent = tail.agent.clone();
+            if let Some(pid) = self.ptys.get(thread_id).and_then(|(_, pty)| pty.pid())
+                && let Some(adapter) = self.adapter(&agent)
+                && let Some(session) = adapter.running_session(pid)
+            {
+                self.follow_running_session(thread_id, session);
+            }
+        }
+        self.read_tail(thread_id);
+        self.drain(thread_id);
+    }
+
+    /// A native /new or /resume moved this same interface to a different session. Finish
+    /// reading the previous file, then read the next from its saved position with a fresh parser.
+    fn follow_running_session(&mut self, thread_id: &str, session: (String, PathBuf)) {
+        let Ok(i) = self.idx(thread_id) else { return };
+        let agent = self.threads[i].active_agent.clone();
+        if self.threads[i].bindings.get(&agent).and_then(|b| b.session_id.as_ref()) == Some(&session.0) {
+            return;
+        }
+        let Some(reader) = self.adapter(&agent).and_then(|a| a.session_reader(Path::new(&self.threads[i].cwd))) else { return };
+        // On the first discovery there is no previous session to drain. A directory lookup
+        // here could import an unrelated interface's newest file before the owned one.
+        if self.threads[i].bindings.get(&agent).is_some_and(|b| b.session_id.is_some()) {
+            self.read_tail(thread_id);
+        }
+        if let Some(binding) = self.threads[i].bindings.get(&agent)
+            && let Some(previous) = &binding.session_id
+        {
+            let partial = self.tails.get(thread_id).map_or(0, |tail| tail.partial.len() as u64);
+            if let Err(e) = self.store.put_session_offset(thread_id, &agent, previous, binding.file_offset.saturating_sub(partial)) {
+                tracing::error!(thread = %thread_id, "could not keep the previous session position: {e:#}");
+                return;
+            }
+        }
+        let offset = match self.store.session_offset(thread_id, &agent, &session.0) {
+            Ok(offset) => offset,
+            Err(e) => {
+                tracing::error!(thread = %thread_id, "could not restore the session position: {e:#}");
+                return;
+            }
+        };
+        let Some(tail) = self.tails.get_mut(thread_id) else { return };
+        tail.reader = reader;
+        tail.path = Some(session.1);
+        tail.partial.clear();
+        tail.skip_existing = false;
+        tail.title_asked = None;
+        let b = self.threads[i].bindings.entry(agent.clone()).or_insert_with(|| Binding { agent, ..Binding::default() });
+        b.session_id = Some(session.0);
+        b.file_offset = offset;
+        b.seen_up_to = 0;
+        b.last_used_at = now();
+        self.persist(thread_id);
+    }
+
+    fn read_tail(&mut self, thread_id: &str) {
         let Ok(i) = self.idx(thread_id) else { return };
         let Some(tail) = self.tails.get_mut(thread_id) else { return };
         tail.last_poll = Instant::now();
@@ -1638,7 +1736,6 @@ impl Engine {
         }
         self.refresh_subagents(thread_id);
         self.check_asking(thread_id);
-        self.drain(thread_id);
     }
 
     /// The next queued prompt goes into an agent desl runs in its own interface once it is free:
@@ -1899,6 +1996,7 @@ impl Engine {
                     skip_existing: false,
                     partial: Vec::new(),
                     last_poll: Instant::now(),
+                    session_checked: None,
                     title_asked: None,
                 },
             );
@@ -1910,6 +2008,70 @@ impl Engine {
             self.send(client, &frame);
         }
         tracing::info!(thread = %thread_id, to = %p.to, "switched");
+    }
+
+    fn remove_project(&mut self, project_id: &str) -> Outcome {
+        if !self.projects.iter().any(|p| p.id == project_id) {
+            return Err(format!("There is no project {project_id}. `desl status` lists the projects."));
+        }
+        let ids: Vec<String> = self.threads.iter().filter(|t| t.project_id == project_id).map(|t| t.id.clone()).collect();
+        // Read the last session changes before deciding that every turn is settled.
+        for id in &ids {
+            self.poll_tail(id);
+        }
+        for id in &ids {
+            let i = self.idx(id)?;
+            if self.mid_turn(i)
+                || self.pending.contains_key(id)
+                || self.typing.contains_key(id)
+                || self.awaiting_turn.contains_key(id)
+                || self.restarting.contains(id)
+                || self.entered.contains_key(id)
+            {
+                return Err(format!(
+                    "{id} is still working or changing agents. Stop its turn or wait for it to finish, then remove the project again."
+                ));
+            }
+        }
+        for id in &ids {
+            // Stop the writer, then collect its final complete records. A partial line has
+            // already advanced file_offset; rewind it before dropping the in-memory prefix
+            // so a reopened project can read the whole record when the agent completes it.
+            self.live.remove(id);
+            self.ptys.remove(id);
+            self.poll_tail(id);
+            let i = self.idx(id)?;
+            if let Some(tail) = self.tails.remove(id)
+                && let Some(binding) = self.threads[i].bindings.get_mut(&tail.agent)
+            {
+                binding.file_offset = binding.file_offset.saturating_sub(tail.partial.len() as u64);
+            }
+            if self.threads[i].status.busy() {
+                self.threads[i].status = if self.threads[i].open_forms.is_empty() { Status::Idle } else { Status::Waiting };
+            }
+            self.store
+                .put_thread(&self.threads[i])
+                .map_err(|e| format!("Could not save the project's conversations ({e}). Run `desl doctor` and try again."))?;
+        }
+        self.store
+            .remove_project(project_id)
+            .map_err(|e| format!("Could not remove the project ({e}). Run `desl doctor` and try again."))?;
+        self.projects.retain(|p| p.id != project_id);
+        self.task_stamps.remove(project_id);
+        for id in &ids {
+            self.asked_on_screen.remove(id);
+            for client in self.clients.values_mut() {
+                client.shows.remove(id);
+            }
+        }
+        self.threads.retain(|t| t.project_id != project_id);
+        // Drop the project as one change before its thread notifications, so clients cannot
+        // briefly switch to another thread being removed by the same command.
+        self.broadcast(Change::ProjectRemoved { project_id: project_id.to_string() });
+        for id in ids {
+            self.broadcast(Change::ThreadRemoved { thread_id: id });
+        }
+        Ok(Reply::Done)
     }
 
     fn remove_thread(&mut self, thread_id: &str) {
@@ -2400,6 +2562,7 @@ impl Engine {
                 Ok(Reply::Done)
             }),
             Command::MoveProject { project_id, up } => self.move_project(&project_id, up),
+            Command::RemoveProject { project_id } => self.remove_project(&project_id),
             Command::RemoveThread { thread_id } if self.idx(&thread_id).is_ok_and(|i| self.keeps_list(i)) => {
                 let project = self.idx(&thread_id).ok().map(|i| self.threads[i].project_id.clone()).unwrap_or_default();
                 let root = self.projects.iter().find(|p| p.id == project).map(|p| tilde(&p.path)).unwrap_or_default();

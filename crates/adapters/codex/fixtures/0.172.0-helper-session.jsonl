@@ -1,0 +1,1 @@
+{"type":"session_meta","payload":{"id":"helper-session","session_id":"main-session","cwd":"/tmp/demo","source":{"subagent":{"thread_spawn":{"parent_thread_id":"main-session","depth":1,"agent_path":"/root/review","agent_nickname":"Reviewer","agent_role":null}}},"thread_source":"subagent","originator":"codex-tui","cli_version":"0.172.0"}}

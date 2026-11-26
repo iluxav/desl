@@ -6,6 +6,22 @@ flag names in `SPEC.md` were from memory, these are real. Captured output lives 
 `crates/adapters/<agent>/fixtures/<version>-<scenario>.jsonl`, each with the IR it must produce
 beside it as `<fixture>.ir.json`.
 
+## Running Codex sessions (2026-11-24)
+
+Verified with Codex CLI 0.172.0: after a native session change the process can keep the same
+PTY while writing a different rollout. Following only the old binding leaves its status idle.
+On Linux `running_session(pid)` reads the writable regular rollout descriptors of that exact
+Codex process (or the Codex child of its Node launcher), at most once a second. A top-level
+record has `source: "cli"`; helper records have `source.subagent` and `thread_source: "subagent"`
+and are excluded. Read-only previews and ambiguous candidates are excluded too. Other systems
+keep the existing lookup. No launch flags or dependencies changed.
+
+The two `0.172.0-*-session.jsonl` fixtures contain the captured metadata and working record,
+with ids and paths anonymized and unrelated metadata removed. Session-reader replay asserts
+the working state and helper exclusion. The daemon finishes reading the old file and keeps
+its complete-record offset in SQLite metadata before following the new one; revisiting a
+session resumes that position rather than appending its history again.
+
 ## The contract
 
 An adapter is the only code that knows an agent's native format. It lives in
@@ -603,3 +619,13 @@ Codex (0.166) keeps a subagent as a session of its own: a rollout whose `session
 (the task), and `receiver_agents` (`thread_id`, `agent_nickname`); later `wait` items report
 `agents_states`. desl reads spawns from the parent's file as it grows, and a subagent is done
 when its own file's last `task_started` is followed by `task_complete` or `turn_aborted`.
+
+## Browser interaction checks
+
+`make check-web` runs the real web page in headless Chromium with a fixture daemon connection.
+It covers sidebar visibility and resizing, project prompt persistence, clipboard copy, edits,
+deletion, draft retention, storage failures, cross-tab conflicts and narrow/light layouts.
+It needs the test-only Node package `playwright` (resolvable normally or through `NODE_PATH`)
+and Chromium at `/usr/bin/chromium`, or the executable named by `CHROMIUM`. Neither is a runtime
+dependency of desl. The regular Rust checks remain `make check`; unset `NO_COLOR` when running
+its color snapshot tests.

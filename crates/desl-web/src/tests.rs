@@ -121,6 +121,21 @@ fn the_view_follows_the_workspace_and_is_sent_only_when_it_changes() {
     assert_eq!(gone["view"]["projects"], json!([]), "a project with nothing to show goes too");
 }
 
+#[test]
+fn removing_a_project_clears_its_threads_and_waiting_rows_in_one_view() {
+    let mut c = Cache::default();
+    let mut ws = workspace();
+    ws.threads[0].status = Status::Waiting;
+    c.fold(ServerFrame::Reply { id: SUBSCRIBE, ok: Some(Reply::Workspace(Box::new(ws))), error: None });
+    c.next(0).unwrap();
+    assert!(c.fold(ServerFrame::Event { change: Change::ProjectRemoved { project_id: "desl".into() } }));
+    let gone: Value = serde_json::from_str(&c.next(0).unwrap()).unwrap();
+    assert_eq!(gone["view"]["projects"], json!([]));
+    assert_eq!(gone["view"]["waiting"], json!([]));
+    c.fold(ServerFrame::Event { change: Change::ThreadRemoved { thread_id: "t-1".into() } });
+    assert_eq!(c.next(0), None, "the following thread removals cannot show a stale row");
+}
+
 /// A daemon that answers `hello` and `subscribe`, hands what else it gets to the test, and
 /// sends what the test gives it.
 async fn daemon(listener: UnixListener, got: tokio::sync::mpsc::Sender<Request>, mut give: tokio::sync::mpsc::Receiver<ServerFrame>) {
@@ -350,7 +365,7 @@ async fn a_rebinding_host_name_gets_nothing() {
 #[test]
 fn the_page_serves_its_terminal_and_runs_no_inline_script() {
     // xterm.js draws the agent's screen (docs/design/2026-11-24-web-alone.md).
-    for want in ["/screen.js", "/popover.js", "/vendor/xterm.mjs", "/vendor/xterm.css", "/vendor/addon-fit.mjs"] {
+    for want in ["/screen.js", "/popover.js", "/prompts.js", "/vendor/xterm.mjs", "/vendor/xterm.css", "/vendor/addon-fit.mjs"] {
         assert!(FILES.iter().any(|(path, _, _)| *path == want), "{want} is served");
     }
     let csp = csp(7428);

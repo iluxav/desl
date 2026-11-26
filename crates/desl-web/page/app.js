@@ -9,12 +9,16 @@ import * as screen from '/screen.js';
 import * as pop from '/popover.js';
 import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
 import { attend, setupAttention } from '/attention.js';
+import { setupPrompts } from '/prompts.js';
 
 const KEY = 'desl-web-key';
 const SELECTED = 'desl-web-thread';
+const HIDDEN_PROJECT = 'desl-web-hidden-project:';
+const hiddenProjects = new Map();
 const SVG = 'http://www.w3.org/2000/svg';
 
 const $ = (id) => document.getElementById(id);
+let prompts;
 
 const state = {
   view: null,
@@ -47,6 +51,7 @@ const state = {
   armed: false,
   /** The directory lists asked for, by id. */
   dirs: new Map(),
+  showHidden: readJson('desl-web-show-hidden') === true,
 };
 
 function readJson(name) {
@@ -261,6 +266,22 @@ function threads() {
   return state.view ? state.view.projects.flatMap((p) => p.threads.map((t) => ({ t, p }))) : [];
 }
 
+function projectHidden(p) {
+  if (!hiddenProjects.has(p.path)) {
+    try { hiddenProjects.set(p.path, localStorage.getItem(HIDDEN_PROJECT + p.path) === 'true'); }
+    catch { hiddenProjects.set(p.path, false); }
+  }
+  return hiddenProjects.get(p.path);
+}
+
+function listedProjects() {
+  return (state.view?.projects || []).filter((p) => state.showHidden || !projectHidden(p));
+}
+
+function listedThreads() {
+  return listedProjects().flatMap((p) => p.threads.map((t) => ({ t, p })));
+}
+
 function current() {
   const all = threads();
   let found = all.find(({ t }) => t.id === state.selected);
@@ -269,13 +290,17 @@ function current() {
   if (!found && state.awaiting && state.awaiting === state.selected) return null;
   if (!found && all.length) {
     const waiting = state.view.waiting[0];
-    found = all.find(({ t }) => t.id === waiting) || all[0];
-    state.selected = found.t.id;
+    const visible = listedThreads();
+    found = visible.find(({ t }) => t.id === waiting) || visible[0];
+    state.selected = found ? found.t.id : null;
   }
   return found || null;
 }
 
 function select(id) {
+  const target = threads().find(({ t }) => t.id === id);
+  // An explicit jump from Waiting or a task must leave its selected row reachable.
+  if (target && projectHidden(target.p)) state.showHidden = true;
   if (state.selected && state.selected !== id) state.previous = state.selected;
   state.selected = id;
   write(SELECTED, id);
@@ -290,10 +315,22 @@ function render() {
     state.toForm = null;
   }
   const cur = current();
+  if (!cur && (conv.thread || screen.shown())) {
+    clearTimeout(conv.timer);
+    conv.thread = null;
+    conv.asking = null;
+    conv.items = [];
+    conv.highlights = [];
+    drawConversation(false);
+    drawHighlights(false);
+    screen.detach();
+    screenNote('Open a directory or show hidden projects to select a thread.');
+  }
   drawSide(cur);
   drawHead(cur);
   drawWaiting();
   drawTasks();
+  if (prompts) prompts.update(cur && cur.p);
   drawChrome(cur);
   // The last entry says "working" while the agent is.
   if (shownView() !== conv.applied) applyView();
@@ -313,6 +350,39 @@ function talks(t) {
   return !['shell', 'files', 'tasks'].includes(t.agent);
 }
 
+// Keep sidebar nodes in place: rebuilding them on every streamed update restarts the status
+// animation and discards keyboard focus. Keys identify projects and threads across reordering.
+function syncChildren(parent, fresh) {
+  const key = (node) => node.nodeType === Node.TEXT_NODE ? '#text'
+    : node.dataset?.key || `${node.nodeName}:${(node.getAttribute('class') || '').split(' ')[0]}`;
+  const old = new Map();
+  for (const child of parent.childNodes) {
+    const k = key(child);
+    if (!old.has(k)) old.set(k, []);
+    old.get(k).push(child);
+  }
+  let cursor = parent.firstChild;
+  for (const node of fresh) {
+    const kept = old.get(key(node))?.shift();
+    const child = kept || node;
+    if (kept) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        if (kept.nodeValue !== node.nodeValue) kept.nodeValue = node.nodeValue;
+      } else {
+        for (const attr of Array.from(kept.attributes)) if (!node.hasAttribute(attr.name)) kept.removeAttribute(attr.name);
+        for (const attr of node.attributes) if (kept.getAttribute(attr.name) !== attr.value) kept.setAttribute(attr.name, attr.value);
+        syncChildren(kept, Array.from(node.childNodes));
+      }
+    }
+    if (child !== cursor) parent.insertBefore(child, cursor);
+    cursor = child.nextSibling;
+  }
+  for (const rest of old.values()) for (const child of rest) child.remove();
+}
+
+const projectById = (id) => state.view?.projects.find((p) => p.id === id);
+const threadById = (id) => threads().find(({ t }) => t.id === id);
+
 function drawSide(cur) {
   const nav = $('projects');
   // A redraw mid-drag would take the project being dragged from under the pointer.
@@ -320,50 +390,88 @@ function drawSide(cur) {
     drag.stale = true;
     return;
   }
-  nav.replaceChildren();
-  if (!state.view) {
-    nav.append(el('p', 'empty', 'Reading the workspace…'));
-    return;
-  }
-  const open = el('button', 'side-open', 'Open a directory');
+  const list = el('div', 'project-list');
+  list.id = 'project-list';
+  const projects = state.view?.projects || [];
+  const open = el('button', 'side-open');
+  open.append(icon('folder-open'), el('span', '', 'Open a directory'));
   open.type = 'button';
   open.title = `Open a directory as a project (${state.prefix} o)`;
   open.addEventListener('click', openDirectory);
-  nav.append(open);
-  if (!state.view.projects.length) {
-    nav.append(el('p', 'empty', 'No threads yet. Open a directory to start one.'));
+  const toolbar = el('div', 'side-toolbar');
+  const show = el('button', 'icon-button show-hidden');
+  show.id = 'show-hidden-projects';
+  show.type = 'button';
+  show.setAttribute('aria-label', 'Show hidden projects');
+  show.setAttribute('aria-pressed', String(state.showHidden));
+  const count = projects.filter(projectHidden).length;
+  show.title = `${state.showHidden ? 'Hide' : 'Show'} hidden projects${count ? ` (${count})` : ''}`;
+  show.append(icon('eye'));
+  show.addEventListener('click', () => {
+    state.showHidden = !state.showHidden;
+    try { localStorage.setItem('desl-web-show-hidden', JSON.stringify(state.showHidden)); } catch { /* This tab keeps the choice. */ }
+    render();
+    $('show-hidden-projects').focus();
+  });
+  toolbar.append(open, show);
+  if (!state.view) {
+    list.append(el('p', 'empty', 'Reading the workspace…'));
+  } else if (!projects.length) {
+    list.append(el('p', 'empty', 'No threads yet. Open a directory to start one.'));
+  } else if (!listedProjects().length) {
+    list.append(el('p', 'empty', 'All projects are hidden. Use Show hidden projects to see them.'));
   }
-  for (const p of state.view.projects) {
+  for (const p of listedProjects()) {
     const section = el('section', 'project');
+    if (projectHidden(p)) section.classList.add('project-hidden');
     section.setAttribute('aria-label', p.name);
     section.dataset.project = p.id;
+    section.dataset.key = `project:${p.id}`;
     const row = el('div', 'project-row');
     // Dragged by its line to another place among the projects.
     row.draggable = true;
-    row.title = `${p.name}: drag to move it among the projects`;
-    row.addEventListener('dragstart', (e) => dragStart(e, p, section));
+    row.title = [p.path, p.branch, p.dirty ? `${p.dirty} changed paths` : '', `Drag to move ${p.name} among the projects`].filter(Boolean).join('\n');
+    row.addEventListener('dragstart', (e) => dragStart(e, projectById(p.id), e.currentTarget.closest('.project')));
     row.addEventListener('dragend', dragEnd);
-    section.addEventListener('dragover', (e) => dragOver(e, section));
-    section.addEventListener('drop', (e) => dropOn(e, section));
-    row.append(projectDot(p.hue), el('span', 'project-name', p.name));
-    if (p.branch) row.append(el('span', 'branch', `⎇ ${p.branch}`));
+    section.addEventListener('dragover', (e) => dragOver(e, e.currentTarget));
+    section.addEventListener('drop', (e) => dropOn(e, e.currentTarget));
+    const folder = icon('folder', '', 'project-folder');
+    folder.style.setProperty('--hue', `rgb(${p.hue.join(' ')})`);
+    row.append(folder, el('span', 'project-name', p.name));
+    if (p.branch) {
+      const branch = el('span', 'branch');
+      branch.append(icon('branch'), el('span', '', p.branch));
+      branch.title = p.branch;
+      row.append(branch);
+    }
     if (p.dirty > 0) row.append(el('span', 'dirty', `±${p.dirty}`));
-    if (p.parent) row.append(el('span', 'parent', p.parent));
-    const add = el('button', 'project-add', '+');
+    if (projectHidden(p)) row.append(el('span', 'hidden-label', 'Hidden'));
+    const add = el('button', 'project-add');
+    add.append(icon('plus'));
     add.type = 'button';
     add.title = `New thread in ${p.name} (${state.prefix} c)`;
     add.setAttribute('aria-label', `New thread in ${p.name}`);
-    add.addEventListener('click', () => newThread(p, add));
+    add.addEventListener('click', (e) => newThread(projectById(p.id), e.currentTarget));
     row.append(add);
+    const more = el('button', 'project-more');
+    more.append(icon('more'));
+    more.type = 'button';
+    more.title = `Hide or remove ${p.name}`;
+    more.setAttribute('aria-label', `Actions for project ${p.name}`);
+    more.setAttribute('aria-haspopup', 'dialog');
+    more.addEventListener('click', (e) => projectMenu(projectById(p.id), e.currentTarget));
+    row.append(more);
     section.append(row);
+    const children = el('div', 'project-threads');
     for (const t of p.threads) {
       const b = el('button', 'row');
       b.type = 'button';
       b.title = `${t.title} · ${t.word} · ${t.id}`;
+      b.setAttribute('aria-label', `${t.title}, ${agentName(t.agent)}, ${t.word}`);
       if (cur && cur.t.id === t.id) b.setAttribute('aria-current', 'true');
       b.append(mark(t.agent, t.status), el('span', 'title', t.title));
       if (t.worktree) {
-        const wt = el('span', 'wt', '⎇');
+        const wt = icon('branch', '', 'wt');
         wt.title = 'Its own git worktree';
         b.append(wt);
       }
@@ -377,19 +485,27 @@ function drawSide(cur) {
       b.addEventListener('click', () => select(t.id));
       // Its own menu, on the right: what `⋯` in the header does, for this thread.
       const line = el('div', 'thread-line');
-      const more = el('button', 'row-more', '⋯');
+      line.dataset.key = `thread:${t.id}`;
+      const more = el('button', 'row-more');
+      more.append(icon('more'));
       more.type = 'button';
       more.title = `Switch, restart, fork, rename or close ${t.title}`;
       more.setAttribute('aria-label', `Actions for ${t.title}`);
-      more.addEventListener('click', () => actions({ t, p }, more));
+      more.addEventListener('click', (e) => actions(threadById(t.id), e.currentTarget));
       line.append(b, more);
-      section.append(line);
+      children.append(line);
     }
-    nav.append(section);
+    section.append(children);
+    list.append(section);
   }
+  syncChildren(nav, [toolbar, list]);
 }
 
+let headKey;
 function drawHead(cur) {
+  const key = JSON.stringify(cur && [cur.t.id, cur.t.title, cur.t.agent, cur.t.status, cur.t.word, cur.t.glyph, cur.t.header, cur.p.hue, $('link').dataset.state]);
+  if (key === headKey) return;
+  headKey = key;
   const head = $('head');
   head.replaceChildren();
   if (!cur) return;
@@ -968,7 +1084,9 @@ function shownLists() {
 function drawTasks() {
   if (!state.view) return;
   const lists = (state.view.task_lists) || [];
-  $('tasks').hidden = !lists.length;
+  $('tasks-empty').hidden = Boolean(lists.length);
+  $('tasks').querySelector('.tfilters').hidden = !lists.length;
+  $('tasklist').hidden = !lists.length;
   if (!lists.length) return;
   // The project: the selected thread's, one by name, or all of them.
   const sel = $('t-project');
@@ -1374,6 +1492,38 @@ async function stop() {
 
 // ---- actions on threads (docs/design/2026-11-24-web-alone.md) ----------------------------------
 
+function setProjectHidden(p, hidden) {
+  try {
+    if (hidden) localStorage.setItem(HIDDEN_PROJECT + p.path, 'true');
+    else localStorage.removeItem(HIDDEN_PROJECT + p.path);
+  } catch {
+    notice('The project visibility could not be saved. Allow browser storage and try again.', true);
+    return;
+  }
+  hiddenProjects.set(p.path, hidden);
+  render();
+  $('show-hidden-projects').focus();
+}
+
+function projectMenu(p, anchor) {
+  pop.menu({ title: p.name, anchor, rows: [
+    { label: projectHidden(p) ? 'Show' : 'Hide', run: () => setProjectHidden(p, !projectHidden(p)) },
+    { label: 'Remove…', run: () => pop.confirm({
+      title: `Remove ${p.name} from the workspace?`, yesLabel: 'Remove',
+      text: 'This closes its idle programs and removes the project from every client. Files and stored conversations are kept; open its directory again to restore them. Active turns must finish or be stopped first.',
+      yes: async () => {
+        const reply = await request('remove_project', { project_id: p.id });
+        if (reply.error) { notice(reply.error, true); return; }
+        // Reopening the directory should show the restored project even if it was hidden here.
+        hiddenProjects.set(p.path, false);
+        try { localStorage.removeItem(HIDDEN_PROJECT + p.path); } catch { /* This tab keeps the choice. */ }
+        notice(`Removed ${p.name} from the workspace. Open its directory again to restore it.`);
+        $('show-hidden-projects')?.focus();
+      },
+    }) },
+  ] });
+}
+
 /** The menu rows for a new thread in `cwd`: the agents, the shell, the file manager. */
 function newRows(cwd, beside) {
   const rows = state.agents.map((id) => ({ label: agentName(id), note: 'agent', run: () => create(cwd, id, beside) }));
@@ -1532,7 +1682,7 @@ function closeThread(cur, anchor) {
 
 /** The thread `by` places from the selected one in the left column, round the end. */
 function step(by) {
-  const all = threads();
+  const all = listedThreads();
   if (!all.length) return;
   const i = all.findIndex(({ t }) => t.id === state.selected);
   select(all[(i + by + all.length) % all.length].t.id);
@@ -1553,6 +1703,7 @@ function prefixKeys() {
     { key: 'p', label: 'Previous thread', run: () => step(-1) },
     { key: 'l', label: 'The thread shown before', run: () => state.previous && select(state.previous) },
     { key: '[', label: 'Conversation, or back to the Screen', run: () => setView(shownView() === 'screen' ? 'conversation' : 'screen') },
+    { key: 'b', label: 'Hide or show the projects sidebar', run: () => toggleColumn('projects') },
     { key: '1…9', label: 'Thread 1 to 9 in the list', run: () => {} },
   ];
 }
@@ -1580,7 +1731,7 @@ function afterPrefix(e) {
     return true;
   }
   if (/^[1-9]$/.test(e.key)) {
-    const all = threads();
+    const all = listedThreads();
     const t = all[Number(e.key) - 1];
     if (t) select(t.t.id);
     return true;
@@ -1698,6 +1849,47 @@ async function moveProject(id, to) {
 // ---- resizing the outer columns ---------------------------------------------------------------
 
 const WIDTHS = 'desl-web-widths';
+const COLLAPSED = 'desl-web-collapsed';
+const savedCollapsed = readJson(COLLAPSED);
+const collapsed = { projects: savedCollapsed?.projects === true, wait: savedCollapsed?.wait === true };
+
+function columnVisibility(column) {
+  const hidden = collapsed[column] === true;
+  const button = $(`toggle-${column}`);
+  const name = column === 'projects' ? 'projects sidebar' : 'right sidebar';
+  $(column).hidden = hidden;
+  $(column === 'projects' ? 'grip-side' : 'grip-wait').hidden = hidden;
+  button.setAttribute('aria-expanded', String(!hidden));
+  button.setAttribute('aria-label', `${hidden ? 'Expand' : 'Collapse'} ${name}`);
+  button.title = `${hidden ? 'Expand' : 'Collapse'} ${name}`;
+}
+
+function toggleColumn(column) {
+  collapsed[column] = !collapsed[column];
+  const panel = $(column);
+  if (collapsed[column] && panel.contains(document.activeElement)) $(`toggle-${column}`).focus();
+  columnVisibility(column);
+  fitColumns(column === 'projects' ? 'grip-side' : 'grip-wait');
+  try { localStorage.setItem(COLLAPSED, JSON.stringify(collapsed)); } catch { /* This tab keeps the choice. */ }
+}
+
+function setupSidebars() {
+  for (const column of ['projects', 'wait']) {
+    const svg = document.createElementNS(SVG, 'svg');
+    svg.setAttribute('viewBox', '0 0 24 24');
+    svg.setAttribute('class', 'ico');
+    svg.setAttribute('aria-hidden', 'true');
+    const rect = document.createElementNS(SVG, 'rect');
+    for (const [k, v] of Object.entries({ x: 3, y: 4, width: 18, height: 16, rx: 2 })) rect.setAttribute(k, v);
+    const path = document.createElementNS(SVG, 'path');
+    path.setAttribute('d', column === 'projects' ? 'M9 4v16M6 9l-2 3 2 3' : 'M15 4v16M18 9l2 3-2 3');
+    svg.append(rect, path);
+    const button = $(`toggle-${column}`);
+    button.append(svg);
+    button.addEventListener('click', () => toggleColumn(column));
+    columnVisibility(column);
+  }
+}
 // Each grip: the column it sizes, the custom property it sets, its usual width, its narrowest.
 const COLUMNS = {
   'grip-side': { column: 'projects', prop: '--side-w', usual: 280, least: 180, fromLeft: true },
@@ -1724,22 +1916,41 @@ function setWidth(id, px) {
   const grip = $(id);
   const other = Object.keys(COLUMNS).find((k) => k !== id);
   const otherWidth = $(COLUMNS[other].column).getBoundingClientRect().width;
-  const most = Math.max(c.least, Math.min(window.innerWidth * 0.45, window.innerWidth - otherWidth - MIDDLE_LEAST));
-  const width = px === null ? c.usual : Math.round(Math.min(Math.max(px, c.least), most));
-  if (px === null) document.documentElement.style.removeProperty(c.prop);
-  else document.documentElement.style.setProperty(c.prop, `${width}px`);
+  const most = Math.max(c.least, Math.min(window.innerWidth * 0.45, window.innerWidth - otherWidth - MIDDLE_LEAST - 2));
+  const width = Math.floor(Math.min(Math.max(px ?? c.usual, c.least), most));
+  document.documentElement.style.setProperty(c.prop, `${width}px`);
   grip.setAttribute('aria-valuenow', String(width));
   grip.setAttribute('aria-valuemin', String(c.least));
   grip.setAttribute('aria-valuemax', String(Math.round(most)));
   return width;
 }
 
-function resizable() {
+/** Restore preferred widths as room allows, keeping the conversation usable after a reopen. */
+function fitColumns(preferred = 'grip-side') {
+  if (NARROW.matches) return;
   const saved = savedWidths();
+  const widths = {};
+  for (const [id, c] of Object.entries(COLUMNS)) {
+    const wanted = saved[c.store || id];
+    widths[id] = Math.max(c.least, Math.min(Number.isFinite(wanted) ? wanted : c.usual, window.innerWidth * 0.45));
+  }
+  const visible = Object.keys(COLUMNS).filter((id) => !$(COLUMNS[id].column).hidden);
+  let excess = visible.reduce((sum, id) => sum + widths[id], 0) - (window.innerWidth - MIDDLE_LEAST - 2);
+  for (const id of [...visible.filter((id) => id !== preferred), ...visible.filter((id) => id === preferred)]) {
+    const shrink = Math.min(Math.max(0, excess), widths[id] - COLUMNS[id].least);
+    widths[id] -= shrink;
+    excess -= shrink;
+  }
+  for (const [id, c] of Object.entries(COLUMNS)) document.documentElement.style.setProperty(c.prop, `${Math.floor(widths[id])}px`);
+  for (const id of visible) setWidth(id, widths[id]);
+}
+
+function resizable() {
+  fitColumns();
+  window.addEventListener('resize', () => fitColumns());
   for (const [id, c] of Object.entries(COLUMNS)) {
     const grip = $(id);
     const key = c.store || id;
-    setWidth(id, typeof saved[key] === 'number' ? saved[key] : null);
     grip.addEventListener('pointerdown', (e) => {
       if (e.button !== 0) return;
       e.preventDefault();
@@ -1764,8 +1975,8 @@ function resizable() {
       grip.addEventListener('pointercancel', up);
     });
     grip.addEventListener('dblclick', () => {
-      setWidth(id, null);
       saveWidth(key, null);
+      fitColumns(id);
     });
     // The keys, for whoever does not drag: the arrows by 16 pixels, with shift by 64.
     grip.addEventListener('keydown', (e) => {
@@ -1778,6 +1989,12 @@ function resizable() {
 }
 
 function main() {
+  window.addEventListener('storage', (e) => {
+    if (!e.key || e.key.startsWith(HIDDEN_PROJECT)) {
+      hiddenProjects.clear();
+      render();
+    }
+  });
   // A new address pasted into this tab (desl web started again, with a new key) changes only
   // the part after #, which loads nothing by itself.
   window.addEventListener('hashchange', () => {
@@ -1788,11 +2005,13 @@ function main() {
     $('nokey').hidden = false;
     return;
   }
+  setupSidebars();
   resizable();
   setupScreenPane();
   setupKeys();
   setupConversation();
   setupTasks();
+  prompts = setupPrompts({ notice });
   setupAttention();
   $('prompt-form').addEventListener('submit', sendPrompt);
   connect(key);

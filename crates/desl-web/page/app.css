@@ -78,7 +78,7 @@ body {
   font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-button, input { font: inherit; color: inherit; }
+button, input, textarea, select { font: inherit; color: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -111,16 +111,23 @@ code, .mono { font-family: var(--mono); }
 .link[data-state="reconnecting"] .dot,
 .link[data-state="no-daemon"] .dot { background: var(--warn); }
 
+.icon-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font-size: 20px; }
+.icon-button:hover { background: var(--hover); color: var(--text); }
+.icon-button:disabled { opacity: 0.4; }
+.sidebar-toggle[aria-expanded="false"] { color: var(--accent); background: var(--selected); }
+.sidebar-toggle[aria-expanded="false"] svg { transform: scaleX(-1); }
+
 /* Three columns; they stack at phone width. None is wider than the window: long names are
    cut with an ellipsis instead. */
 .cols { flex: 1; display: flex; flex-wrap: wrap; min-height: 0; }
 .side, .main, .wait { min-width: 0; }
 .side {
   flex: 1 1 260px;
-  padding: 12px 10px;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  min-height: 0;
+  overflow: hidden;
   background: var(--panel);
   border-right: 1px solid var(--line);
 }
@@ -128,7 +135,7 @@ code, .mono { font-family: var(--mono); }
 .wait { flex: 1 1 280px; padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; background: var(--panel); }
 @media (min-width: 900px) {
   body { height: 100vh; overflow: hidden; }
-  .side, .main, .wait { overflow: auto; max-height: 100%; }
+  .main, .wait { overflow: auto; max-height: 100%; }
   .cols { overflow: hidden; flex-wrap: nowrap; }
   /* Side by side, the two outer columns keep the widths the user dragged them to. */
   .side { flex: 0 0 var(--side-w, 280px); max-width: 45vw; border-right: 0; }
@@ -172,10 +179,23 @@ body.resizing { cursor: col-resize; user-select: none; }
   color: var(--dim);
 }
 
-/* The thread list. A project's threads sit under its name, indented to where the name starts
-   (8 px of padding, the 8 px dot, an 8 px gap), and a thread's subagents hang from its mark. */
-.project { display: flex; flex-direction: column; gap: 1px; }
-.project-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 8px 3px; min-width: 0; }
+/* The toolbar stays outside the scroll area; only projects and threads move. */
+.project-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 8px; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+.project + .project { margin-top: 20px; }
+.project { display: flex; flex-direction: column; }
+.project-row { display: flex; align-items: center; gap: 7px; padding: 2px 6px; min-width: 0; margin-bottom: 5px; }
+.project-folder { color: var(--hue, var(--muted)); }
+.project-row .branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 28%; flex-shrink: 2; font-size: 11px; }
+.project-row .branch span { overflow: hidden; text-overflow: ellipsis; }
+.project-row .branch .ico { width: 12px; height: 12px; }
+.project-row .dirty { font-size: 11px; flex: none; }
+@container (max-width: 240px) {
+  .project-row { gap: 4px; }
+  .project-row .branch, .project-row .dirty { display: none; }
+}
+.project-threads { position: relative; margin-left: 14px; padding-left: 6px; }
+.project-threads:not(:empty)::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 1px; border-radius: 1px; background: var(--line); pointer-events: none; }
+.project-threads:has(> .thread-line:last-child .latest)::before { bottom: 5px; }
 .project-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--hue, var(--muted)); flex: none; align-self: center; }
 @media (prefers-color-scheme: light) {
   .project-dot { background: color-mix(in srgb, var(--hue, var(--muted)) 65%, black); }
@@ -186,13 +206,15 @@ body.resizing { cursor: col-resize; user-select: none; }
 .parent { color: var(--muted); font: 12px var(--mono); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 .row {
+  --row-top: 7px;
+  --row-bottom: 7px;
   display: flex;
   align-items: center;
   gap: 8px;
-  width: calc(100% - 16px);
-  margin-left: 16px;
-  min-height: 28px;
-  padding: 3px 8px;
+  position: relative;
+  width: 100%;
+  min-height: 34px;
+  padding: var(--row-top) 8px var(--row-bottom);
   border: 0;
   border-radius: 6px;
   background: transparent;
@@ -206,7 +228,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row[aria-current="true"] .title { font-weight: 500; }
 .row[aria-current="true"] .age { color: var(--dim); }
 /* A thread's latest highlight, on a line of its own under its title. */
-.row:has(.latest) { flex-wrap: wrap; row-gap: 1px; padding-bottom: 5px; }
+.row:has(.latest) { --row-bottom: 5px; flex-wrap: wrap; row-gap: 1px; }
 .row .latest { flex: 0 0 100%; padding-left: 22px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row[aria-current="true"] .latest { color: var(--dim); }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
@@ -214,7 +236,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .thread-line { position: relative; }
 .row-more {
   position: absolute;
-  top: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  top: 6px;
   right: 4px;
   width: 26px;
   height: 22px;
@@ -246,7 +271,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .mark.agent-claude { color: var(--claude); }
 .mark.agent-codex { color: var(--codex); }
 .mark.agent-copilot { color: var(--copilot); }
-.mark.working { animation: breathe 1.6s ease-in-out infinite; }
+.mark.working { color: var(--accent); animation: breathe 1.6s ease-in-out infinite; }
 .mark.waiting { color: var(--warn); }
 .mark.failed { color: var(--crit); }
 .mark.idle, .mark.detached { opacity: 0.45; }
@@ -520,7 +545,22 @@ textarea.fw-text { resize: vertical; line-height: 1.45; }
 body.wide .fw-doc-text { min-height: 60vh; }
 /* The task column (docs/design/2026-11-22-tasks-first-class.md): a filter bar, then the tasks
    as rows of two lines, the action on the right. */
-.tasks { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; min-width: 0; }
+.tasks { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.library-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 36px; border-bottom: 1px solid var(--line); }
+.library-tabs { display: flex; gap: 16px; }
+.library-tabs button { min-height: 36px; padding: 0 0 8px; margin-bottom: -1px; background: transparent; border: 0; border-bottom: 2px solid transparent; color: var(--dim); font-weight: 600; font-size: 13px; }
+.library-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.prompts { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.prompt-hint { margin: 0 0 8px; font-size: 12px; color: var(--muted); }
+.prompt-editor { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--sel-line); border-radius: 8px; background: var(--bg); }
+.prompt-editor label { font-weight: 600; font-size: 13px; }
+#prompt-text { display: block; width: 100%; min-height: 180px; max-height: 60vh; resize: vertical; padding: 10px; border: 1px solid var(--line2); border-radius: 6px; background: var(--panel); font-size: 13px; line-height: 1.6; }
+.prompt-editor-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.prompt-error { margin: 0; color: var(--crit); font-size: 12.5px; }
+.prompt-list { display: flex; flex-direction: column; min-width: 0; }
+.saved-prompt { display: flex; align-items: flex-start; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.saved-prompt-text { flex: 1; min-width: 0; margin: 3px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }
+.saved-prompt-actions { display: flex; flex: none; gap: 2px; }
 .tfilters { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .frow { display: flex; gap: 8px; align-items: center; min-width: 0; flex-wrap: wrap; }
 .tfilters select, .tfilters input { min-height: 30px; padding: 3px 8px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; min-width: 0; }
@@ -636,7 +676,10 @@ body.wide .fw-preview-box { height: 62vh; }
 
 @media (max-width: 899px) {
   .top { padding: 10px 16px; }
+  .top { gap: 8px; flex-wrap: wrap; }
+  .top .crumb { display: none; }
   .side { border-right: 0; border-bottom: 1px solid var(--line); }
+  .project-list { flex: 0 1 auto; max-height: 40vh; }
   .main { border-right: 0; }
   .body { padding: 18px 16px; }
   .composer { padding: 12px 16px 8px; }
@@ -645,19 +688,36 @@ body.wide .fw-preview-box { height: 62vh; }
 /* The actions on threads (docs/design/2026-11-24-web-alone.md). */
 .mark.agent-shell, .mark.agent-files { color: var(--dim); }
 .side-open {
-  align-self: flex-start;
-  border: 1px dashed var(--line2);
-  background: transparent;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line2);
+  background: var(--bg);
   color: var(--dim);
   border-radius: 8px;
-  padding: 5px 10px;
-  font-size: 12.5px;
+  padding: 7px 6px;
+  font-size: 12px;
 }
 .side-open:hover { color: var(--text); border-color: var(--sel-line); }
-.project-add {
+.side-toolbar { display: flex; flex: none; align-items: center; gap: 5px; padding: 12px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.side-toolbar .side-open span { white-space: nowrap; }
+.side-toolbar .side-open .ico { width: 14px; height: 14px; }
+.side-toolbar .show-hidden { width: 28px; }
+.show-hidden[aria-pressed="true"] { background: var(--selected); color: var(--accent); }
+.project-hidden .project-name, .hidden-label { color: var(--muted); }
+.hidden-label { font-size: 11px; }
+.project-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.project-add, .project-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 26px;
+  padding: 3px;
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
@@ -665,7 +725,10 @@ body.wide .fw-preview-box { height: 62vh; }
   font: 16px/1 var(--mono);
   align-self: center;
 }
-.project-row:hover .project-add, .project-add:focus-visible { border-color: var(--line2); color: var(--text); }
+.project-add:hover, .project-more:hover { background: var(--hover); }
+.project-more .ico, .row-more .ico { stroke-width: 3.2; }
+.project-row:hover .project-add, .project-add:focus-visible,
+.project-row:hover .project-more, .project-more:focus-visible { border-color: var(--line2); color: var(--text); }
 .head-actions { border: 1px solid var(--line2); border-radius: 6px; background: transparent; color: var(--dim); min-height: 26px; padding: 0 8px; font: 600 14px var(--mono); }
 .head-actions:hover { color: var(--text); }
 .conv-view button:disabled { opacity: 0.4; }

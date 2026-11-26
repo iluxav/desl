@@ -319,6 +319,11 @@ impl Cache {
                     self.projects.sort_by_key(rank);
                     true
                 }
+                Change::ProjectRemoved { project_id } => {
+                    self.projects.retain(|p| p.id != project_id);
+                    self.threads.retain(|t| t.project_id != project_id);
+                    true
+                }
                 Change::Thread { thread } => {
                     match self.threads.iter_mut().find(|t| t.id == thread.id) {
                         Some(t) => *t = *thread,

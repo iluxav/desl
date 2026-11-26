@@ -173,6 +173,10 @@ impl Adapter for Codex {
         session::file(cwd, session_id, since)
     }
 
+    fn running_session(&self, pid: u32) -> Option<(String, PathBuf)> {
+        session::running(pid)
+    }
+
     fn subagents(&self, cwd: &std::path::Path, session_id: &str) -> Vec<desl_ir::Subagent> {
         session::subagents(cwd, session_id)
     }

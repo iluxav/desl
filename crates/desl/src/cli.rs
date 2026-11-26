@@ -433,6 +433,31 @@ pub fn thread_rename(paths: &Paths, out: &Out, thread: &str, name: &str) -> Resu
     Ok(())
 }
 
+pub fn project_rm(paths: &Paths, out: &Out, project: &str) -> Result<()> {
+    let mut conn = connect(paths, true)?;
+    let ws = workspace(&mut conn)?;
+    let path = std::fs::canonicalize(project).ok();
+    let p = ws
+        .projects
+        .iter()
+        .find(|p| p.id == project || p.path == project || path.as_ref().is_some_and(|path| path == std::path::Path::new(&p.path)))
+        .ok_or_else(|| anyhow::anyhow!("There is no project {project}. `desl status` lists the projects."))?;
+    if ws.threads.iter().any(|t| t.project_id == p.id && desl_proto::paths::own_thread().as_deref() == Some(t.id.as_str())) {
+        bail!(
+            "This command runs in project {}, so removing it would end its own thread. Run `desl project rm {}` from another terminal.",
+            p.id,
+            p.id
+        );
+    }
+    conn.call(Command::RemoveProject { project_id: p.id.clone() })?;
+    done(
+        out,
+        json!({ "project_id": p.id, "removed": true }),
+        format!("Removed {} from the workspace. Open its directory again to restore its conversations; files are kept.", p.id),
+    );
+    Ok(())
+}
+
 pub fn thread_rm(paths: &Paths, out: &Out, thread: &str) -> Result<()> {
     let mut conn = connect(paths, true)?;
     let t = resolve(&mut conn, thread)?;

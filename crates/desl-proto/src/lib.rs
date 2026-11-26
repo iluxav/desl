@@ -154,6 +154,11 @@ pub enum Command {
     RemoveThread {
         thread_id: String,
     },
+    /// Unlists a project and ends its idle programs, keeping its conversations and files.
+    /// Opening its directory again restores it. Active turns must finish or be stopped first.
+    RemoveProject {
+        project_id: String,
+    },
     /// Moves a project one place up or down among the projects that have a thread, which are
     /// the ones the sidebar lists. The order is kept across restarts.
     MoveProject {
@@ -630,6 +635,10 @@ pub enum Change {
     /// The user moved a project: every project's id, in the order the sidebar lists them now.
     ProjectOrder {
         ids: Vec<String>,
+    },
+    /// A project left the workspace; its stored conversations remain recoverable.
+    ProjectRemoved {
+        project_id: String,
     },
     /// A thread was created or its name, status, agent, bindings, queue or approval changed.
     Thread {

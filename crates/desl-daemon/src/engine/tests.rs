@@ -36,6 +36,21 @@ struct FakeState {
     copies: bool,
     /// The events of each conversation copied into a session.
     copied: Vec<usize>,
+    /// Read test IR lines from fake-session.jsonl instead of native agent output.
+    reads_file: bool,
+}
+
+struct FakeReader;
+
+impl SessionReader for FakeReader {
+    fn line(&mut self, line: &str) -> Vec<Reading> {
+        match line {
+            "working" => return vec![Reading::Working],
+            "idle" => return vec![Reading::Idle],
+            _ => {}
+        }
+        serde_json::from_str(line).map(Reading::Event).into_iter().collect()
+    }
 }
 
 struct Fake {
@@ -66,6 +81,12 @@ impl Adapter for Fake {
     }
     fn installed(&self) -> bool {
         true
+    }
+    fn session_reader(&self, _cwd: &Path) -> Option<Box<dyn SessionReader>> {
+        self.state.lock().unwrap().reads_file.then(|| Box::new(FakeReader) as Box<dyn SessionReader>)
+    }
+    fn session_file(&self, cwd: &Path, session_id: Option<&str>, _since: SystemTime) -> Option<(String, PathBuf)> {
+        self.state.lock().unwrap().reads_file.then(|| (session_id.unwrap_or("fake-session").to_string(), cwd.join("fake-session.jsonl")))
     }
     fn capabilities(&self) -> Capabilities {
         Capabilities::default()
@@ -303,6 +324,143 @@ impl Rig {
 
 fn ev(kind: EventKind) -> AdapterEvent {
     AdapterEvent::Event { event: kind }
+}
+
+#[test]
+fn removing_a_project_keeps_history_and_reopening_restores_its_threads() {
+    let mut r = rig("remove-project");
+    let t = r.t.clone();
+    r.prompt(&t, "Keep this conversation");
+    let form_id = show(&mut r, &t);
+    r.cmd(Command::FormDraft { form_id: form_id.clone(), draft: json!({"next": "M5"}) }).unwrap();
+    r.engine.store.queue_push(&t, "A prompt saved for later", now()).unwrap();
+    let p = r.engine.projects[0].clone();
+    let events = r.events(&t);
+    let bindings = r.thread(&t).bindings;
+    r.cmd(Command::RemoveProject { project_id: p.id.clone() }).unwrap();
+    assert!(r.engine.projects.is_empty());
+    assert!(r.engine.threads.is_empty());
+    assert!(r.engine.store.projects().unwrap().is_empty());
+    assert_eq!(r.events(&t), events);
+    assert!(r.dir.join("api").is_dir());
+
+    // A daemon rebuilt from the same store must not put removed projects back in its workspace.
+    let store = std::mem::replace(&mut r.engine.store, Store::in_memory(&r.dir.join("spare")).unwrap());
+    let mut restarted = Engine::new(store, r.engine.adapters.clone(), r.engine.tx.clone()).unwrap();
+    assert!(restarted.projects.is_empty());
+    assert!(restarted.threads.is_empty());
+    assert_eq!(restarted.project_for(Path::new(&p.path)).unwrap(), p.id);
+    let restored = restarted.threads.iter().find(|thread| thread.id == t).unwrap();
+    assert_eq!(restored.bindings, bindings);
+    assert_eq!(restored.status, Status::Waiting);
+    assert_eq!(restored.queued, ["A prompt saved for later"]);
+    assert_eq!(restored.open_forms.iter().map(|form| form.id.as_str()).collect::<Vec<_>>(), [form_id.as_str()]);
+    assert_eq!(restarted.store.form(&form_id).unwrap().unwrap().draft.as_deref(), Some("{\"next\":\"M5\"}"));
+    assert_eq!(restarted.store.all_events(&t).unwrap(), events);
+    assert_eq!(restarted.store.projects().unwrap().len(), 1);
+}
+
+#[test]
+fn removing_a_project_refuses_an_active_turn_without_changing_anything() {
+    let mut r = rig("remove-project-working");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().plan.push_back(vec![]);
+    r.prompt(&t, "Still working");
+    let p = r.engine.projects[0].id.clone();
+    let events = r.events(&t);
+    let error = r.cmd(Command::RemoveProject { project_id: p }).unwrap_err();
+    assert!(error.contains("Stop") && error.contains(&t), "{error}");
+    assert_eq!(r.engine.projects.len(), 1);
+    assert_eq!(r.thread(&t).status, Status::Working);
+    assert_eq!(r.events(&t), events);
+}
+
+#[test]
+fn removing_and_reopening_a_project_reads_a_split_session_line_exactly_once() {
+    use std::io::Write;
+
+    let mut r = rig("remove-project-partial");
+    let t = r.t.clone();
+    r.prompt(&t, "Keep the final reply too");
+    r.claude.lock().unwrap().reads_file = true;
+    let p = r.engine.projects[0].clone();
+    let file = Path::new(&p.path).join("fake-session.jsonl");
+    let event = EventKind::AssistantMessage { text: "A reply split across reads".into(), model: None };
+    let line = format!("{}\n", serde_json::to_string(&event).unwrap());
+    let split = line.len() / 2;
+    std::fs::write(&file, format!("\n{}", &line[..split])).unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.threads[i].bindings.get_mut("claude").unwrap().file_offset = 1;
+    r.engine.follow(i, SystemTime::now(), Vec::new());
+    r.engine.poll_tail(&t);
+    assert_eq!(r.engine.tails[&t].partial.len(), split);
+    let before = r.events(&t);
+
+    r.cmd(Command::RemoveProject { project_id: p.id.clone() }).unwrap();
+    assert_eq!(r.engine.store.threads().unwrap()[0].bindings["claude"].file_offset, 1);
+    std::fs::OpenOptions::new().append(true).open(&file).unwrap().write_all(&line.as_bytes()[split..]).unwrap();
+    r.engine.project_for(Path::new(&p.path)).unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.follow(i, SystemTime::now(), Vec::new());
+    r.engine.poll_tail(&t);
+    r.engine.poll_tail(&t);
+    let after = r.events(&t);
+    assert_eq!(after.len(), before.len() + 1);
+    assert_eq!(after.last().unwrap().kind, event);
+}
+
+#[test]
+fn a_new_session_in_the_same_interface_updates_status_and_keeps_both_histories() {
+    use std::io::Write;
+    let mut r = rig("running-session-change");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().reads_file = true;
+    let dir = PathBuf::from(r.thread(&t).cwd);
+    let old = dir.join("fake-session.jsonl");
+    let new = dir.join("new-session.jsonl");
+    let reply =
+        |text: &str| format!("{}\n", serde_json::to_string(&EventKind::AssistantMessage { text: text.into(), model: None }).unwrap());
+    std::fs::write(&old, reply("Previous session")).unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.follow(i, SystemTime::now(), Vec::new());
+    r.engine.poll_tail(&t);
+    std::fs::OpenOptions::new().append(true).open(&old).unwrap().write_all(reply("Its final record").as_bytes()).unwrap();
+    std::fs::write(&new, format!("working\n{}", reply("Current session"))).unwrap();
+
+    r.engine.follow_running_session(&t, ("new-session".into(), new.clone()));
+    r.engine.poll_tail(&t);
+    assert_eq!(r.thread(&t).status, Status::Working);
+    assert_eq!(r.thread(&t).bindings["claude"].session_id.as_deref(), Some("new-session"));
+    assert_eq!(r.events(&t).len(), 3, "the last old record and the new session are both kept");
+    let events = r.events(&t);
+    r.engine.follow_running_session(&t, ("new-session".into(), new.clone()));
+    r.engine.poll_tail(&t);
+    assert_eq!(r.events(&t), events, "rediscovering the same session never replays its history");
+    std::fs::OpenOptions::new().append(true).open(new).unwrap().write_all(b"idle\n").unwrap();
+    r.engine.poll_tail(&t);
+    assert_eq!(r.thread(&t).status, Status::Idle);
+    // Native /resume can return to an earlier session; its history must not be duplicated.
+    r.engine.follow_running_session(&t, ("fake-session".into(), old));
+    r.engine.poll_tail(&t);
+    assert_eq!(r.events(&t), events);
+}
+
+#[test]
+fn first_process_session_discovery_does_not_import_a_different_directory_match() {
+    let mut r = rig("running-session-first");
+    let t = r.t.clone();
+    r.claude.lock().unwrap().reads_file = true;
+    let dir = PathBuf::from(r.thread(&t).cwd);
+    let unrelated = EventKind::AssistantMessage { text: "Another interface's conversation".into(), model: None };
+    std::fs::write(dir.join("fake-session.jsonl"), format!("{}\n", serde_json::to_string(&unrelated).unwrap())).unwrap();
+    let owned = dir.join("owned-session.jsonl");
+    std::fs::write(&owned, "working\n").unwrap();
+    let i = r.engine.idx(&t).unwrap();
+    r.engine.follow(i, SystemTime::now(), Vec::new());
+    r.engine.follow_running_session(&t, ("owned".into(), owned));
+    r.engine.poll_tail(&t);
+    assert_eq!(r.thread(&t).status, Status::Working);
+    assert!(r.events(&t).is_empty(), "the directory match was never read");
 }
 
 #[test]

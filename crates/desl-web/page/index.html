@@ -12,12 +12,14 @@
 </head>
 <body>
 <header class="top">
+  <button id="toggle-projects" type="button" class="icon-button sidebar-toggle" aria-controls="projects" aria-expanded="true" aria-label="Collapse projects sidebar" title="Collapse projects sidebar"></button>
   <span class="brand">desl</span>
   <span class="crumb">workspace</span>
   <span class="grow"></span>
   <span id="prefix-pill" class="pill prefix-pill" hidden></span>
   <span id="waiting-pill" class="pill" hidden></span>
   <span id="link" class="link" data-state="connecting"><span class="dot" aria-hidden="true"></span><span id="link-text">connecting</span></span>
+  <button id="toggle-wait" type="button" class="icon-button sidebar-toggle" aria-controls="wait" aria-expanded="true" aria-label="Collapse right sidebar" title="Collapse right sidebar"></button>
 </header>
 
 <div class="cols">
@@ -33,7 +35,7 @@
             <button id="view-high" type="button" aria-pressed="false" title="The thread's story: each question and its answer, in two sentences">Highlights</button>
             <button id="view-screen" type="button" aria-pressed="false" title="The agent's own screen: the keys go to it">Screen</button>
           </div>
-          <span id="screen-hint" class="screen-hint" hidden title="As in a terminal: ctrl+v gives the agent a picture from the clipboard, ctrl+shift+v pastes text. Shift+drag selects where the agent takes the mouse; ctrl+c copies a selection. The browser keeps ctrl+w, ctrl+t and ctrl+n for itself.">Keys go to the agent · the browser keeps ctrl+w, ctrl+t, ctrl+n</span>
+          <span id="screen-hint" class="screen-hint" hidden title="Ctrl+v (cmd+v on macOS) pastes text or a picture from the clipboard; ctrl+shift+v pastes plain text. Shift+drag selects where the agent takes the mouse; ctrl+c copies a selection. The browser keeps ctrl+w, ctrl+t and ctrl+n for itself.">Keys go to the agent · the browser keeps ctrl+w, ctrl+t, ctrl+n</span>
           <input id="conv-find" type="search" aria-label="Find in the conversation" placeholder="Find in the conversation">
           <span id="conv-count" class="conv-count"></span>
           <label id="conv-toggle" class="conv-toggle"><input id="conv-tools" type="checkbox" checked> Tool calls</label>
@@ -55,11 +57,18 @@
     </div>
   </main>
   <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the right column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
-  <aside id="wait" class="wait" aria-label="Waiting and tasks">
+  <aside id="wait" class="wait" aria-label="Waiting, tasks and prompts">
     <h2 id="wait-title" class="label">Waiting</h2>
     <div id="waitlist" class="waitlist"></div>
-    <section id="tasks" class="tasks" aria-labelledby="tasks-title" hidden>
-      <h2 id="tasks-title" class="label">Tasks</h2>
+    <div class="library-head">
+      <div class="library-tabs" role="tablist" aria-label="Project tools">
+        <button id="tab-tasks" type="button" role="tab" aria-selected="true" aria-controls="tasks">Tasks</button>
+        <button id="tab-prompts" type="button" role="tab" aria-selected="false" aria-controls="prompts" tabindex="-1">Prompts</button>
+      </div>
+      <button id="prompt-add" type="button" class="icon-button" aria-label="Add prompt" title="Add prompt" hidden>+</button>
+    </div>
+    <section id="tasks" class="tasks" role="tabpanel" aria-labelledby="tab-tasks">
+      <p id="tasks-empty" class="empty" hidden>No task list yet. Ask an agent to add a task to this project.</p>
       <div class="tfilters">
         <div class="frow">
           <select id="t-project" aria-label="Whose tasks"></select>
@@ -71,6 +80,20 @@
         </div>
       </div>
       <div id="tasklist" class="tasklist"></div>
+    </section>
+    <section id="prompts" class="prompts" role="tabpanel" aria-labelledby="tab-prompts" hidden>
+      <p class="prompt-hint">Saved in this browser. Copy a prompt to use it later.</p>
+      <form id="prompt-editor" class="prompt-editor" hidden>
+        <label id="prompt-editor-label" for="prompt-text">New prompt</label>
+        <textarea id="prompt-text" rows="9" placeholder="Write a prompt you want to use again…" spellcheck="true"></textarea>
+        <p id="prompt-editor-error" class="prompt-error" role="alert" hidden></p>
+        <div class="prompt-editor-actions">
+          <button id="prompt-cancel" type="button" class="secondary">Cancel</button>
+          <button id="prompt-save" type="submit" class="primary" disabled>Save prompt</button>
+        </div>
+      </form>
+      <p id="prompt-list-error" class="prompt-error" role="alert" hidden></p>
+      <div id="prompt-list" class="prompt-list"></div>
     </section>
   </aside>
 </div>

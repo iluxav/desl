@@ -2120,6 +2120,11 @@ impl Client {
                 Some(p) => *p = project,
                 None => self.projects.push(project),
             },
+            Change::ProjectRemoved { project_id } => {
+                self.projects.retain(|p| p.id != project_id);
+                self.threads.retain(|t| t.project_id != project_id);
+                self.taskpane.lists.remove(&project_id);
+            }
             Change::Bye => {
                 return Some("The desl daemon was stopped. Run desl to start it again; the thread resumes where it was.".to_string());
             }

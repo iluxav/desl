@@ -7,6 +7,16 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- A refined web project sidebar with folder, branch and action icons, indented threads and
+  a background tint on the selected thread. Its toolbar stays fixed while the list scrolls.
+- A project's `⋯` menu on desl web offers Hide and Remove, with Show hidden projects beside
+  Open a directory. Hide stays in this browser; Remove affects the whole workspace, closes
+  idle programs and preserves files and conversations for reopening. Active turns must finish
+  or be stopped first. `desl project rm <project>` does the same from a shell.
+- Collapsible sidebars on desl web, with header icons to reopen them and `prefix b` for projects.
+  The right sidebar has Tasks and Prompts tabs beneath Waiting. Save reusable prompt text per
+  project in this browser, copy it to the clipboard, or edit and delete it through its menu.
+  Prompts follow the project selected in the left sidebar, without another project selector.
 - desl web draws each agent's own screen again, as a third view beside Conversation and
   Highlights: Claude Code, Codex or Copilot as in the terminal, with your keys, pastes and mouse
   going to it, so its own questions are answered on the page. A thread that asks in its screen
@@ -178,6 +188,17 @@ All notable changes to desl are recorded here. The format follows
 
 ### Fixed
 
+- Sidebar thread guides stay continuous within each project and stop inside the first and
+  last items' outer padding. Selection uses a background tint without a left accent bar.
+- Web project headers now share one compact row, with branch details beside the name and the
+  directory on hover, removing the empty vertical space beneath projects without a branch.
+- Codex working status after an in-process native session change: on Linux desl follows the
+  rollout the interface currently owns. Returning to a previous session preserves its read
+  position. Working logos now pulse in the accent colour without restarting on live updates;
+  waiting and failed logos use amber and red, with a steady working colour for reduced motion.
+- Ctrl+V in desl web's Screen now pastes clipboard text instead of invoking the agent's
+  image-paste shortcut and reporting "no image on clipboard". Image-only pastes still reach
+  agents through that shortcut; shells receive text normally.
 - A Codex thread whose agent asked "Allow the … MCP server to run tool?" for an MCP server
   of your own showed working, with no mark and no bell; it shows waiting now.
 - The TUI's history line for a form named the key as "prefix v" and said nothing of the answer;

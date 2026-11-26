@@ -24,6 +24,12 @@ const PATHS = {
   medium: 'M6 10h12M6 14h12',
   low: 'M7 6l5 5 5-5M7 11l5 5 5-5',
   down: 'M6 9l6 6 6-6',
+  folder: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  'folder-open': 'M3 11V7a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v2M3 11h18l-3 9H5z',
+  branch: 'M6 6v12M6 12h7a5 5 0 0 0 5-5M8 4a2 2 0 1 1-4 0 2 2 0 0 1 4 0M8 20a2 2 0 1 1-4 0 2 2 0 0 1 4 0M20 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0',
+  plus: 'M12 5v14M5 12h14',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
 };
 
 const KIND_WORD = { bug: 'Bug', feature: 'Feature', task: 'Task', refactor: 'Refactor', test: 'Test', docs: 'Docs', idea: 'Idea' };

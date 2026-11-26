@@ -1,0 +1,2 @@
+{"type":"session_meta","payload":{"id":"main-session","session_id":"main-session","cwd":"/tmp/demo","source":"cli","thread_source":"user","originator":"codex-tui","cli_version":"0.172.0"}}
+{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}

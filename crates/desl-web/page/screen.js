@@ -206,8 +206,8 @@ export function focus() {
 
 /**
  * A paste the browser gives as a picture alone, as a screenshot is: xterm.js would send nothing.
- * `ctrl+v` already reaches the agent as a terminal sends it; this is every other way to paste
- * (ctrl+shift+v, shift+insert, the browser's menu).
+ * All paste shortcuts use the browser's paste event, which tells us whether it holds text
+ * or a picture (ctrl+v, ctrl+shift+v, cmd+v, shift+insert, the browser's menu).
  */
 export function pictureOnly(data) {
   if (!data || data.getData('text/plain')) return false;
@@ -256,7 +256,14 @@ export function setupScreen(into, pane, io) {
   term.open(into);
   // Before xterm.js's own listeners, on the textarea and the terminal inside `into`.
   into.addEventListener('paste', pasted, true);
-  term.attachCustomKeyEventHandler((e) => !(copied(e) || io.keys(e)));
+  term.attachCustomKeyEventHandler((e) => {
+    if (copied(e) || io.keys(e)) return false;
+    // Let the browser paste. xterm.js otherwise turns ctrl+v into 0x16, which agents treat
+    // as "paste an image" even when the clipboard holds text. Do not prevent the default:
+    // the resulting paste event lets xterm.js bracket text, or pasted() handle a picture.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v') return false;
+    return true;
+  });
   term.onData((text) => typed(new TextEncoder().encode(text), text));
   term.onBinary((text) => typed(Uint8Array.from(text, (c) => c.charCodeAt(0) & 0xff), text));
   screen.term = term;

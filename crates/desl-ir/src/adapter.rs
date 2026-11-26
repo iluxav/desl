@@ -194,6 +194,11 @@ pub trait Adapter: Send + Sync {
         let _ = (cwd, session_id, since);
         None
     }
+    /// The session currently owned by this running interface, when the agent exposes it.
+    /// Unlike a directory search, this must not select another interface or a helper's session.
+    fn running_session(&self, _pid: u32) -> Option<(String, PathBuf)> {
+        None
+    }
     /// The helper agents session `session_id` started, oldest first; empty for an agent that
     /// has none or does not record them.
     fn subagents(&self, cwd: &std::path::Path, session_id: &str) -> Vec<crate::Subagent> {

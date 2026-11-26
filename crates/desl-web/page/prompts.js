@@ -74,6 +74,7 @@ export function setupPrompts({ notice }) {
       $(name).hidden = !active;
     }
     $('prompt-add').hidden = tab !== 'prompts';
+    $('task-add').hidden = tab !== 'tasks';
     try { localStorage.setItem(TAB, tab); } catch { /* This tab keeps the choice. */ }
   }
 

@@ -41,7 +41,7 @@ after(async () => {
 });
 
 async function fixture(t, options = {}) {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'], ...options });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'], ...options, tasks: undefined });
   t.after(() => context.close());
   const errors = [];
   const sockets = new Set();
@@ -49,6 +49,13 @@ async function fixture(t, options = {}) {
   const commands = [];
   let currentView = structuredClone(view);
   let removalError = null;
+  // Project one's task list, as the daemon keeps it.
+  let taskList = structuredClone(options.tasks || []);
+  delete options.tasks;
+  const setTasks = (next) => {
+    taskList = next;
+    for (const socket of sockets) socket.send(JSON.stringify({ type: 'event', change: { what: 'tasks', project_id: 'one', tasks: next } }));
+  };
   const publish = (next) => {
     currentView = next;
     for (const socket of sockets) socket.send(JSON.stringify({ type: 'view', view: next }));
@@ -77,6 +84,20 @@ async function fixture(t, options = {}) {
       } else if (msg.command === 'attach') {
         const replay = Buffer.from('\x1b[?2004hPaste fixture ready').toString('base64');
         ws.send(JSON.stringify({ type: 'reply', id: msg.id, ok: { replay, rows: 24, cols: 80 } }));
+      } else if (msg.command === 'tasks') {
+        ws.send(JSON.stringify({ type: 'reply', id: msg.id, ok: { project_id: msg.project_id, tasks: msg.project_id === 'one' ? taskList : [] } }));
+      } else if (msg.command === 'task_add' || msg.command === 'task_set') {
+        commands.push(msg);
+        let task;
+        if (msg.command === 'task_add') {
+          task = { id: Math.max(0, ...taskList.map((x) => x.id)) + 1, title: msg.title, type: msg.kind, status: msg.status, priority: msg.priority, body: msg.body };
+          setTasks([...taskList, task]);
+        } else {
+          const { kind, ...rest } = msg.edit;
+          task = { ...taskList.find((x) => x.id === msg.task), ...rest, ...(kind ? { type: kind } : {}) };
+          setTasks(taskList.map((x) => (x.id === msg.task ? task : x)));
+        }
+        ws.send(JSON.stringify({ type: 'reply', id: msg.id, ok: { project_id: msg.project_id, task } }));
       } else if (msg.command) {
         ws.send(JSON.stringify({ type: 'reply', id: msg.id, ok: msg.command === 'agents' ? { agents: [] } : { tasks: [] } }));
       }
@@ -88,7 +109,7 @@ async function fixture(t, options = {}) {
     await page.locator('#link[data-state="connected"]').waitFor();
     return page;
   }
-  return { context, page: await open(), open, input, commands, publish,
+  return { context, page: await open(), open, input, commands, publish, setTasks, tasks: () => taskList,
     refuseRemoval: (error) => { removalError = error; } };
 }
 
@@ -188,6 +209,75 @@ test('a prompt dragged to a new place stays there through a reload, an edit and 
   await drag('B', 'D', 'before');
   assert.deepEqual(await order(), ['B', 'D', 'A', 'C2']);
   assert.equal(await page.locator('#prompt-list-error').isVisible(), false);
+});
+
+test('a task opens whole on a click, is edited in place, and + adds one', async (t) => {
+  const long = 'A title long enough that the narrow column cuts it, which the opened task shows whole';
+  const { page, commands, setTasks, tasks } = await fixture(t, { tasks: [
+    { id: 1, title: long, type: 'bug', status: 'todo', priority: 'high', body: '## Steps\n\n- one\n- two\n\nSee `code` here.' },
+  ] });
+  const view = page.locator('#taskview');
+  await page.locator('#tasklist .trow .tmeta').first().click();
+  await view.waitFor();
+  assert.equal(await page.locator('#task-title').textContent(), long);
+  assert.equal(await page.locator('#task-body h3').textContent(), 'Steps');
+  assert.equal(await page.locator('#task-body li').count(), 2);
+  assert.match(await page.locator('#task-meta').textContent(), /to do.*Bug.*High priority/);
+  assert.equal(await page.locator('#tasklist .trow.open').count(), 1);
+  await page.keyboard.press('Escape');
+  assert.equal(await view.isVisible(), false, 'esc closes it');
+
+  // Edit sends only the fields changed here.
+  await page.getByRole('button', { name: `Open #1: ${long}` }).click();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('#task-f-title').fill('Shorter title');
+  await page.locator('#task-f-status').selectOption('in-progress');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#task-read').waitFor();
+  assert.deepEqual(commands.at(-1).edit, { title: 'Shorter title', status: 'in-progress' });
+  assert.equal(await page.locator('#task-title').textContent(), 'Shorter title');
+  assert.equal(await page.locator('#tasklist .ttitle').first().textContent(), 'Shorter title');
+
+  // An agent's change to another field meanwhile is kept; one to the same field is not overwritten.
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('#task-f-body').fill('Only the description.');
+  setTasks(tasks().map((x) => ({ ...x, priority: 'low' })));
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#task-read').waitFor();
+  assert.deepEqual(commands.at(-1).edit, { body: 'Only the description.' });
+  assert.equal(tasks()[0].priority, 'low');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('#task-f-title').fill('Mine');
+  setTasks(tasks().map((x) => ({ ...x, title: 'Theirs' })));
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('#task-error').waitFor();
+  assert.match(await page.locator('#task-error').textContent(), /title changed meanwhile/);
+  assert.equal(await page.locator('#task-f-title').inputValue(), 'Mine', 'the text stays');
+  assert.equal(tasks()[0].title, 'Theirs');
+  // Leaving an edit with changes in it asks first.
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Discard', exact: true }).click();
+  assert.equal(await page.locator('#task-title').textContent(), 'Theirs');
+
+  // + adds a task to the project shown, once it has a title.
+  await page.getByRole('button', { name: 'Add task', exact: true }).click();
+  assert.equal(await page.locator('#task-title').textContent(), 'New task');
+  assert.equal(await page.locator('#task-save').textContent(), 'Add task');
+  assert.equal(await page.locator('#task-save').isDisabled(), true, 'not without a title');
+  await page.locator('#task-f-title').fill('  A new   one ');
+  await page.locator('#task-f-kind').selectOption('feature');
+  await page.locator('#task-f-body').fill('Why it matters.');
+  await page.locator('#task-save').click();
+  await page.locator('#task-read').waitFor();
+  const added = commands.at(-1);
+  assert.equal(added.command, 'task_add');
+  assert.deepEqual({ p: added.project_id, title: added.title, kind: added.kind, status: added.status, priority: added.priority, body: added.body },
+    { p: 'one', title: 'A new one', kind: 'feature', status: 'todo', priority: 'medium', body: 'Why it matters.' });
+  assert.equal(await page.locator('#task-num').textContent(), '#2');
+  assert.equal(await page.locator('#task-body').textContent(), 'Why it matters.');
+  assert.equal(await page.locator('#tasklist .trow').count(), 2);
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  assert.equal(await view.isVisible(), false);
 });
 
 test("a thread's menu shows on hover alone, on the selected thread too", async (t) => {

@@ -54,6 +54,39 @@
         <div class="diff-top"><span id="diff-title" class="diff-title"></span><button id="diff-close" type="button" class="secondary">Close</button></div>
         <pre id="diff-body" class="diff-body"></pre>
       </section>
+      <section id="taskview" class="taskview" aria-labelledby="task-title" hidden>
+        <div class="task-top">
+          <span id="task-kind" class="tkind"></span>
+          <span id="task-num" class="tnum"></span>
+          <span id="task-project" class="task-project"></span>
+          <span class="grow"></span>
+          <button id="task-edit" type="button" class="secondary">Edit</button>
+          <button id="task-close" type="button" class="secondary">Close</button>
+        </div>
+        <div class="task-scroll">
+          <h2 id="task-title" class="task-title"></h2>
+          <div id="task-read">
+            <div id="task-meta" class="task-meta"></div>
+            <div id="task-body" class="task-body"></div>
+          </div>
+          <form id="task-form" class="task-form" autocomplete="off" hidden>
+            <label for="task-f-title">Title</label>
+            <input id="task-f-title" type="text" placeholder="What is to be done, in a line" spellcheck="true">
+            <div class="task-f-row">
+              <label>Kind <select id="task-f-kind"></select></label>
+              <label>Status <select id="task-f-status"></select></label>
+              <label>Priority <select id="task-f-priority"></select></label>
+            </div>
+            <label for="task-f-body">Description <span class="quiet">Markdown</span></label>
+            <textarea id="task-f-body" rows="14" placeholder="What it is about, how to tell it is done…" spellcheck="true"></textarea>
+            <p id="task-error" class="prompt-error" role="alert" hidden></p>
+            <div class="prompt-editor-actions">
+              <button id="task-cancel" type="button" class="secondary">Cancel</button>
+              <button id="task-save" type="submit" class="primary">Save</button>
+            </div>
+          </form>
+        </div>
+      </section>
     </div>
   </main>
   <div id="grip-wait" class="grip" role="separator" aria-orientation="vertical" aria-controls="wait" aria-label="Width of the right column" tabindex="0" title="Drag to resize; double-click for the usual width"></div>
@@ -66,9 +99,10 @@
         <button id="tab-prompts" type="button" role="tab" aria-selected="false" aria-controls="prompts" tabindex="-1">Prompts</button>
       </div>
       <button id="prompt-add" type="button" class="icon-button" aria-label="Add prompt" title="Add prompt" hidden>+</button>
+      <button id="task-add" type="button" class="icon-button" aria-label="Add task" title="Add task">+</button>
     </div>
     <section id="tasks" class="tasks" role="tabpanel" aria-labelledby="tab-tasks">
-      <p id="tasks-empty" class="empty" hidden>No task list yet. Ask an agent to add a task to this project.</p>
+      <p id="tasks-empty" class="empty" hidden>No task list yet. Press + to add this project's first task, or ask an agent.</p>
       <div class="tfilters">
         <div class="frow">
           <select id="t-project" aria-label="Whose tasks"></select>

@@ -32,7 +32,7 @@ const PATHS = {
   eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0',
 };
 
-const KIND_WORD = { bug: 'Bug', feature: 'Feature', task: 'Task', refactor: 'Refactor', test: 'Test', docs: 'Docs', idea: 'Idea' };
+export const KIND_WORD = { bug: 'Bug', feature: 'Feature', task: 'Task', refactor: 'Refactor', test: 'Test', docs: 'Docs', idea: 'Idea' };
 
 /** An icon by name, with what it means as its tooltip and for a screen reader. */
 export function icon(name, label, className) {
@@ -70,7 +70,7 @@ export const MORE = [
   ['bugs', 'Bugs only', (t) => t.type === 'bug' && ['todo', 'in-progress', 'issue', 'ready'].includes(t.status)],
 ];
 
-const STATUS_WORD = {
+export const STATUS_WORD = {
   todo: 'to do',
   'in-progress': 'in progress',
   issue: 'issue',
@@ -91,18 +91,25 @@ function found(t, find) {
 /**
  * One task as a row of two lines: its number, kind and title; then its priority, status and,
  * once work started, the thread on it. `ctx.thread(id)` gives the thread's title and agent;
- * `ctx.action(task, project)` the node on the right of the row, or null.
+ * `ctx.action(task, project)` the node on the right of the row, or null; `ctx.open(task,
+ * project, anchor)` shows the whole task, on a click anywhere on the row but its buttons.
  */
 function row(t, project, ctx) {
   const r = el('div', `trow status-${t.status}`);
+  if (ctx.isOpen && ctx.isOpen(project.id, t.id)) r.classList.add('open');
+  r.addEventListener('click', (e) => {
+    if (e.target.closest('button:not(.ttitle), a, select, input, summary')) return;
+    ctx.open(t, project, r);
+  });
   r.dataset.task = String(t.id);
   r.dataset.project = project.id;
   // Its kind as an icon, in the number's place; the number leads the second line.
   const kind = el('span', `tkind kind-${t.type}`);
   kind.append(icon(t.type, KIND_WORD[t.type] || t.type));
   r.append(kind);
-  const title = el('span', 'ttitle', t.title);
-  if (t.body) title.title = t.body.length > 400 ? `${t.body.slice(0, 400)}…` : t.body;
+  const title = el('button', 'ttitle', t.title);
+  title.type = 'button';
+  title.setAttribute('aria-label', `Open #${t.id}: ${t.title}`);
   r.append(title);
   const act = el('span', 'tact');
   const node = ctx.action ? ctx.action(t, project) : null;
@@ -160,7 +167,7 @@ export function drawList(into, lists, filter, ctx) {
   }
   if (!shown && !into.childElementCount) {
     const any = lists.some((l) => l.tasks.length);
-    into.append(el('p', 'quiet tempty', any ? 'No task here.' : 'No task yet. Ask an agent to add one, or `desl task add`.'));
+    into.append(el('p', 'quiet tempty', any ? 'No task here.' : 'No task yet. Press + to add one, or ask an agent.'));
   }
 }
 

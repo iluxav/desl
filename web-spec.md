@@ -90,7 +90,6 @@ alone: they open on their Screen, and have no conversation or highlights.
 
 - The live document: a project's Markdown file with the agents' changes marked as they happen,
   and comments on its passages. The `document` widget covers editing a document with an agent.
-- The task list on the page. It stays in the TUI's tasks thread.
 - Approvals answered on the page: each adapter first learns its agent's dialog keys, with
   fixtures.
 - An activity view per thread from its events: tool calls, file changes, usage.
@@ -397,6 +396,16 @@ thread out. The right column shows Waiting, then the project's task list, live a
   - the status as one segmented control with counts: Open, To do, In progress, Ready, Done.
 - **Rows:** each task is a row of two lines, the id, kind and title, then priority, status,
   thread and branch, with its action on the right. Parked and Done fold at the bottom of Open.
+- **A task opened:** a click on its row (not on its buttons) opens it over the conversation, as
+  a diff opens: its whole title, its status, kind, priority, thread and branch, and its
+  description as Markdown. Esc or Close goes back; its row stays marked while it is open.
+- **Editing:** Edit turns it into a form: title, kind, status, priority, and the description as
+  Markdown text. Save sends only the fields changed there (`task_set`), so a change an agent
+  made meanwhile to another field stays; when an agent changed a field the form changed too,
+  Save refuses and says so, keeping the text. Leaving a form with changes in it asks first.
+- **Adding:** **+** beside the Tasks tab opens the same form, empty, for the project the column
+  shows, or the selected thread's when the column shows all; Add task sends `task_add`. A
+  project without a task list gets its file with its first task.
 - **Starting work:** a task to start has a split button, **Fix now** for a bug and **Work on it**
   for the rest. It starts with the last pick; its ▾ opens a panel:
   - **Agent:** the project's default or any installed agent.

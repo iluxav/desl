@@ -7,6 +7,10 @@ All notable changes to desl are recorded here. The format follows
 
 ### Added
 
+- desl web's tasks are read whole, edited and added on the page. A click on a task opens it over
+  the conversation, with its full title and its description; Edit changes its title, kind,
+  status, priority and description, and + adds a task. An agent's change to the same task
+  meanwhile is never overwritten unseen.
 - Saved prompts on desl web are put in the order you want: drag one with the mouse to another
   place in the list. The order is kept in the browser, with the prompts.
 

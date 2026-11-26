@@ -8,6 +8,7 @@ import { card } from '/forms.js';
 import * as screen from '/screen.js';
 import * as pop from '/popover.js';
 import { MORE, SEGMENTS, counts, drawList, icon } from '/tasks.js';
+import { setupTaskView as setupTaskViewIn } from '/taskview.js';
 import { attend, setupAttention } from '/attention.js';
 import { setupPrompts } from '/prompts.js';
 
@@ -19,6 +20,7 @@ const SVG = 'http://www.w3.org/2000/svg';
 
 const $ = (id) => document.getElementById(id);
 let prompts;
+let taskView;
 
 const state = {
   view: null,
@@ -227,6 +229,7 @@ function handle(msg) {
       if (msg.change && msg.change.what === 'tasks') {
         state.tasks.set(msg.change.project_id, msg.change.tasks);
         drawTasks();
+        if (taskView) taskView.refresh();
         break;
       }
       // Something was added to the log of the conversation on screen: read it again.
@@ -1038,6 +1041,7 @@ function askTasks() {
       if (reply.ok && reply.ok.tasks) {
         state.tasks.set(p.id, reply.ok.tasks);
         drawTasks();
+        if (taskView) taskView.refresh();
       }
     });
   }
@@ -1118,6 +1122,50 @@ function drawTasks() {
     },
     select: (id) => select(id),
     action: taskAction,
+    open: (t, project, anchor) => taskView.open(project, t.id, anchor),
+    isOpen: (projectId, id) => taskView.isOpen(projectId, id),
+  });
+}
+
+/**
+ * Where + adds a task: the project the column shows when it shows one, else the selected
+ * thread's, which may have no list yet (the first task makes its file).
+ */
+function addTarget() {
+  const lists = (state.view && state.view.task_lists) || [];
+  const picked = lists.find((p) => p.id === state.tf.project);
+  if (picked) return picked;
+  const cur = current();
+  if (!cur) return lists[0] || null;
+  return lists.find((p) => p.id === cur.p.id) || { id: cur.p.id, name: cur.p.name };
+}
+
+/** The task the daemon replied with, kept until the list it changed arrives. */
+function keepTask(project, task) {
+  const list = (state.tasks.get(project.id) || []).filter((t) => t.id !== task.id);
+  list.push(task);
+  list.sort((a, b) => a.id - b.id);
+  state.tasks.set(project.id, list);
+  drawTasks();
+}
+
+function setupTaskView() {
+  taskView = setupTaskViewIn({
+    request,
+    task: (projectId, id) => (state.tasks.get(projectId) || []).find((t) => t.id === id) || null,
+    markdown,
+    thread: (id) => {
+      const found = threads().find(({ t }) => t.id === id);
+      return found ? { title: found.t.title, agent: found.t.agent } : null;
+    },
+    select: (id) => select(id),
+    added: keepTask,
+    changed: drawTasks,
+  });
+  $('task-add').addEventListener('click', (e) => {
+    const project = addTarget();
+    if (!project) return notice('Open a directory first: a task belongs to a project.', true);
+    taskView.add(project, e.currentTarget);
   });
 }
 
@@ -1979,6 +2027,7 @@ function main() {
   setupKeys();
   setupConversation();
   setupTasks();
+  setupTaskView();
   prompts = setupPrompts({ notice });
   setupAttention();
   connect(key);

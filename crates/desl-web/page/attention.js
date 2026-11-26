@@ -1,6 +1,6 @@
 // The tab asks for the user's eyes (web-spec.md, "Attention"): its title leads with how many
 // things wait, and while the tab is in the background and something new waits, the title and
-// the icon blink until the user comes back. Something waiting when they left does not blink.
+// the icon's dot blink until the user comes back. Something waiting when they left does not blink.
 
 /** The title, led by how many things wait. */
 export function titled(base, count) {
@@ -21,10 +21,9 @@ export function step(seen, keys, focused) {
   return { seen, blink: keys.some((k) => !seen.has(k)) };
 }
 
-const DOT = `data:image/svg+xml,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="#e0a526"/></svg>',
-)}`;
-const NONE = 'data:,';
+// desl's mark, and the same with an amber dot on it.
+const DOT = '/icon-waiting.svg';
+const NONE = '/icon.svg';
 
 let seen = new Set();
 let timer = null;

@@ -1,3 +1,5 @@
+<p align="center"><img src="crates/desl/assets/desl.svg" width="128" alt="desl"></p>
+
 # desl
 
 [![ci](https://github.com/iluxav/desl/actions/workflows/ci.yml/badge.svg)](https://github.com/iluxav/desl/actions/workflows/ci.yml)

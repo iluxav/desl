@@ -212,6 +212,8 @@ not send it to an agent.
   title turns to `● 2 waiting · desl` and back, and its icon's dot goes and comes, until the user
   comes back to the tab. Something that waited when they left does not blink it
   (`page/attention.js`).
+- **Tab icon:** desl's mark, the drop (`page/icon.svg`); while something waits, the same with
+  an amber dot on it (`page/icon-waiting.svg`).
 
 ## Forms
 

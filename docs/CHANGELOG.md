@@ -3,6 +3,14 @@
 All notable changes to desl are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning.
 
+## [Unreleased]
+
+### Added
+
+- desl has a logo, a drop made of pixels with two sparkles. It is the launcher's icon
+  (`desl app --install` again to get it) and the browser tab's icon, which carries an amber dot
+  while something waits.
+
 ## [0.2.0]
 
 ### Added

@@ -37,6 +37,9 @@ const FILES: &[(&str, &str, &str)] = &[
     ("/screen.js", "text/javascript; charset=utf-8", include_str!("../page/screen.js")),
     ("/popover.js", "text/javascript; charset=utf-8", include_str!("../page/popover.js")),
     ("/app.css", "text/css; charset=utf-8", include_str!("../page/app.css")),
+    // The tab's icon: desl's mark, and the same with an amber dot while something waits.
+    ("/icon.svg", "image/svg+xml", include_str!("../page/icon.svg")),
+    ("/icon-waiting.svg", "image/svg+xml", include_str!("../page/icon-waiting.svg")),
     // xterm.js draws an agent's screen (page/vendor/README.md says where each copy came from).
     ("/vendor/xterm.mjs", "text/javascript; charset=utf-8", include_str!("../page/vendor/xterm.mjs")),
     ("/vendor/xterm.css", "text/css; charset=utf-8", include_str!("../page/vendor/xterm.css")),

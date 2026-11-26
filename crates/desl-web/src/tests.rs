@@ -376,6 +376,19 @@ fn the_page_serves_its_terminal_and_runs_no_inline_script() {
 }
 
 #[test]
+fn the_tab_has_desls_mark_for_its_icon_plain_and_waiting() {
+    let page = FILES.iter().find(|(path, _, _)| *path == "/").map(|(_, _, body)| *body).unwrap();
+    assert!(page.contains(r#"<link rel="icon" type="image/svg+xml" href="/icon.svg">"#), "the page names its icon");
+    let attention = FILES.iter().find(|(path, _, _)| *path == "/attention.js").map(|(_, _, body)| *body).unwrap();
+    for want in ["/icon.svg", "/icon-waiting.svg"] {
+        let (_, kind, body) = FILES.iter().find(|(path, _, _)| *path == want).unwrap_or_else(|| panic!("{want} is served"));
+        assert_eq!(*kind, "image/svg+xml");
+        assert!(body.starts_with("<svg ") && !body.contains("<script"), "{want} is a drawing and nothing else");
+        assert!(attention.contains(&format!("'{want}'")), "the tab switches to {want}");
+    }
+}
+
+#[test]
 fn a_preview_frame_never_runs_script() {
     // The frame shares the page's origin so the page can fill it; a script in it would hold the
     // key and the socket. So no page file may ever allow one.

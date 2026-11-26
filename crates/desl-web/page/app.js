@@ -342,7 +342,6 @@ function render() {
   // On the Screen the keys belong to the agent: when nothing holds them (a redraw took the
   // button that had them), they go back to it. Not at phone width, where that opens a keyboard.
   if (shownView() === 'screen' && !pop.isOpen() && document.activeElement === document.body && !NARROW.matches) screen.focus();
-  composer();
 }
 
 /** A thread with a conversation: an agent's, not a shell's or a file manager's. */
@@ -600,34 +599,21 @@ function drawChrome(cur) {
   const forms = state.view ? state.view.forms || [] : [];
   const screens = state.view ? state.view.screen || [] : [];
   attend(title, [...forms.map((f) => f.form_id), ...screens.map((id) => `screen:${id}`)]);
-  const ready = Boolean(cur) && $('link').dataset.state === 'connected';
-  const input = $('prompt');
-  input.disabled = !ready;
-  input.placeholder = cur ? `Prompt to ${cur.t.title} (${cur.t.agent}). Queued while it works.` : 'Pick a thread';
-  $('send').disabled = !ready;
 }
 
-// On the Screen the agent's own input takes the keys: the page's prompt shows only where there is
-// none, under the Conversation and the Highlights, and at phone width, where a terminal is hard to
-// type in.
+// At phone width the agent's screen takes the keys only once it is touched, so the keyboard
+// stays down until then.
 const NARROW = window.matchMedia('(max-width: 899px)');
-
-function composer() {
-  const form = shownView() !== 'screen' || NARROW.matches;
-  $('prompt-form').hidden = !form;
-  $('composer').hidden = !form && !$('notice').textContent;
-}
 
 let noticeTimer = null;
 
-/** A sentence under the thread, for a few seconds: longer when something went wrong. */
+/** A sentence under the page, for a few seconds: longer when something went wrong. */
 function notice(text, error = false) {
   const n = $('notice');
   n.textContent = text;
   n.classList.toggle('error', error);
   clearTimeout(noticeTimer);
   if (text) noticeTimer = setTimeout(() => notice(''), error ? 15000 : 8000);
-  composer();
 }
 
 // ---- the agent's screen (screen.js) -----------------------------------------------------------
@@ -676,7 +662,6 @@ function setupScreenPane() {
   pop.onLost(() => {
     if (shownView() === 'screen') screen.focus();
   });
-  NARROW.addEventListener('change', composer);
 }
 
 // ---- the conversation --------------------------------------------------------------------------
@@ -827,7 +812,6 @@ function applyView() {
     screen.detach();
     screenNote('');
   }
-  composer();
 }
 
 function conversationChanged(now = false) {
@@ -1465,23 +1449,7 @@ function setupConversation() {
   });
 }
 
-// ---- the prompt -------------------------------------------------------------------------------
-
-async function sendPrompt(e) {
-  e.preventDefault();
-  const cur = current();
-  const input = $('prompt');
-  const text = input.value.trim();
-  if (!cur || !text) return;
-  const reply = await request('prompt', { thread_id: cur.t.id, text });
-  if (reply.error) {
-    notice(reply.error, true);
-    return;
-  }
-  input.value = '';
-  const queued = reply.ok && reply.ok.queued;
-  notice(queued ? `Queued: ${cur.t.title} is working, and it goes in when the turn ends.` : `Sent to ${cur.t.title}.`);
-}
+// ---- stopping a turn --------------------------------------------------------------------------
 
 async function stop() {
   const cur = current();
@@ -2013,7 +1981,6 @@ function main() {
   setupTasks();
   prompts = setupPrompts({ notice });
   setupAttention();
-  $('prompt-form').addEventListener('submit', sendPrompt);
   connect(key);
 }
 

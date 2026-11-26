@@ -114,6 +114,7 @@ code, .mono { font-family: var(--mono); }
 .icon-button { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 30px; height: 30px; padding: 5px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); font-size: 20px; }
 .icon-button:hover { background: var(--hover); color: var(--text); }
 .icon-button:disabled { opacity: 0.4; }
+.icon-button.copied, .icon-button.copied:hover { color: var(--ok); }
 .sidebar-toggle[aria-expanded="false"] { color: var(--accent); background: var(--selected); }
 .sidebar-toggle[aria-expanded="false"] svg { transform: scaleX(-1); }
 
@@ -180,10 +181,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 
 /* The toolbar stays outside the scroll area; only projects and threads move. */
-.project-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 12px 8px; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
-.project + .project { margin-top: 20px; }
+.project-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 8px; scrollbar-width: thin; scrollbar-color: var(--line2) transparent; }
+.project + .project { margin-top: 12px; }
 .project { display: flex; flex-direction: column; }
-.project-row { display: flex; align-items: center; gap: 7px; padding: 2px 6px; min-width: 0; margin-bottom: 5px; }
+.project-row { display: flex; align-items: center; gap: 7px; padding: 0 6px; min-width: 0; margin-bottom: 2px; }
 .project-folder { color: var(--hue, var(--muted)); }
 .project-row .branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 28%; flex-shrink: 2; font-size: 11px; }
 .project-row .branch span { overflow: hidden; text-overflow: ellipsis; }
@@ -194,8 +195,7 @@ body.resizing { cursor: col-resize; user-select: none; }
   .project-row .branch, .project-row .dirty { display: none; }
 }
 .project-threads { position: relative; margin-left: 14px; padding-left: 6px; }
-.project-threads:not(:empty)::before { content: ""; position: absolute; left: 0; top: 7px; bottom: 7px; width: 1px; border-radius: 1px; background: var(--line); pointer-events: none; }
-.project-threads:has(> .thread-line:last-child .latest)::before { bottom: 5px; }
+.project-threads:not(:empty)::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 1px; border-radius: 1px; background: var(--line); pointer-events: none; }
 .project-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--hue, var(--muted)); flex: none; align-self: center; }
 @media (prefers-color-scheme: light) {
   .project-dot { background: color-mix(in srgb, var(--hue, var(--muted)) 65%, black); }
@@ -206,14 +206,14 @@ body.resizing { cursor: col-resize; user-select: none; }
 .parent { color: var(--muted); font: 12px var(--mono); margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 .row {
-  --row-top: 7px;
-  --row-bottom: 7px;
+  --row-top: 4px;
+  --row-bottom: 4px;
   display: flex;
   align-items: center;
   gap: 8px;
   position: relative;
   width: 100%;
-  min-height: 34px;
+  min-height: 28px;
   padding: var(--row-top) 8px var(--row-bottom);
   border: 0;
   border-radius: 6px;
@@ -228,18 +228,18 @@ body.resizing { cursor: col-resize; user-select: none; }
 .row[aria-current="true"] .title { font-weight: 500; }
 .row[aria-current="true"] .age { color: var(--dim); }
 /* A thread's latest highlight, on a line of its own under its title. */
-.row:has(.latest) { --row-bottom: 5px; flex-wrap: wrap; row-gap: 1px; }
+.row:has(.latest) { flex-wrap: wrap; row-gap: 0; }
 .row .latest { flex: 0 0 100%; padding-left: 22px; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row[aria-current="true"] .latest { color: var(--dim); }
 .age, .wt { color: var(--muted); font: 12px var(--mono); }
-/* A thread's line with its menu on the right, over its age, on hover and on the thread on screen. */
+/* A thread's line with its menu on the right, over its age, on hover or with the keys on it. */
 .thread-line { position: relative; }
 .row-more {
   position: absolute;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  top: 6px;
+  top: 3px;
   right: 4px;
   width: 26px;
   height: 22px;
@@ -251,8 +251,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   opacity: 0;
 }
 .row-more:hover { color: var(--text); background: var(--line2); }
-.thread-line:hover .row-more, .row-more:focus-visible, .thread-line:has(.row[aria-current="true"]) .row-more { opacity: 1; }
-.thread-line:hover .age, .thread-line:has(.row-more:focus-visible) .age, .thread-line:has(.row[aria-current="true"]) .age { visibility: hidden; }
+.thread-line:hover .row-more, .row-more:focus-visible { opacity: 1; }
+.thread-line:hover .age, .thread-line:has(.row-more:focus-visible) .age { visibility: hidden; }
 @media (hover: none) {
   .row-more { opacity: 1; }
   .thread-line .age { visibility: hidden; }
@@ -650,21 +650,9 @@ body.wide .fw-preview-box { height: 62vh; }
 .head .stop { min-height: 28px; padding: 0 10px; font: 500 12.5px ui-sans-serif, system-ui, sans-serif; }
 .primary:disabled, .stop:disabled { opacity: 0.45; }
 
-/* The prompt. */
-.composer { border-top: 1px solid var(--line); padding: 12px 20px 8px; background: var(--panel); }
-#prompt-form { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .caret { color: var(--accent); font: 17px var(--mono); }
-#prompt {
-  flex: 1 1 320px;
-  min-width: 0;
-  min-height: 40px;
-  background: var(--bg);
-  border: 1px solid var(--line2);
-  border-radius: 8px;
-  padding: 0 12px;
-  font-size: 14px;
-}
-.notice { margin: 6px 0 0; min-height: 18px; font-size: 12.5px; color: var(--dim); }
+/* A sentence from desl, under the page while there is one. */
+.notice { margin: 0; border-top: 1px solid var(--line); padding: 8px 20px; background: var(--panel); font-size: 12.5px; color: var(--dim); }
 .notice:empty { display: none; }
 .notice.error { color: var(--crit); }
 
@@ -682,7 +670,7 @@ body.wide .fw-preview-box { height: 62vh; }
   .project-list { flex: 0 1 auto; max-height: 40vh; }
   .main { border-right: 0; }
   .body { padding: 18px 16px; }
-  .composer { padding: 12px 16px 8px; }
+  .notice { padding: 8px 16px; }
 }
 
 /* The actions on threads (docs/design/2026-11-24-web-alone.md). */
@@ -702,7 +690,7 @@ body.wide .fw-preview-box { height: 62vh; }
   font-size: 12px;
 }
 .side-open:hover { color: var(--text); border-color: var(--sel-line); }
-.side-toolbar { display: flex; flex: none; align-items: center; gap: 5px; padding: 12px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.side-toolbar { display: flex; flex: none; align-items: center; gap: 5px; padding: 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .side-toolbar .side-open span { white-space: nowrap; }
 .side-toolbar .side-open .ico { width: 14px; height: 14px; }
 .side-toolbar .show-hidden { width: 28px; }

@@ -121,6 +121,43 @@ test('prompts stay with their project, preserve exact text and survive reload', 
   assert.equal(await page.locator('.saved-prompt-text').textContent(), text);
 });
 
+test('a copy marks its own button and says nothing under the page, which has no prompt box', async (t) => {
+  const { page } = await fixture(t);
+  assert.equal(await page.locator('#prompt, #send, #prompt-form').count(), 0, 'the agent is prompted on its screen');
+  await prompts(page);
+  await add(page, 'Copy me');
+  await page.reload();
+  await page.locator('.saved-prompt').waitFor();
+  const height = () => page.locator('.cols').evaluate((e) => e.getBoundingClientRect().height);
+  const before = await height();
+  const copy = page.getByRole('button', { name: /^Copy prompt:/ });
+  await copy.click();
+  await page.locator('.icon-button.copied').waitFor();
+  assert.equal(await page.locator('#notice').textContent(), '');
+  assert.equal(await page.locator('#notice').isVisible(), false);
+  assert.equal(await height(), before, 'nothing moved');
+  await page.locator('.icon-button.copied').waitFor({ state: 'detached' });
+  assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Copy me');
+});
+
+test("a thread's menu shows on hover alone, on the selected thread too", async (t) => {
+  const { page } = await fixture(t);
+  const line = page.locator('#projects .thread-line').filter({ has: page.locator('.row[aria-current="true"]') });
+  const shown = async (sel) => line.locator(sel).evaluate((e) => getComputedStyle(e).opacity !== '0' && getComputedStyle(e).visibility !== 'hidden');
+  await page.mouse.move(700, 500);
+  assert.equal(await line.count(), 1);
+  assert.equal(await shown('.row-more'), false);
+  assert.equal(await shown('.age'), true);
+  await line.hover();
+  assert.equal(await shown('.row-more'), true);
+  assert.equal(await shown('.age'), false);
+  await page.mouse.move(700, 500);
+  await line.locator('.row-more').focus();
+  await page.keyboard.press('Shift+Tab');
+  await page.keyboard.press('Tab');
+  assert.equal(await shown('.row-more'), true, 'the keys reach it too');
+});
+
 test('Ctrl+V pastes a copied prompt into the agent screen as text, without an image shortcut', async (t) => {
   const { page, input } = await fixture(t);
   const text = 'Review this code.\nKeep the change small.';
@@ -440,7 +477,6 @@ test('removal refusal leaves a project intact and removing the last project clea
   }
   await page.waitForFunction(() => document.querySelectorAll('#projects .project').length === 0);
   assert.equal(await page.locator('#head').textContent(), '');
-  assert.equal(await page.locator('#prompt').isDisabled(), true);
   assert.equal(await page.locator('#screen-note').isVisible(), true);
   assert.match(await page.locator('#screen-note-text').textContent(), /Open a directory/);
   await prompts(page);

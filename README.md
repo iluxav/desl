@@ -126,9 +126,9 @@ desl web
 ```
 
 The page lists every project's agent threads with the same marks and words as the sidebar,
-and shows the whole conversation of the thread you pick, with a search and a prompt box under
-it (queued while the agent works). **Screen** beside it draws the agent's own interface, as the
-terminal does, with your keys going to it. Shells and file managers are there too, and the page
+and shows the whole conversation of the thread you pick, with a search. **Screen**
+beside it draws the agent's own interface, as the terminal does, with your keys going to it:
+that is where you prompt the agent. Shells and file managers are there too, and the page
 opens, switches, forks, restarts, renames and closes threads, with the same prefix keys as the
 terminal (`ctrl+space ?` lists them), so you can work in the browser alone. `⋯` on a thread's
 line opens its menu, and dragging a project's line moves it. Its right column holds the project's task list, live:

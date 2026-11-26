@@ -13,13 +13,18 @@ function el(tag, className, text) {
   return node;
 }
 
-function copyIcon() {
+const COPY = 'M8 8h12v12H8zM16 8V4H4v12h4';
+const COPIED = 'M5 12.5l4.5 4.5L19 7.5';
+/** How long the copy icon stays a check mark after a copy. */
+const COPIED_MS = 1200;
+
+function glyph(d) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('class', 'ico');
   svg.setAttribute('aria-hidden', 'true');
   const path = document.createElementNS(svg.namespaceURI, 'path');
-  path.setAttribute('d', 'M8 8h12v12H8zM16 8V4H4v12h4');
+  path.setAttribute('d', d);
   svg.append(path);
   return svg;
 }
@@ -108,11 +113,19 @@ export function setupPrompts({ notice }) {
       copy.type = 'button';
       copy.title = 'Copy prompt';
       copy.setAttribute('aria-label', `Copy prompt: ${title}`);
-      copy.append(copyIcon());
+      copy.append(glyph(COPY));
+      let back = null;
       copy.addEventListener('click', async () => {
         try {
           await navigator.clipboard.writeText(row.text);
-          notice('Prompt copied to the clipboard.');
+          // The icon itself says so, in place: no sentence that moves the page.
+          copy.replaceChildren(glyph(COPIED));
+          copy.classList.add('copied');
+          clearTimeout(back);
+          back = setTimeout(() => {
+            copy.replaceChildren(glyph(COPY));
+            copy.classList.remove('copied');
+          }, COPIED_MS);
         } catch {
           notice('The prompt could not be copied. Choose Edit in its menu and copy the text there.', true);
         }

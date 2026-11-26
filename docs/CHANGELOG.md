@@ -3,6 +3,20 @@
 All notable changes to desl are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow semantic versioning.
 
+## [Unreleased]
+
+### Changed
+
+- desl web's left column is tighter: a thread's line is 28px high, down from 34, and projects sit
+  closer together.
+- A thread's `⋯` shows on hover alone, on the selected thread too, which shows its age again.
+- Copying a saved prompt turns its icon into a check mark for a moment. The sentence under the
+  page, which pushed the page up, is gone.
+
+### Removed
+
+- The prompt box under desl web's page. The agent is prompted on its Screen, in its own input.
+
 ## [0.2.1]
 
 ### Added

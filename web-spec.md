@@ -67,8 +67,8 @@ call). Forms are for what the terminal does badly.
 1. **The thread list:** projects and their agent threads, one line each, with the status the
    TUI shows (see "Indicators").
 2. **The conversation:** the selected thread's every prompt, reply and tool call since it began,
-   from desl's log, as `prefix [` shows it in the TUI, with search; a prompt box under it, and
-   Stop in its header while the agent works.
+   from desl's log, as `prefix [` shows it in the TUI, with search, and Stop in its header
+   while the agent works. The agent is prompted on its Screen, in its own input.
 3. **Forms:** desl's MCP tool for agents, `desl form` for scripts, cards in the conversation,
    and the waiting list (see "Forms").
 4. **Widgets, by milestone:** `markdown`, `choice`, `checklist`, `text`, `number`, `toggle`,
@@ -110,18 +110,17 @@ desl's own.
 │   logo            ││ │ ( ) M5 live document              │ ││ ply · asks in its  │
 │                   ││ │ Note: ___________  [Dismiss][Send]│ ││   own screen       │
 │                   ││ └───────────────────────────────────┘ ││                    │
-│                   │├───────────────────────────────────────┤│                    │
-│                   ││ › prompt to web milestone…    [Send]  ││                    │
+│                   ││                                       ││                    │
 └───────────────────┘└───────────────────────────────────────┘└────────────────────┘
 ```
 
 | Area | What it holds |
 | --- | --- |
-| Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it; `⋯` on a thread's line opens that thread's menu (switch, restart, fork, rename, close) without opening it, shown on hover and on the thread on screen in place of its age; a project's line is dragged to move the project among the others, which the TUI's sidebar keeps too (the daemon's `move_project`, asked until the page lists it there) |
+| Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it; `⋯` on a thread's line opens that thread's menu (switch, restart, fork, rename, close) without opening it, shown in place of its age on hover or with the keys on it, on the selected thread as on the others (always, where nothing hovers, as on a phone); a project's line is dragged to move the project among the others, which the TUI's sidebar keeps too (the daemon's `move_project`, asked until the page lists it there) |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; `⋯`, the thread's actions; Stop while it works |
 | Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
 | Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered. Below it, **Tasks** and **Prompts** tabs: the project's live task list, or saved text to copy and reuse |
-| Bottom | The prompt to the selected thread, under the Conversation and the Highlights (the Screen has the agent's own input; at phone width it shows under all three); a sentence from desl, for a few seconds |
+| Bottom | A sentence from desl, for a few seconds, when it has one to say (why an action was refused, what a switch did), and nothing otherwise. The page has no prompt box of its own: the agent is prompted on its Screen, in its own input |
 
 The look follows `SPEC.md`'s "Visual language" and borrows the layout from T3 Code, as the TUI
 does. The page has a light and a dark version, following the browser's setting. At phone width
@@ -143,7 +142,8 @@ sidebar's collapsed state is kept in the browser. The header's waiting count rem
 **Project sidebar.** Open a directory and Show hidden projects stay in a fixed toolbar above
 the list; only the list scrolls vertically. At phone width the list is capped at 40% of the
 viewport height. Folder, branch and action icons share a line style. Every project header is
-one compact row: folder, name, optional branch and change count, and actions. The full directory
+one compact row: folder, name, optional branch and change count, and actions. A thread's line is
+28px high, and projects sit 12px apart. The full directory
 path appears on hover; projects without a branch leave no empty metadata row. Below 240px,
 branch details move into that tooltip to keep the name and actions readable. Threads are
 indented beneath one continuous vertical guide per project, inset only past the first item's
@@ -180,7 +180,8 @@ no separate project selector. Projects without a task list can still save prompt
 The **+** button on Prompts opens an inline multiline text area, with **Save prompt** and
 **Cancel**. Blank text cannot be saved. Saving puts the exact text in a list, newest first;
 each item has a copy icon that copies the whole text to the clipboard, and **⋯** with **Edit**
-and **Delete**. Edit uses the same text area; Delete asks for confirmation. List previews are
+and **Delete**. A copy turns its icon into a check mark for a moment and says nothing under the
+page; a copy that fails says why there. Edit uses the same text area; Delete asks for confirmation. List previews are
 plain text, shortened visually to five lines. The editor shows the whole text.
 
 Saved prompts belong to a project by its full path and are kept in this browser's local

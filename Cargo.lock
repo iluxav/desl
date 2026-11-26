@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "adapter-claude"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "desl-ir",
@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "adapter-codex"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "desl-ir",
@@ -22,7 +22,7 @@ dependencies = [
 
 [[package]]
 name = "adapter-copilot"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "desl-ir",
@@ -530,7 +530,7 @@ dependencies = [
 
 [[package]]
 name = "desl"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -550,7 +550,7 @@ dependencies = [
 
 [[package]]
 name = "desl-daemon"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "adapter-claude",
  "adapter-codex",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "desl-ir"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "desl-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "chrono",
  "desl-ir",
@@ -592,7 +592,7 @@ dependencies = [
 
 [[package]]
 name = "desl-web"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "axum",

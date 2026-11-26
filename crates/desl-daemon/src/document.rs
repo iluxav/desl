@@ -126,7 +126,8 @@ pub fn write(plan: &Plan, path: &str) -> Result<(), String> {
     let mut f = std::fs::File::from(fd);
     let done = f
         .write_all(plan.after.as_bytes())
-        .and_then(|()| fchmod(&f, Mode::from_raw_mode(plan.mode)).map_err(Into::into))
+        // The mode's type is the system's: 32 bits on Linux, 16 on macOS; the permission bits fit both.
+        .and_then(|()| fchmod(&f, Mode::from_raw_mode(plan.mode as rustix::fs::RawMode)).map_err(Into::into))
         .and_then(|()| f.sync_all())
         .and_then(|()| renameat(dir, &tmp, dir, &plan.at.name).map_err(Into::into));
     if let Err(e) = done {

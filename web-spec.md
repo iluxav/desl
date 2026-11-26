@@ -181,13 +181,16 @@ The **+** button on Prompts opens an inline multiline text area, with **Save pro
 **Cancel**. Blank text cannot be saved. Saving puts the exact text in a list, newest first;
 each item has a copy icon that copies the whole text to the clipboard, and **⋯** with **Edit**
 and **Delete**. A copy turns its icon into a check mark for a moment and says nothing under the
-page; a copy that fails says why there. Edit uses the same text area; Delete asks for confirmation. List previews are
+page; a copy that fails says why there. A prompt is dragged with the mouse to another place in
+its project's list, a line showing where it lands; it stays there through a reload and an edit,
+and a new prompt still goes first. Dropped on a text field instead, it leaves its text there. Edit uses the same text area; Delete asks for confirmation. List previews are
 plain text, shortened visually to five lines. The editor shows the whole text.
 
 Saved prompts belong to a project by its full path and are kept in this browser's local
 storage on this address, separate from the daemon and thread log. Reloading or reopening the
 page keeps them; another browser or address has its own library. Each prompt has its own
-entry so tabs adding different prompts cannot replace one another's lists. Open tabs refresh
+entry so tabs adding different prompts cannot replace one another's lists; a prompt's place is
+a number in its own entry, so a move rewrites that entry alone. Open tabs refresh
 on storage changes, and saving an edit refuses to replace a prompt changed or deleted in
 another tab. A storage failure keeps the editor's text and explains how to retry. Switching
 projects or tabs, or collapsing a sidebar, preserves unsaved drafts for the life of the page.

@@ -5,6 +5,11 @@ All notable changes to desl are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Saved prompts on desl web are put in the order you want: drag one with the mouse to another
+  place in the list. The order is kept in the browser, with the prompts.
+
 ### Changed
 
 - desl web's left column is tighter: a thread's line is 28px high, down from 34, and projects sit

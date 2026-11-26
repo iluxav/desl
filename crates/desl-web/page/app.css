@@ -561,6 +561,11 @@ body.wide .fw-doc-text { min-height: 60vh; }
 .saved-prompt { display: flex; align-items: flex-start; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .saved-prompt-text { flex: 1; min-width: 0; margin: 3px 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.55; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }
 .saved-prompt-actions { display: flex; flex: none; gap: 2px; }
+/* A prompt is moved by dragging it; a line shows where it lands. */
+.saved-prompt[draggable="true"] { cursor: grab; }
+.saved-prompt.dragging { opacity: 0.45; }
+.saved-prompt.drop-before { box-shadow: 0 -2px 0 var(--accent); }
+.saved-prompt.drop-after { box-shadow: 0 2px 0 var(--accent); }
 .tfilters { display: flex; flex-direction: column; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .frow { display: flex; gap: 8px; align-items: center; min-width: 0; flex-wrap: wrap; }
 .tfilters select, .tfilters input { min-height: 30px; padding: 3px 8px; border: 1px solid var(--line2); border-radius: 7px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; min-width: 0; }

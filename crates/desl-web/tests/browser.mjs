@@ -140,6 +140,56 @@ test('a copy marks its own button and says nothing under the page, which has no 
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'Copy me');
 });
 
+test('a prompt dragged to a new place stays there through a reload, an edit and a new prompt', async (t) => {
+  const { page, open } = await fixture(t);
+  await prompts(page);
+  for (const text of ['A', 'B', 'C']) await add(page, text);
+  const order = (p = page) => p.locator('.saved-prompt-text').allTextContents();
+  const item = (text) => page.locator('.saved-prompt').filter({ has: page.getByText(text, { exact: true }) });
+  // Onto the lower or the upper half of another prompt: after it, or before it.
+  const drag = async (text, onto, half) => {
+    const box = await item(onto).boundingBox();
+    await item(text).dragTo(item(onto), { sourcePosition: { x: 30, y: 12 }, targetPosition: { x: 30, y: half === 'after' ? box.height - 4 : 4 } });
+  };
+  assert.deepEqual(await order(), ['C', 'B', 'A'], 'newest first until one is moved');
+  const other = await open();
+  await prompts(other);
+  await drag('C', 'A', 'after');
+  assert.deepEqual(await order(), ['B', 'A', 'C']);
+  await other.waitForFunction(() => document.querySelector('.saved-prompt-text')?.textContent === 'B');
+  assert.deepEqual(await order(other), ['B', 'A', 'C'], 'the other tab follows');
+  await drag('A', 'B', 'before');
+  assert.deepEqual(await order(), ['A', 'B', 'C']);
+  await drag('B', 'A', 'after');
+  assert.deepEqual(await order(), ['A', 'B', 'C'], 'dropped where it was, nothing moves');
+  assert.equal(await page.locator('.drop-before, .drop-after, .dragging').count(), 0);
+  await page.reload();
+  await page.locator('.saved-prompt').first().waitFor();
+  assert.deepEqual(await order(), ['A', 'B', 'C']);
+  await item('C').getByRole('button', { name: /^Actions for prompt:/ }).click();
+  await page.getByRole('button', { name: '1 Edit', exact: true }).click();
+  await drag('C', 'A', 'before');
+  await page.locator('#prompt-text').fill('C2');
+  await page.getByRole('button', { name: 'Save prompt', exact: true }).click();
+  assert.deepEqual(await order(), ['C2', 'A', 'B'], 'moved while its editor was open, and saved in its new place');
+  await add(page, 'D');
+  assert.deepEqual(await order(), ['D', 'C2', 'A', 'B'], 'a new prompt goes first');
+  // With no number left between two prompts, a move between them renumbers the list.
+  await page.evaluate(() => {
+    for (const key of Object.keys(localStorage).filter((k) => k.startsWith('desl-web-prompt:'))) {
+      localStorage.setItem(key, JSON.stringify({ ...JSON.parse(localStorage.getItem(key)), order: 5 }));
+    }
+  });
+  await page.reload();
+  await page.locator('.saved-prompt').first().waitFor();
+  assert.deepEqual(await order(), ['D', 'C2', 'B', 'A']);
+  await drag('A', 'D', 'after');
+  assert.deepEqual(await order(), ['D', 'A', 'C2', 'B']);
+  await drag('B', 'D', 'before');
+  assert.deepEqual(await order(), ['B', 'D', 'A', 'C2']);
+  assert.equal(await page.locator('#prompt-list-error').isVisible(), false);
+});
+
 test("a thread's menu shows on hover alone, on the selected thread too", async (t) => {
   const { page } = await fixture(t);
   const line = page.locator('#projects .thread-line').filter({ has: page.locator('.row[aria-current="true"]') });

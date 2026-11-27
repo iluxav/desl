@@ -13,6 +13,8 @@ All notable changes to desl are recorded here. The format follows
   meanwhile is never overwritten unseen.
 - Saved prompts on desl web are put in the order you want: drag one with the mouse to another
   place in the list. The order is kept in the browser, with the prompts.
+- desl web's thread header shows the branch and the count of uncommitted paths beside the title,
+  for a thread in the project's checkout too, not only for one in its own worktree.
 
 ### Changed
 

@@ -203,7 +203,7 @@ not send it to an agent.
 | Waiting count | Sidebar header and terminal title (`1 waiting`) | Page header, and the tab title's start: `(2) desl · claude · t-7f3a`, with an amber dot as the tab's icon |
 | Project row | Mark in the project's colour, folder name, branch, uncommitted count, directory | The same |
 | Thread row | Agent logo as status (pulses while working; warning colour while waiting; critical when failed; faded while idle), title, age, `⎇` for a worktree | The same, with the same timing and colours; no subagents |
-| Thread header | Agent mark, title, project, model, effort, status word, thread id | The same, plus the permission mode and `⚠ yolo` |
+| Thread header | Agent mark, title, project, model, effort, status word, thread id | The same, plus the permission mode, `⚠ yolo`, and the branch and uncommitted count (`±n`) where the agent works: its worktree's, else the project's checkout's |
 | A form | `▣` line in the history (`prefix [`): open, answered, withdrawn or dismissed | The card |
 
 - **Source:** every indicator comes from the daemon's events, so it changes on the page when it

@@ -290,6 +290,9 @@ body.resizing { cursor: col-resize; user-select: none; }
   flex-wrap: wrap;
 }
 .head-left, .head-right { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap: wrap; }
+.head-branch { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.head-branch span { overflow: hidden; text-overflow: ellipsis; }
+.head-branch .ico { width: 13px; height: 13px; flex: none; }
 .head-title { font-weight: 600; font-size: 15px; }
 .sep { color: var(--muted); }
 .chip-project { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); }

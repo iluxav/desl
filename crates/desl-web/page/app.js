@@ -505,7 +505,7 @@ function drawSide(cur) {
 
 let headKey;
 function drawHead(cur) {
-  const key = JSON.stringify(cur && [cur.t.id, cur.t.title, cur.t.agent, cur.t.status, cur.t.word, cur.t.glyph, cur.t.header, cur.p.hue, $('link').dataset.state]);
+  const key = JSON.stringify(cur && [cur.t.id, cur.t.title, cur.t.agent, cur.t.status, cur.t.word, cur.t.glyph, cur.t.header, cur.p.hue, cur.p.branch, cur.p.dirty, $('link').dataset.state]);
   if (key === headKey) return;
   headKey = key;
   const head = $('head');
@@ -518,8 +518,21 @@ function drawHead(cur) {
   const proj = el('span', 'chip-project');
   proj.append(projectDot(cur.p.hue), el('span', '', h.project));
   left.append(proj);
-  if (h.branch) left.append(el('span', 'branch', `⎇ ${h.branch}`));
-  if (h.dirty > 0) left.append(el('span', 'dirty', `±${h.dirty}`));
+  // The branch and uncommitted paths where the agent works: its own worktree's, else the
+  // project's checkout's.
+  const branch = h.branch || cur.p.branch;
+  const dirty = h.branch ? h.dirty : cur.p.dirty;
+  if (branch) {
+    const b = el('span', 'branch head-branch');
+    b.append(icon('branch'), el('span', '', branch));
+    b.title = h.branch ? `${branch}, the thread's own worktree` : `${branch}, the project's checkout`;
+    left.append(b);
+  }
+  if (dirty > 0) {
+    const d = el('span', 'dirty', `±${dirty}`);
+    d.title = `${dirty} uncommitted ${dirty === 1 ? 'path' : 'paths'}`;
+    left.append(d);
+  }
   if (h.model) left.append(el('span', 'sep', '·'), el('span', 'model', h.model));
   const right = el('div', 'head-right');
   // `⚠ yolo` says the mode itself, as the terminal's header does.

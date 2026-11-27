@@ -298,6 +298,22 @@ test("a thread's menu shows on hover alone, on the selected thread too", async (
   assert.equal(await shown('.row-more'), true, 'the keys reach it too');
 });
 
+test("the header shows the branch and uncommitted paths of the checkout, else of the thread's worktree", async (t) => {
+  const { page, publish } = await fixture(t);
+  const head = page.locator('#head');
+  await head.locator('.head-branch', { hasText: 'main' }).waitFor();
+  assert.equal(await head.locator('.dirty').count(), 0, 'a clean checkout shows no count');
+  const next = structuredClone(view);
+  next.projects[0].dirty = 3;
+  publish(next);
+  await head.locator('.dirty', { hasText: '±3' }).waitFor();
+  assert.equal(await head.locator('.dirty').getAttribute('title'), '3 uncommitted paths');
+  Object.assign(next.projects[0].threads[0].header, { branch: 'desl/t-one', dirty: 1 });
+  publish(next);
+  await head.locator('.head-branch', { hasText: 'desl/t-one' }).waitFor();
+  assert.equal(await head.locator('.dirty').textContent(), '±1', "the worktree's own count, not the checkout's");
+});
+
 test('Ctrl+V pastes a copied prompt into the agent screen as text, without an image shortcut', async (t) => {
   const { page, input } = await fixture(t);
   const text = 'Review this code.\nKeep the change small.';

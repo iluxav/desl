@@ -1241,14 +1241,19 @@ impl Engine {
 
     /// Thread `i`'s conversation copied into a new session of `adapter`'s agent: its id and
     /// length. None when the thread has no conversation, as when forms are all it holds: a copy
-    /// of nothing is a session the agent cannot resume.
+    /// of nothing is a session the agent cannot resume. A long conversation is fitted to the
+    /// agent's context first (`projector::fit`).
     fn copy_conversation(&self, i: usize, adapter: &dyn Adapter) -> Result<Option<(String, u64)>, desl_ir::adapter::AdapterError> {
         let t = &self.threads[i];
-        let kinds: Vec<EventKind> = self.store.all_events(&t.id).unwrap_or_default().into_iter().map(|e| e.kind).collect();
-        if desl_ir::adapter::copy_items(&kinds).is_empty() {
+        let events = self.store.all_events(&t.id).unwrap_or_default();
+        let fitted = projector::fit(&events, projector::COPY_BUDGET_TOKENS);
+        if desl_ir::adapter::copy_items(&fitted.kinds).is_empty() {
             return Ok(None);
         }
-        adapter.write_session(Path::new(&t.cwd), &kinds).map(|(session_id, _, len)| Some((session_id, len)))
+        if fitted.shortened > 0 || fitted.summarised > 0 {
+            tracing::info!(thread = %t.id, shortened = fitted.shortened, summarised = fitted.summarised, "fitted a long conversation to the copy");
+        }
+        adapter.write_session(Path::new(&t.cwd), &fitted.kinds).map(|(session_id, _, len)| Some((session_id, len)))
     }
 
     /// Starts the thread's active agent in a PTY: resuming its session when it has one.

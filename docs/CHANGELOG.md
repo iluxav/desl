@@ -13,6 +13,10 @@ All notable changes to desl are recorded here. The format follows
   meanwhile is never overwritten unseen.
 - Saved prompts on desl web are put in the order you want: drag one with the mouse to another
   place in the list. The order is kept in the browser, with the prompts.
+- A switch or fork of a very long thread no longer hands the other agent more than its context
+  holds. The copy keeps about 100k tokens word for word: older tool outputs are cut to their
+  start and end first, then the oldest turns give way to a summary of them. desl's own log
+  keeps the whole thread.
 - desl web's thread header shows the branch and the count of uncommitted paths beside the title,
   for a thread in the project's checkout too, not only for one in its own worktree.
 

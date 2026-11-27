@@ -69,6 +69,132 @@ fn one_line(s: &str, max: usize) -> String {
 /// delta. `pending_prompt` is the user's next prompt, which becomes "Next step". `current_diff`
 /// is the worktree's diff from the git service; a delta brief leaves it out.
 pub fn build(events: &[Event], pending_prompt: Option<&str>, delta: bool, current_diff: &str, budget_tokens: usize) -> Brief {
+    project(events, pending_prompt, if delta { Kind::Delta } else { Kind::Full }, current_diff, budget_tokens)
+}
+
+/// Which brief: the whole thread, the part an agent has not seen, or the part a copy leaves out.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Full,
+    Delta,
+    Earlier,
+}
+
+/// How much of a thread a copied session holds word for word, in estimated tokens: about half of
+/// a 200k context, so the agent has room to go on working (SPEC.md "Cross-agent continuity").
+pub const COPY_BUDGET_TOKENS: usize = 100_000;
+/// The budget of the summary that stands for what a copy leaves out.
+pub const EARLIER_BUDGET_TOKENS: usize = 8_000;
+/// The last turns, whose tool outputs a copy never shortens.
+const WHOLE_TURNS: usize = 5;
+/// What an older tool output or diff is shortened to, its start and its end.
+const OLD_OUTPUT_BYTES: usize = 600;
+
+/// The conversation a copied session holds.
+pub struct Fitted {
+    pub kinds: Vec<EventKind>,
+    /// Tool outputs and diffs shortened.
+    pub shortened: usize,
+    /// User turns left out, in the summary at the start instead.
+    pub summarised: u64,
+}
+
+/// What `kind` adds to a copied session, in estimated tokens; outputs and diffs as a copy caps them.
+fn copy_cost(kind: &EventKind) -> u64 {
+    let cap = |s: &str| estimate_tokens(s).min(desl_ir::adapter::COPY_OUTPUT_CAP.div_ceil(4) as u64);
+    match kind {
+        EventKind::UserMessage { text, .. } | EventKind::AssistantMessage { text, .. } => estimate_tokens(text),
+        EventKind::ToolCall { name, args, .. } => estimate_tokens(name) + estimate_tokens(&args.to_string()),
+        EventKind::ToolResult { output, .. } => cap(output),
+        EventKind::FileChange { diff: Some(d), call_id: Some(_), .. } => cap(d),
+        _ => 0,
+    }
+}
+
+/// `s`'s start and end, with a line between that says what was left out.
+fn shorten(s: &str) -> Option<String> {
+    if s.len() <= OLD_OUTPUT_BYTES + 80 {
+        return None;
+    }
+    let mut head = OLD_OUTPUT_BYTES * 2 / 3;
+    while !s.is_char_boundary(head) {
+        head -= 1;
+    }
+    let mut tail = s.len() - (OLD_OUTPUT_BYTES - OLD_OUTPUT_BYTES * 2 / 3);
+    while !s.is_char_boundary(tail) {
+        tail += 1;
+    }
+    let lines = s[head..tail].lines().count();
+    Some(format!("{}\n[… {lines} lines left out of this copy …]\n{}", &s[..head], &s[tail..]))
+}
+
+/// Shortens the tool outputs and diffs of `kinds`; how many it shortened.
+fn shorten_all(kinds: &mut [EventKind]) -> usize {
+    let mut n = 0;
+    for k in kinds {
+        let text = match k {
+            EventKind::ToolResult { output, .. } => output,
+            EventKind::FileChange { diff: Some(d), .. } => d,
+            _ => continue,
+        };
+        if let Some(short) = shorten(text) {
+            *text = short;
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Thread `events` as a copied session holds them, within `budget_tokens` (SPEC.md "Cross-agent
+/// continuity"). All of it when it fits. Else the tool outputs and diffs before the last turns are
+/// shortened; when it still does not fit, the oldest turns are left out, whole, and a summary of
+/// them, as the projector writes a brief, comes first. desl's own log keeps everything.
+pub fn fit(events: &[Event], budget_tokens: usize) -> Fitted {
+    let mut kinds: Vec<EventKind> = events.iter().map(|e| e.kind.clone()).collect();
+    let total = |kinds: &[EventKind]| kinds.iter().map(copy_cost).sum::<u64>();
+    let budget = budget_tokens as u64;
+    let mut fitted = Fitted { kinds: Vec::new(), shortened: 0, summarised: 0 };
+    if total(&kinds) <= budget {
+        fitted.kinds = kinds;
+        return fitted;
+    }
+    let starts: Vec<usize> = kinds
+        .iter()
+        .enumerate()
+        .filter(|(_, k)| matches!(k, EventKind::UserMessage { text, .. } if !text.trim().is_empty()))
+        .map(|(i, _)| i)
+        .collect();
+    let whole_from = starts.len().checked_sub(WHOLE_TURNS).map_or(0, |k| starts[k]);
+    fitted.shortened = shorten_all(&mut kinds[..whole_from]);
+    if total(&kinds) <= budget {
+        fitted.kinds = kinds;
+        return fitted;
+    }
+    // The earliest turn from which the rest fits beside the summary; the last turn at least.
+    let room = budget.saturating_sub(EARLIER_BUDGET_TOKENS as u64);
+    let mut suffix = vec![0u64; kinds.len() + 1];
+    for i in (0..kinds.len()).rev() {
+        suffix[i] = suffix[i + 1] + copy_cost(&kinds[i]);
+    }
+    let cut = starts.iter().copied().filter(|&s| s > 0).find(|&s| suffix[s] <= room).or_else(|| starts.last().copied().filter(|&s| s > 0));
+    let Some(cut) = cut else {
+        // One turn, too long: its outputs are shortened too, and it is copied as it is.
+        fitted.shortened += shorten_all(&mut kinds);
+        fitted.kinds = kinds;
+        return fitted;
+    };
+    if suffix[cut] > room {
+        fitted.shortened += shorten_all(&mut kinds[cut..]);
+    }
+    let earlier = project(&events[..cut], None, Kind::Earlier, "", EARLIER_BUDGET_TOKENS);
+    fitted.summarised = earlier.turns;
+    fitted.kinds =
+        std::iter::once(EventKind::UserMessage { text: earlier.text, attachments: Vec::new() }).chain(kinds.drain(cut..)).collect();
+    fitted
+}
+
+fn project(events: &[Event], pending_prompt: Option<&str>, kind: Kind, current_diff: &str, budget_tokens: usize) -> Brief {
+    let delta = kind == Kind::Delta;
     let turns = events.iter().filter(|e| matches!(e.kind, EventKind::UserMessage { .. })).count() as u64;
     let covers = (events.first().map(|e| e.index).unwrap_or(0), events.last().map(|e| e.index).unwrap_or(0));
 
@@ -207,11 +333,18 @@ pub fn build(events: &[Event], pending_prompt: Option<&str>, delta: bool, curren
 
     // Assemble within budget, in priority order; each later section gets what is left.
     let budget_bytes = budget_tokens * 4;
-    let header = if delta {
-        "# Handoff brief (delta)\nYou are continuing a thread you have seen before. Below is only what happened\nsince you last saw it. Treat it as your own history and continue from \"Next step\".\n"
-    } else {
-        "# Handoff brief\nYou are continuing work that another assistant started. Treat this as your\nown history. Do not re-explain it; continue from \"Next step\".\n"
+    let header = match kind {
+        Kind::Delta => {
+            "# Handoff brief (delta)\nYou are continuing a thread you have seen before. Below is only what happened\nsince you last saw it. Treat it as your own history and continue from \"Next step\".\n"
+        }
+        Kind::Full => {
+            "# Handoff brief\nYou are continuing work that another assistant started. Treat this as your\nown history. Do not re-explain it; continue from \"Next step\".\n"
+        }
+        Kind::Earlier => {
+            "# Earlier in this thread\nThis conversation began before the messages that follow. It was too long to copy\nwhole, so this is a summary of its earlier part; the messages after it are word for\nword. Treat both as your own history. Do not answer this summary; carry on from the\nlast message.\n"
+        }
     };
+    let (next_step, questions) = if kind == Kind::Earlier { (None, Vec::new()) } else { (next_step, questions) };
     let mut remaining = budget_bytes.saturating_sub(header.len());
     let mut sections: Vec<(usize, String)> = Vec::new(); // (position, text)
     let mut take = |pos: usize, title: &str, body: String, remaining: &mut usize| {
@@ -403,5 +536,96 @@ mod tests {
         let a = build(&sample(), Some("x"), false, "d", BUDGET_TOKENS).text;
         let b = build(&sample(), Some("x"), false, "d", BUDGET_TOKENS).text;
         assert_eq!(a, b);
+    }
+
+    /// `turns` turns, each a prompt, a reply and a read whose output is `output` bytes long.
+    fn long_thread(turns: usize, output: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        for n in 0..turns {
+            let i = events.len() as u64 + 1;
+            let line = format!("line of turn {n}\n");
+            events.push(ev(i, EventKind::UserMessage { text: format!("Prompt {n}"), attachments: vec![] }));
+            events.push(ev(i + 1, EventKind::AssistantMessage { text: format!("I'll use the reader for turn {n}."), model: None }));
+            events.push(ev(
+                i + 2,
+                EventKind::ToolCall { id: format!("c{n}"), name: "read".into(), args: json!({ "path": format!("src/f{n}.rs") }) },
+            ));
+            let out = line.repeat(output / line.len() + 1);
+            events.push(ev(
+                i + 3,
+                EventKind::ToolResult {
+                    call_id: format!("c{n}"),
+                    output: out,
+                    exit_code: None,
+                    is_error: false,
+                    truncated: false,
+                    blob: None,
+                },
+            ));
+        }
+        events
+    }
+
+    fn outputs(kinds: &[EventKind]) -> Vec<&str> {
+        kinds
+            .iter()
+            .filter_map(|k| match k {
+                EventKind::ToolResult { output, .. } => Some(output.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_conversation_that_fits_is_copied_as_it_is() {
+        let events = long_thread(10, 2000);
+        let f = fit(&events, COPY_BUDGET_TOKENS);
+        assert_eq!(f.kinds, events.iter().map(|e| e.kind.clone()).collect::<Vec<_>>());
+        assert_eq!((f.shortened, f.summarised), (0, 0));
+    }
+
+    #[test]
+    fn older_outputs_are_shortened_first_and_the_last_turns_stay_whole() {
+        let events = long_thread(40, 3000);
+        let f = fit(&events, 15_000);
+        assert_eq!(f.summarised, 0, "shortening was enough");
+        assert_eq!(f.shortened, 35);
+        let outs = outputs(&f.kinds);
+        assert!(outs[0].contains("lines left out of this copy") && outs[0].len() < 800, "{}", outs[0]);
+        assert!(outs[0].starts_with("line of turn 0") && outs[0].ends_with("line of turn 0\n"));
+        assert!(outs[35..].iter().all(|o| o.len() >= 3000), "the last five turns are whole");
+        assert!(f.kinds.iter().map(copy_cost).sum::<u64>() <= 15_000);
+    }
+
+    #[test]
+    fn the_oldest_turns_give_way_to_a_summary_and_the_rest_is_word_for_word() {
+        let events = long_thread(400, 3000);
+        let f = fit(&events, 20_000);
+        assert!(f.summarised > 0 && f.summarised < 400, "{} turns summarised", f.summarised);
+        let EventKind::UserMessage { text, .. } = &f.kinds[0] else { panic!("the summary comes first") };
+        assert!(text.starts_with("# Earlier in this thread"), "{text}");
+        assert!(text.contains("## Task\nPrompt 0"), "the task is the first prompt");
+        assert!(!text.contains("## Next step"), "the summary does not say what to do next");
+        let first = format!("Prompt {}", f.summarised);
+        assert!(matches!(&f.kinds[1], EventKind::UserMessage { text, .. } if *text == first), "a whole turn follows");
+        assert!(matches!(f.kinds.iter().rev().nth(3), Some(EventKind::UserMessage { text, .. }) if text == "Prompt 399"));
+        assert!(f.kinds.iter().map(copy_cost).sum::<u64>() <= 20_000);
+    }
+
+    #[test]
+    fn one_turn_too_long_is_copied_with_its_outputs_shortened() {
+        let mut events = long_thread(1, 10);
+        for n in 0..200 {
+            events.push(ev(10 + n, EventKind::ToolCall { id: format!("x{n}"), name: "read".into(), args: json!({ "path": "a" }) }));
+            let output = "x\n".repeat(3000);
+            events.push(ev(
+                10 + n,
+                EventKind::ToolResult { call_id: format!("x{n}"), output, exit_code: None, is_error: false, truncated: false, blob: None },
+            ));
+        }
+        let f = fit(&events, 20_000);
+        assert_eq!(f.summarised, 0);
+        assert_eq!(f.shortened, 200);
+        assert!(matches!(&f.kinds[0], EventKind::UserMessage { text, .. } if text == "Prompt 0"));
     }
 }

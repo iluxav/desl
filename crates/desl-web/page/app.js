@@ -685,7 +685,19 @@ function setupScreenPane() {
 const conv = {
   /** The thread whose conversation is drawn, or asked for. */
   thread: null,
+  /** The part of it the page holds: items `start` on, of `total`; the bridge sends the last part of
+   * a long conversation, and earlier parts as the list is scrolled up (web-spec.md "Conversation"). */
   items: [],
+  start: 0,
+  total: 0,
+  /** The first item to ask for: what is held, or further back once asked for. */
+  from: null,
+  /** The event to show once the part that holds it comes, for a highlight's link. */
+  goTo: null,
+  /** Finding waits for the whole conversation, then shows the first match. */
+  finding: false,
+  /** The drawn items, by their place and content, so a redraw makes only new ones. */
+  nodes: new Map(),
   /** Its story in short questions and answers (docs/design/2026-11-22-highlights.md). */
   highlights: [],
   /** The view shown now, which is the Screen for a shell whatever `view` says. */
@@ -700,18 +712,31 @@ const conv = {
   at: -1,
 };
 
-function readConversation(id) {
+/** Asks for thread `id`'s conversation: the part held, or the last part; from event `event` on too. */
+function readConversation(id, event) {
   if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
   if (conv.thread !== id) {
-    conv.thread = id;
-    conv.items = [];
-    conv.highlights = [];
+    Object.assign(conv, { thread: id, items: [], start: 0, total: 0, from: null, goTo: null, finding: false, highlights: [] });
+    conv.nodes.clear();
     drawConversation(true);
     drawHighlights(true);
   }
   const reqId = state.nextId++;
   conv.asking = reqId;
-  state.ws.send(JSON.stringify({ type: 'conversation', id: reqId, thread_id: id }));
+  const ask = { type: 'conversation', id: reqId, thread_id: id };
+  if (conv.from !== null) ask.from = conv.from;
+  if (event !== undefined) ask.event = event;
+  state.ws.send(JSON.stringify(ask));
+}
+
+/** Asks for the part before the one held, when there is one. */
+function readEarlier(all = false) {
+  if (!conv.thread || conv.start === 0) return;
+  const from = all ? 0 : Math.max(0, conv.start - 300);
+  if (conv.asking && conv.from !== null && conv.from <= from) return;
+  conv.from = from;
+  if (earlierButton) earlierButton.textContent = 'Reading the earlier conversation…';
+  readConversation(conv.thread);
 }
 
 function conversationArrived(msg) {
@@ -723,12 +748,26 @@ function conversationArrived(msg) {
   }
   const list = $('conv');
   const atEnd = list.scrollHeight - list.scrollTop - list.clientHeight < 40 || !conv.items.length;
+  // An earlier part above what is read stays out of the way: what is on screen stays put.
+  const earlier = conv.items.length > 0 && (msg.start || 0) < conv.start;
   const high = $('highlights');
   const highAtEnd = high.scrollHeight - high.scrollTop - high.clientHeight < 40 || !conv.highlights.length;
   conv.items = msg.items || [];
+  conv.start = msg.start || 0;
+  conv.total = msg.total ?? conv.items.length;
+  conv.from = conv.start;
   conv.highlights = msg.highlights || [];
-  drawConversation(atEnd);
+  drawConversation(atEnd && !earlier, earlier);
   drawHighlights(highAtEnd);
+  if (conv.goTo !== null) {
+    const event = conv.goTo;
+    conv.goTo = null;
+    openAt(event);
+  }
+  if (conv.finding) {
+    conv.finding = false;
+    findAgain(true);
+  }
 }
 
 const ASKED_BY = { you: 'You', task: 'Task', form: 'Form', desl: 'desl', agent: 'Agent' };
@@ -769,6 +808,13 @@ function drawHighlights(toEnd) {
 /** Shows the conversation, at the first item from event `event` on. */
 function openAt(event) {
   setView('conversation');
+  // A moment before the part held: that part is asked for, and shown when it comes.
+  const first = conv.items.find((i) => i.event !== undefined);
+  if (conv.start > 0 && first && first.event > event) {
+    conv.goTo = event;
+    readConversation(conv.thread, event);
+    return;
+  }
   const items = [...document.querySelectorAll('#conv .item')];
   const target = items.find((n) => Number(n.dataset.event) >= event) || items[items.length - 1];
   if (!target) return;
@@ -957,73 +1003,104 @@ function clock(ms) {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-function drawConversation(toEnd) {
+function drawConversation(toEnd, keepBottom = false) {
   const list = $('conv');
   // A field the user is typing in keeps the keys, the caret and the place on screen: the cards
   // are put back as they were, and nothing else moves.
   const active = list.contains(document.activeElement) ? document.activeElement : null;
   const caret = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd] : null;
   const top = list.scrollTop;
+  const fromBottom = list.scrollHeight - list.scrollTop;
   if (!conv.items.length) {
+    conv.nodes.clear();
     list.replaceChildren(el('p', 'empty', conv.asking ? 'Reading the conversation…' : 'Nothing yet.'));
     return;
   }
   const nodes = [];
-  for (const item of conv.items) {
-    let node;
-    switch (item.kind) {
-      case 'rule':
-        node = el('div', 'item item-rule', item.text);
-        break;
-      case 'user': {
-        node = el('div', 'item item-user');
-        node.append(el('span', 'caret', '›'), el('span', 'text', item.text));
-        if (item.at) node.append(el('span', 'at', clock(item.at)));
-        break;
-      }
-      case 'assistant':
-        node = el('div', 'item item-assistant');
-        node.append(markdown(item.text));
-        break;
-      case 'tool': {
-        node = el('details', 'item item-tool');
-        const sum = el('summary');
-        const outcome = el('span', item.ok === false ? 'outcome bad' : 'outcome', item.summary || '');
-        sum.append(el('span', 'verb', item.verb), el('span', 'target', item.target), outcome);
-        node.append(sum);
-        if (item.diff) lines(item.diff, node, true);
-        else if (item.detail && item.detail.text.trim()) lines(item.detail, node, false);
-        else node.append(el('p', 'more', item.summary ? '(no output)' : '(no output yet)'));
-        break;
-      }
-      case 'brief':
-        node = el('details', 'item item-brief');
-        node.append(el('summary', '', `${item.label} · ~${item.tokens} tokens`));
-        lines({ text: item.text, more: 0 }, node, false);
-        break;
-      case 'error':
-        node = el('div', 'item item-error', `✕ ${item.text}`);
-        break;
-      case 'form':
-        node = formNode(item);
-        break;
-      default:
-        node = el('div', 'item item-note', item.text);
-        break;
-    }
-    // Which event it shows, for a highlight's link to it.
-    if (item.event !== undefined) node.dataset.event = String(item.event);
+  if (conv.start > 0) nodes.push(earlierNode());
+  const made = new Map();
+  conv.items.forEach((item, i) => {
+    // An item drawn before, unchanged, is the same node: a redraw while the agent works makes
+    // only what is new, and a tool opened stays open.
+    const key = item.kind === 'form' ? null : `${conv.start + i}\u0000${JSON.stringify(item)}`;
+    let node = key && conv.nodes.get(key);
+    if (!node) node = itemNode(item);
+    if (key) made.set(key, node);
     nodes.push(node);
-  }
+  });
+  conv.nodes = made;
   place(list, nodes);
   findAgain(false);
   if (toEnd) list.scrollTop = list.scrollHeight;
+  else if (keepBottom) list.scrollTop = list.scrollHeight - fromBottom;
   else list.scrollTop = top;
   if (active && active.isConnected) {
     active.focus({ preventScroll: true });
     if (caret) active.setSelectionRange(caret[0], caret[1]);
   }
   goToForm();
+}
+
+let earlierButton;
+/** The line above the part held, saying how much is before it; a click or a scroll up reads it. */
+function earlierNode() {
+  if (!earlierButton) {
+    earlierButton = el('button', 'conv-earlier');
+    earlierButton.type = 'button';
+    earlierButton.addEventListener('click', () => readEarlier());
+  }
+  earlierButton.textContent = conv.asking && conv.from < conv.start
+    ? 'Reading the earlier conversation…'
+    : `Show the earlier conversation · ${conv.start.toLocaleString()} more ${conv.start === 1 ? 'item' : 'items'}`;
+  return earlierButton;
+}
+
+/** The node that draws one item of the conversation. */
+function itemNode(item) {
+  let node;
+  switch (item.kind) {
+    case 'rule':
+      node = el('div', 'item item-rule', item.text);
+      break;
+    case 'user': {
+      node = el('div', 'item item-user');
+      node.append(el('span', 'caret', '›'), el('span', 'text', item.text));
+      if (item.at) node.append(el('span', 'at', clock(item.at)));
+      break;
+    }
+    case 'assistant':
+      node = el('div', 'item item-assistant');
+      node.append(markdown(item.text));
+      break;
+    case 'tool': {
+      node = el('details', 'item item-tool');
+      const sum = el('summary');
+      const outcome = el('span', item.ok === false ? 'outcome bad' : 'outcome', item.summary || '');
+      sum.append(el('span', 'verb', item.verb), el('span', 'target', item.target), outcome);
+      node.append(sum);
+      if (item.diff) lines(item.diff, node, true);
+      else if (item.detail && item.detail.text.trim()) lines(item.detail, node, false);
+      else node.append(el('p', 'more', item.summary ? '(no output)' : '(no output yet)'));
+      break;
+    }
+    case 'brief':
+      node = el('details', 'item item-brief');
+      node.append(el('summary', '', `${item.label} · ~${item.tokens} tokens`));
+      lines({ text: item.text, more: 0 }, node, false);
+      break;
+    case 'error':
+      node = el('div', 'item item-error', `✕ ${item.text}`);
+      break;
+    case 'form':
+      node = formNode(item);
+      break;
+    default:
+      node = el('div', 'item item-note', item.text);
+      break;
+  }
+  // Which event it shows, for a highlight's link to it.
+  if (item.event !== undefined) node.dataset.event = String(item.event);
+  return node;
 }
 
 /**
@@ -1493,8 +1570,17 @@ function setupConversation() {
     $('conv').classList.toggle('no-tools', !e.target.checked);
     findAgain(false);
   });
+  // Near the top of the part held, the part before it is read.
+  $('conv').addEventListener('scroll', () => {
+    if ($('conv').scrollTop < 400) readEarlier();
+  }, { passive: true });
   $('conv-find').addEventListener('input', () => {
     conv.at = -1;
+    // Finding looks through the whole conversation: what is not held yet is read first.
+    if ($('conv-find').value && conv.start > 0) {
+      conv.finding = true;
+      readEarlier(true);
+    }
     findAgain(true);
   });
   // enter goes on to the next match, shift+enter back; esc clears the search.

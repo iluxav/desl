@@ -41,7 +41,7 @@ after(async () => {
 });
 
 async function fixture(t, options = {}) {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'], ...options, tasks: undefined });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, permissions: ['clipboard-read', 'clipboard-write'], ...options, tasks: undefined, conversation: undefined });
   t.after(() => context.close());
   const errors = [];
   const sockets = new Set();
@@ -52,6 +52,10 @@ async function fixture(t, options = {}) {
   // Project one's task list, as the daemon keeps it.
   let taskList = structuredClone(options.tasks || []);
   delete options.tasks;
+  // Thread t-one's conversation, windowed as the bridge does: the last 300 items, or from `from`.
+  const items = options.conversation || [];
+  delete options.conversation;
+  const asks = [];
   const setTasks = (next) => {
     taskList = next;
     for (const socket of sockets) socket.send(JSON.stringify({ type: 'event', change: { what: 'tasks', project_id: 'one', tasks: next } }));
@@ -71,7 +75,13 @@ async function fixture(t, options = {}) {
         ws.send(JSON.stringify({ type: 'bridge', state: 'ready', prefix: 'ctrl+space' }));
         ws.send(JSON.stringify({ type: 'view', view: currentView }));
       } else if (msg.type === 'conversation') {
-        ws.send(JSON.stringify({ type: 'conversation', id: msg.id, thread_id: msg.thread_id, items: [], highlights: [] }));
+        asks.push(msg);
+        const all = msg.thread_id === 't-one' ? items : [];
+        let start = Math.max(0, all.length - 300);
+        if (msg.from !== undefined) start = Math.min(start, msg.from);
+        if (msg.event !== undefined) start = Math.min(start, Math.max(0, all.findIndex((i) => i.event >= msg.event)));
+        while (start > 0 && all[start].kind !== 'user') start--;
+        ws.send(JSON.stringify({ type: 'conversation', id: msg.id, thread_id: msg.thread_id, items: all.slice(start), start, total: all.length, highlights: [] }));
       } else if (msg.command === 'remove_project') {
         commands.push(msg);
         if (!removalError) publish({ ...currentView,
@@ -109,7 +119,10 @@ async function fixture(t, options = {}) {
     await page.locator('#link[data-state="connected"]').waitFor();
     return page;
   }
-  return { context, page: await open(), open, input, commands, publish, setTasks, tasks: () => taskList,
+  const appended = (thread_id) => {
+    for (const socket of sockets) socket.send(JSON.stringify({ type: 'event', change: { what: 'appended', event: { thread_id, kind: 'assistant_message' } } }));
+  };
+  return { context, page: await open(), open, input, commands, publish, setTasks, tasks: () => taskList, asks, appended,
     refuseRemoval: (error) => { removalError = error; } };
 }
 
@@ -312,6 +325,41 @@ test("the header shows the branch and uncommitted paths of the checkout, else of
   publish(next);
   await head.locator('.head-branch', { hasText: 'desl/t-one' }).waitFor();
   assert.equal(await head.locator('.dirty').textContent(), '±1', "the worktree's own count, not the checkout's");
+});
+
+test('a long conversation shows its last part, reads earlier parts on a scroll up, and finds in all of it', async (t) => {
+  const conversation = [];
+  for (let n = 0; n < 500; n++) {
+    conversation.push({ kind: 'user', text: `Prompt ${n}`, event: n * 2 + 1 });
+    conversation.push({ kind: 'assistant', text: n === 3 ? 'The needle is here.' : `Reply ${n}`, event: n * 2 + 2 });
+  }
+  const { page, asks, appended } = await fixture(t, { conversation });
+  const conv = page.locator('#conv');
+  await conv.locator('.item-user', { hasText: 'Prompt 499' }).waitFor();
+  assert.equal(await conv.locator('.item').count(), 300, 'the last part alone');
+  assert.match(await page.locator('.conv-earlier').textContent(), /700 more items/);
+  // A redraw while the agent works keeps what was drawn.
+  await page.evaluate(() => { window.kept = document.querySelector('#conv .item-assistant'); });
+  const before = asks.length;
+  appended('t-one');
+  for (let i = 0; i < 40 && asks.length === before; i++) await page.waitForTimeout(50);
+  await page.waitForTimeout(100);
+  assert.equal(asks.at(-1).from, 700, 'the part held is asked for again, no more');
+  assert.equal(await page.evaluate(() => document.querySelector('#conv .item-assistant') === window.kept), true);
+  // Scrolled up, the part before is read and what was on screen stays there.
+  const shown = conv.locator('.item-user', { hasText: 'Prompt 350' });
+  await conv.evaluate((e) => { e.scrollTop = 0; });
+  await conv.locator('.item-user', { hasText: 'Prompt 200' }).waitFor();
+  assert.equal(asks.at(-1).from, 400);
+  assert.equal(await conv.locator('.item').count(), 600);
+  const box = await shown.boundingBox();
+  const area = await conv.boundingBox();
+  assert.ok(box.y > area.y - 5, 'the item that was at the top is still on screen, below what came');
+  // Finding reads the whole conversation first.
+  await page.getByLabel('Find in the conversation').fill('needle');
+  await conv.locator('.item.found', { hasText: 'The needle is here.' }).waitFor();
+  assert.equal(asks.at(-1).from, 0);
+  assert.equal(await page.locator('.conv-earlier').count(), 0, 'nothing is left to read');
 });
 
 test('Ctrl+V pastes a copied prompt into the agent screen as text, without an image shortcut', async (t) => {

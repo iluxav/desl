@@ -17,6 +17,9 @@ All notable changes to desl are recorded here. The format follows
   holds. The copy keeps about 100k tokens word for word: older tool outputs are cut to their
   start and end first, then the oldest turns give way to a summary of them. desl's own log
   keeps the whole thread.
+- desl web opens a long conversation at once: it shows the last part and reads earlier parts as
+  you scroll up, and Find looks through all of it. While the agent works the page redraws only
+  what is new, and the daemon's log of the thread is read once, not on every change.
 - desl web's thread header shows the branch and the count of uncommitted paths beside the title,
   for a thread in the project's checkout too, not only for one in its own worktree.
 

@@ -117,7 +117,7 @@ desl's own.
 | --- | --- |
 | Left | **Open a directory** at the top; projects and their threads (agents, shells, file managers), one line each: the status mark, the title, the age, `⎇` for a worktree; `+` on a project's line opens a new thread in it; `⋯` on a thread's line opens that thread's menu (switch, restart, fork, rename, close) without opening it, shown in place of its age on hover or with the keys on it, on the selected thread as on the others (always, where nothing hovers, as on a phone); a project's line is dragged to move the project among the others, which the TUI's sidebar keeps too (the daemon's `move_project`, asked until the page lists it there) |
 | Middle, header | The selected thread's indicators, as the TUI's panel title shows them, plus its permission mode; `⋯`, the thread's actions; Stop while it works |
-| Middle | The thread's whole conversation, with a search and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
+| Middle | The thread's whole conversation, its last part first and earlier parts as it is scrolled up, with a search through all of it and a box that hides tool calls; each form a card at the point it was pushed. **Highlights** beside it: the thread's story as questions and answers of at most two sentences each, live, each opening the conversation at its moment (`docs/design/2026-11-22-highlights.md`). **Screen** beside them: the agent's own interface, drawn by xterm.js, with the keys, pastes and the mouse going to it (`docs/design/2026-11-24-web-alone.md`) |
 | Right | Waiting: every open form, oldest first, then each thread whose agent asks in its own screen, one line that opens that screen, where it is answered. Below it, **Tasks** and **Prompts** tabs: the project's live task list, or saved text to copy and reuse |
 | Bottom | A sentence from desl, for a few seconds, when it has one to say (why an action was refused, what a switch did), and nothing otherwise. The page has no prompt box of its own: the agent is prompted on its Screen, in its own input |
 
@@ -471,12 +471,17 @@ agents: a shell or a file manager offers only rename and close.
   waits up to 5 seconds.
 - A refused request is answered as the daemon would, and never reaches the daemon: `shutdown`,
   `handover` and `hello`.
-- `{"type": "conversation", "id", "thread_id", "items"}`, the answer to the page's own
-  `{"type": "conversation", "id", "thread_id"}`: the thread's conversation as
-  `desl_proto::conversation` projects it for the TUI's history, each item with its `kind`
-  (`user`, `assistant`, `tool`, `rule`, `brief`, `note`, `error`, `form` with its id, title and
-  how it closed). The page asks again when an event is added to that thread: at once for a form
-  shown or closed, within 600 ms for the rest.
+- `{"type": "conversation", "id", "thread_id", "items", "start", "total", "highlights"}`, the
+  answer to the page's own `{"type": "conversation", "id", "thread_id", "from"?, "event"?}`: the
+  thread's conversation as `desl_proto::conversation` projects it for the TUI's history, each
+  item with its `kind` (`user`, `assistant`, `tool`, `rule`, `brief`, `note`, `error`, `form`
+  with its id, title and how it closed). A long conversation comes in parts: the last 300 items,
+  or from item `from`, or from the item that shows event `event`, whichever is earliest, each
+  part beginning at a prompt when one is near; `start` is the index of its first item, of
+  `total`. The bridge reads the thread's log from the daemon once and keeps it from the events
+  appended after, so asking again costs the daemon nothing. The page asks again when an event
+  is added to that thread, for the part it holds: at once for a form shown or closed, within
+  600 ms for the rest.
 - `{"type": "dirs", "id", "dirs"}`, the answer to the page's `{"type": "dirs", "id"}`: every
   directory `prefix o` lists, best first, each `{path, shown, note}`, gathered off the runtime.
 

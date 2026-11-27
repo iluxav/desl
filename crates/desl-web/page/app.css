@@ -328,6 +328,8 @@ body.resizing { cursor: col-resize; user-select: none; }
   font-size: 13px;
 }
 .conv-count { color: var(--muted); font: 12px var(--mono); }
+.conv-earlier { display: block; margin: 0 auto 14px; padding: 4px 14px; min-height: 28px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: var(--muted); font: 12px ui-sans-serif, system-ui, sans-serif; cursor: pointer; }
+.conv-earlier:hover { color: var(--text, inherit); border-color: var(--muted); }
 .conv-toggle { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 13px; }
 .conv-toggle input { accent-color: var(--accent); }
 .conv { flex: 1; min-height: 0; overflow: auto; padding: 8px 28px 28px; }

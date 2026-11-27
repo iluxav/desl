@@ -273,6 +273,23 @@ async fn a_tab_with_the_key_sees_the_workspace_and_drives_the_daemon() {
     assert_eq!(conv["items"][0]["event"], 1, "each item says the event behind it, for a highlight's link");
     let h = &conv["highlights"][0];
     assert_eq!((h["by"].as_str(), h["question"].as_str(), h["event"].as_u64()), (Some("you"), Some("hello"), Some(1)), "{conv}");
+    assert_eq!((conv["start"].as_u64(), conv["total"].as_u64()), (Some(0), Some(1)), "{conv}");
+    // What the thread adds is kept from the changes: asked again, the bridge asks the daemon nothing.
+    let added = desl_ir::Event {
+        index: 2,
+        thread_id: "t-1".into(),
+        timestamp: 0,
+        agent: "claude".into(),
+        kind: desl_ir::EventKind::AssistantMessage { text: "hi".into(), model: None },
+    };
+    rig.give.send(ServerFrame::Event { change: Change::Appended { event: added } }).await.unwrap();
+    let raw = next(&mut c).await;
+    assert_eq!(raw["change"]["what"], "appended", "{raw}");
+    c.send(Message::Text(json!({ "type": "conversation", "id": 6, "thread_id": "t-1", "from": 0 }).to_string().into())).await.unwrap();
+    let conv = next(&mut c).await;
+    assert_eq!(conv["id"], 6);
+    assert_eq!((conv["items"][1]["text"].as_str(), conv["total"].as_u64()), (Some("hi"), Some(2)), "{conv}");
+    assert!(tokio::time::timeout(Duration::from_millis(200), rig.got.recv()).await.is_err(), "the log was not read again");
     // The directories `prefix o` lists, for the page's own finder: the projects desl knows first.
     c.send(Message::Text(json!({ "type": "dirs", "id": 5 }).to_string().into())).await.unwrap();
     let dirs = next(&mut c).await;
@@ -302,6 +319,25 @@ fn a_conversation_reaches_the_page_as_the_history_projects_it() {
     );
     assert_eq!(items[1]["detail"]["more"], 10, "40 lines are sent, and the count of the rest");
     assert_eq!(items[2]["text"], "All **50** pass.", "the page renders the Markdown itself, as text");
+}
+
+#[test]
+fn a_long_conversation_reaches_the_page_in_parts_that_begin_at_a_prompt() {
+    use crate::bridge::{Ask, window};
+    use desl_ir::{Event, EventKind};
+    let mut events = Vec::new();
+    for n in 0..1000u64 {
+        let ev = |index, kind| Event { index, thread_id: "t-1".into(), timestamp: 0, agent: "claude".into(), kind };
+        events.push(ev(n * 2 + 1, EventKind::UserMessage { text: format!("prompt {n}"), attachments: vec![] }));
+        events.push(ev(n * 2 + 2, EventKind::AssistantMessage { text: format!("reply {n}"), model: None }));
+    }
+    let (start, total, items) = window(&events, Ask::default());
+    assert_eq!((start, total, items.len()), (1700, 2000, 300), "the last part, from a prompt");
+    assert_eq!(items[0]["text"], "prompt 850");
+    let (start, _, items) = window(&events, Ask { from: Some(1401), event: None });
+    assert_eq!((start, items.len()), (1400, 600), "an earlier part goes back to its prompt");
+    let (start, _, items) = window(&events, Ask { from: None, event: Some(42) });
+    assert_eq!((start, items[1]["event"].as_u64()), (40, Some(42)), "from the turn that holds the event");
 }
 
 #[test]

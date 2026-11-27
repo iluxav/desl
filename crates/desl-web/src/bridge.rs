@@ -3,8 +3,10 @@
 //! to the tab as its JSON, and every request the tab sends goes to the daemon, so the page
 //! speaks the protocol in `docs/protocol.md`. The bridge adds two messages of its own: `view`,
 //! the sidebar as `desl_proto::view` words it for the TUI, sent whenever it changes, and
-//! `conversation`, a thread's whole conversation as `desl_proto::conversation` projects it for
-//! the TUI's history, sent when the page asks; so the two clients cannot show different things.
+//! `conversation`, a thread's conversation as `desl_proto::conversation` projects it for the
+//! TUI's history, sent when the page asks; so the two clients cannot show different things. The
+//! page gets the last part of a long conversation and asks for earlier parts as it scrolls up;
+//! the bridge reads the thread's log from the daemon once and keeps it from the changes after.
 //! It keeps nothing that matters: closing it, or the tab, loses nothing.
 
 use crate::Shared;
@@ -26,6 +28,9 @@ pub(crate) const HELLO: u64 = OWN;
 pub(crate) const SUBSCRIBE: u64 = OWN + 1;
 /// The bridge's own requests for the page start here.
 const ASKED: u64 = OWN + 16;
+
+/// Items of a conversation the page gets at first, and more with each step up.
+const WINDOW: usize = 300;
 
 /// Lines of a tool's output, and of an edit's diff, sent before `more` says how many were left.
 const DETAIL_LINES: usize = 40;
@@ -91,9 +96,10 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
     });
     let mut cache = Cache::default();
     let mut ages = tokio::time::interval(AGES);
-    // What the page asked the bridge for, by the id the bridge asked the daemon with: the page's
-    // id and the thread.
-    let mut asked: HashMap<u64, (Value, String)> = HashMap::new();
+    // The thread whose log the bridge asked the daemon for, by the id it asked with.
+    let mut asked: HashMap<u64, String> = HashMap::new();
+    // The log of the thread the page reads, and what the page asked of it meanwhile.
+    let mut log: Option<Log> = None;
     let mut next = ASKED;
     // The directories `prefix o` lists, gathered off the runtime: each answer for the page.
     let (dirs_tx, mut dirs_done) = tokio::sync::mpsc::channel::<Value>(4);
@@ -112,23 +118,35 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
                 };
                 let parsed = serde_json::from_slice::<ServerFrame>(&bytes).ok();
                 if let Some(ServerFrame::Reply { id, ok, error }) = &parsed
-                    && let Some((page_id, thread_id)) = asked.remove(id)
+                    && let Some(thread_id) = asked.remove(id)
                 {
-                    let answer = match (ok, error) {
-                        (Some(Reply::Events { events }), _) => json!({
-                            "type": "conversation",
-                            "id": page_id,
-                            "thread_id": thread_id,
-                            "items": items(events),
-                            "highlights": desl_proto::highlights::highlights(events),
-                        }),
-                        (_, Some(e)) => json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "error": e }),
+                    let Some(l) = log.as_mut().filter(|l| l.thread_id == thread_id) else { continue };
+                    let answers: Vec<Value> = match (ok, error) {
+                        (Some(Reply::Events { events }), _) => {
+                            l.load(events.clone());
+                            std::mem::take(&mut l.waiting).into_iter().map(|(page_id, ask)| l.answer(page_id, ask)).collect()
+                        }
+                        (_, Some(e)) => {
+                            let waiting = std::mem::take(&mut l.waiting);
+                            log = None;
+                            waiting
+                                .into_iter()
+                                .map(|(page_id, _)| json!({ "type": "conversation", "id": page_id, "thread_id": thread_id, "error": e }))
+                                .collect()
+                        }
                         _ => continue,
                     };
-                    if say(&mut ws, answer).await.is_err() {
-                        break;
+                    for a in answers {
+                        if say(&mut ws, a).await.is_err() {
+                            break;
+                        }
                     }
                     continue;
+                }
+                if let Some(ServerFrame::Event { change: Change::Appended { event } }) = &parsed
+                    && let Some(l) = log.as_mut().filter(|l| l.thread_id == event.thread_id)
+                {
+                    l.append(event.clone());
                 }
                 let own = matches!(&parsed, Some(ServerFrame::Reply { id, .. }) if *id >= OWN);
                 let changed = parsed.is_some_and(|f| cache.fold(f));
@@ -154,12 +172,25 @@ pub(crate) async fn serve(mut ws: WebSocket, s: Shared) {
                     });
                 }
                 Some(Ok(Message::Text(t))) if conversation_asked(t.as_str()).is_some() => {
-                    let Some((page_id, thread_id)) = conversation_asked(t.as_str()) else { continue };
-                    asked.insert(next, (page_id, thread_id.clone()));
-                    if send(&mut wr, &Request { id: next, command: Command::Events { thread_id } }).await.is_err() {
-                        break;
+                    let Some((page_id, thread_id, ask)) = conversation_asked(t.as_str()) else { continue };
+                    match log.as_mut().filter(|l| l.thread_id == thread_id) {
+                        Some(l) if l.loaded => {
+                            let answer = l.answer(page_id, ask);
+                            if say(&mut ws, answer).await.is_err() {
+                                break;
+                            }
+                        }
+                        // Asked already: answered when the log comes.
+                        Some(l) => l.waiting.push((page_id, ask)),
+                        None => {
+                            log = Some(Log::new(thread_id.clone(), (page_id, ask)));
+                            asked.insert(next, thread_id.clone());
+                            if send(&mut wr, &Request { id: next, command: Command::Events { thread_id } }).await.is_err() {
+                                break;
+                            }
+                            next += 1;
+                        }
                     }
-                    next += 1;
                 }
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Request>(t.as_str()) {
                     Ok(r) if r.id < OWN && allowed(&r.command) => {
@@ -200,13 +231,93 @@ fn dirs_asked(text: &str) -> Option<Value> {
     (v.get("type").and_then(Value::as_str) == Some("dirs")).then(|| v.get("id").cloned().unwrap_or(Value::Null))
 }
 
-/// `{"type": "conversation", "id": …, "thread_id": …}`: the page's id and the thread.
-fn conversation_asked(text: &str) -> Option<(Value, String)> {
+/// `{"type": "conversation", "id": …, "thread_id": …, "from": …, "event": …}`: the page's id, the
+/// thread and how much of it.
+fn conversation_asked(text: &str) -> Option<(Value, String, Ask)> {
     let v: Value = serde_json::from_str(text).ok()?;
     if v.get("type").and_then(Value::as_str) != Some("conversation") {
         return None;
     }
-    Some((v.get("id").cloned().unwrap_or(Value::Null), v.get("thread_id")?.as_str()?.to_string()))
+    let ask = Ask { from: v.get("from").and_then(Value::as_u64).map(|n| n as usize), event: v.get("event").and_then(Value::as_u64) };
+    Some((v.get("id").cloned().unwrap_or(Value::Null), v.get("thread_id")?.as_str()?.to_string(), ask))
+}
+
+/// How much of a conversation the page asks for: the last [`WINDOW`] items at least, and from
+/// item `from` on, or from the item that shows event `event`, when it says so.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Ask {
+    pub(crate) from: Option<usize>,
+    pub(crate) event: Option<u64>,
+}
+
+/// The log of the thread the page reads: read from the daemon once, then kept from the events
+/// appended to it, so a page reading a long thread as it grows costs no second copy of it.
+struct Log {
+    thread_id: String,
+    events: Vec<Event>,
+    /// The daemon's answer came: `events` is the whole log.
+    loaded: bool,
+    /// Events appended before the daemon's answer came, which it may hold or not.
+    early: Vec<Event>,
+    /// The page's requests waiting for the log.
+    waiting: Vec<(Value, Ask)>,
+}
+
+impl Log {
+    fn new(thread_id: String, first: (Value, Ask)) -> Log {
+        Log { thread_id, events: Vec::new(), loaded: false, early: Vec::new(), waiting: vec![first] }
+    }
+
+    fn load(&mut self, events: Vec<Event>) {
+        self.events = events;
+        self.loaded = true;
+        for e in std::mem::take(&mut self.early) {
+            self.append(e);
+        }
+    }
+
+    fn append(&mut self, e: Event) {
+        if !self.loaded {
+            self.early.push(e);
+        } else if self.events.last().is_none_or(|l| e.index > l.index) {
+            self.events.push(e);
+        }
+    }
+
+    fn answer(&self, page_id: Value, ask: Ask) -> Value {
+        let (start, total, items) = window(&self.events, ask);
+        json!({
+            "type": "conversation",
+            "id": page_id,
+            "thread_id": self.thread_id,
+            "items": items,
+            "start": start,
+            "total": total,
+            "highlights": desl_proto::highlights::highlights(&self.events),
+        })
+    }
+}
+
+/// The part of `events`' conversation that `ask` asks for: the index of its first item, the
+/// count of all items, and the items. It begins at a prompt when one is near, so a turn is not
+/// cut in two.
+pub(crate) fn window(events: &[Event], ask: Ask) -> (usize, usize, Vec<Value>) {
+    let (thread, prompts) = conversation(events, true);
+    let total = thread.items.len();
+    let mut start = total.saturating_sub(WINDOW);
+    if let Some(from) = ask.from {
+        start = start.min(from);
+    }
+    if let Some(event) = ask.event {
+        start = start.min(thread.origins.iter().position(|&o| o >= event).unwrap_or(total));
+    }
+    if let Some(prompt) = (start.saturating_sub(WINDOW)..=start.min(total.saturating_sub(1)))
+        .rev()
+        .find(|&i| matches!(thread.items.get(i), Some(Item::User { .. })))
+    {
+        start = prompt;
+    }
+    (start, total, project_items(&thread.items[start..], &thread.origins[start..], &prompts, start))
 }
 
 /// The first `lines` lines of `text`, and how many more there were.
@@ -216,15 +327,21 @@ fn capped(text: &str, lines: usize) -> Value {
     json!({ "text": all[..shown].join("\n"), "more": all.len() - shown })
 }
 
-/// A thread's conversation as the page draws it: the items of the TUI's history, each a JSON
-/// object with its `kind` and the `event` behind it. A prompt says when it was sent.
+/// A thread's whole conversation as the page draws it: the items of the TUI's history, each a
+/// JSON object with its `kind` and the `event` behind it. A prompt says when it was sent.
+#[cfg(test)]
 pub(crate) fn items(events: &[Event]) -> Vec<Value> {
-    let (thread, prompts) = conversation(events, true);
-    let sent: HashMap<usize, i64> = prompts.into_iter().collect();
-    let mut out: Vec<Value> = thread
-        .items
+    window(events, Ask { from: Some(0), event: None }).2
+}
+
+/// `items`, which begin at item `start` of the conversation, with `origins`, their events, and
+/// `prompts`, when each prompt of the whole conversation was sent, by its item.
+fn project_items(items: &[Item], origins: &[u64], prompts: &[(usize, i64)], start: usize) -> Vec<Value> {
+    let sent: HashMap<usize, i64> = prompts.iter().copied().collect();
+    let mut out: Vec<Value> = items
         .iter()
         .enumerate()
+        .map(|(i, item)| (start + i, item))
         .map(|(i, item)| match item {
             Item::User { text } => json!({ "kind": "user", "text": text, "at": sent.get(&i) }),
             Item::Assistant { text, .. } => json!({ "kind": "assistant", "text": text }),
@@ -246,7 +363,7 @@ pub(crate) fn items(events: &[Event]) -> Vec<Value> {
             Item::Form { form_id, title, by, .. } => json!({ "kind": "form", "form_id": form_id, "title": title, "by": by }),
         })
         .collect();
-    for (item, event) in out.iter_mut().zip(&thread.origins) {
+    for (item, event) in out.iter_mut().zip(origins) {
         item["event"] = json!(event);
     }
     out
